@@ -6312,21 +6312,28 @@ state; the gateway primitives and GC Phase 5/6 can.
 #### Decision (PC-D1B.4)
 
 A per-library destruction fence on the canonical row, in the global SERIAL HEAD
-domain: every destroyer of witness-covered state takes an intent LWT (fresh
-`continuity_destruction_epoch`, token added to
-`continuity_destruction_pending`, witness cleared) before destroying and a
-completion LWT after its writes are acknowledged; the certifier captures the
-fence before its final revalidation, refuses a busy library, and its CAS
-predicates the captured epoch. Witness shape stays `(H, V)`; validity is
-unchanged; soft-delete/restore/hard delete need no change. Evidence: exhaustive
-interleaving model (current runtime and four weaker fences have
-counterexamples; the selected fence has none; CW-M1..M8, M10, M14, M15 RED),
-single-node real-Cassandra characterization (R1-R11), isolated 3-DC R12, and
-source-derived lifecycle/destroyer inventory guards.
+domain. Each GC destroyer of witness-covered state (D1-D3) takes an intent LWT
+before destroying: a fresh generation `g` becomes the new
+`continuity_destruction_epoch`, `continuity_destruction_pending[t] = g` for its
+durable destruction-unit token `t`, and the witness is cleared. After its
+writes are acknowledged it completes with `DELETE pending[t] IF pending[t] = g`,
+so a stale attempt of the same unit cannot clear a retry's protection. The
+best-effort D4/D5 cleanups of commits proven never to be HEAD take a
+`ProvenUncoveredCleanupCapability` and write no fence state, because they have
+no durable re-drive owner. The certifier captures the fence before its final
+revalidation, refuses a busy library, and its CAS predicates the captured
+epoch. Witness shape stays `(H, V)` and validity is unchanged, but productive
+witness authority must be read at global SERIAL. Soft-delete, restore and hard
+delete need no change. Evidence: exhaustive interleaving model (current runtime
+and four weaker fences have counterexamples; the selected fence has none,
+including the same-token stale-completion retry; CW-M1..M8, M10, M14, M15, M16
+RED), single-node real-Cassandra characterization (R1-R11), isolated 3-DC R12,
+and source-derived lifecycle/destroyer/alias inventory guards (G1-G11 and C1
+mutations RED).
 
 #### Remaining
 
-PC-D1B.5 implements the fence and its mutation contract (CW-M1..M15) exactly
+PC-D1B.5 implements the fence and its mutation contract (CW-M1..M16, CW-M18) exactly
 as scoped in the decision record, and inverts the UNSAFE characterization
 rows. Phase 5/6 fixes, mapping authority, soft-delete serialization
 (`ISSUE-LIB-DELETED-FENCE-01`), the productive consumer and PC-2 remain

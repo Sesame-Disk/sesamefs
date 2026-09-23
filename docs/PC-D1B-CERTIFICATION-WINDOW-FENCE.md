@@ -15,8 +15,8 @@ DECISION
 Certification lifecycle authority = the canonical libraries row, in the global
 SERIAL HEAD Paxos domain, extended with a per-library DESTRUCTION FENCE:
 
-    continuity_destruction_epoch    timeuuid        (E)
-    continuity_destruction_pending  set<timeuuid>   (P)
+    continuity_destruction_epoch    timeuuid             (E)
+    continuity_destruction_pending  map<uuid, timeuuid>  (P: token -> generation)
 
 Witness shape (unchanged):  (H, V)
 Witness validity (unchanged):
@@ -32,12 +32,23 @@ Certification:
 
 Destruction of witness-covered state while the canonical row exists
 (commit / fs_object source delete, permanent fs: reference removal):
-    intent LWT     SET E = fresh, P = P + {t}, certified = null, contract = null
+    intent LWT     g = fresh timeuuid
+                   SET E = g, P[t] = g, certified = null, contract = null
                    IF EXISTS                        (global SERIAL)
     destroy        only after the intent APPLIED; acknowledged at a CL the
                    certifier's final reads intersect
-    completion LWT SET P = P - {t}  IF EXISTS       (global SERIAL)
-                   only after every destructive write is acknowledged
+    completion LWT DELETE P[t]  IF P[t] = g         (global SERIAL)
+                   only after every destructive write is acknowledged, and
+                   only while generation g still owns token t
+
+    t = durable logical destruction identity (stable across retries)
+    g = execution ownership (one per intent)       t != ownership
+
+Proven-uncovered cleanups (D4/D5: commits proven never to be HEAD) take a
+ProvenUncoveredCleanup capability instead and write no fence state.
+
+Productive witness authority: read only at global SERIAL (or inside an LWT of
+the same domain). A LOCAL_QUORUM witness observation never authorizes work.
 
 Soft-delete / restore / hard delete:  NO CHANGE. They are not witness
 lifecycle events: they do not change the certified dependency set.
@@ -129,7 +140,14 @@ Derived from the source and frozen by
 `internal/db/pcd1b4_lifecycle_mutation_inventory_test.go`
 (lifecycle statements and destroyer call sites) together with the existing
 `TestIdentityWritersAreInventoried` (every commits/fs_objects writer/deleter is
-confined to the identity gateway). A new site turns those guards red.
+confined to the identity gateway). The guards mechanically freeze the
+currently recognized production sites: a new soft-delete/restore/row-delete or
+witness statement, a new direct call of a destroyer primitive (including a new
+wrapper), an alias of a primitive, and a raw `DELETE FROM block_references`
+turn them red (guard mutations G1–G5, G8–G10). They do not trace new callers of
+an already-inventoried wrapper (e.g. the GC store's `DeleteFSObject`); that is
+why PC-D1B.5 makes the capability a parameter of the destructive primitives,
+which is the structural boundary. The inventory is defense in depth.
 
 | # | Operation | Source | Tables | CL | LWT / serial | Conditional | Races certification | Races stored witness | Modifies authority | Invalidates identity |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -146,7 +164,7 @@ confined to the identity gateway). A new site turns those guards red.
 | D5 | v2 initial-commit discards | `api/v2/fs_helpers.go` `InitializeLibraryHeadIfUnset`, `DiscardLosingInitialCommit` | commits row | EACH_QUORUM | claim SERIAL read | refuses the winning HEAD | no | no | no | of a non-HEAD commit |
 | D6 | Publish-attempt reference cleanup | `db/block_references.go` `removePublishAttemptReferenceFn` | block_references `pub:` rows | session | no | no | no (`pub:` is not a certified dependency) | no | no | no |
 | H1 | HEAD advance (Sync, v2, initializer) | §4.2 | libraries.head_commit_id | LWT | global SERIAL | `IF head_commit_id = ?` | fenced (CAS predicates HEAD) | invalidates (HEAD never repeats, §7.4) | no | no |
-| C1 | Library creation (5 sites) | `INSERT INTO libraries` with `uuid.New()` | libraries | session | no | no | no | no | no | no |
+| C1 | Library creation (6 production `INSERT INTO libraries` statements, all binding `library_id` to a fresh UUID) | `INSERT INTO libraries` with `uuid.New()` | libraries | session | no | no | no | no | no | no |
 
 Not present anywhere: a production deleter of `block_id_mappings` (insert-only),
 or of `identity_authority_claims`.
@@ -259,6 +277,9 @@ which consult no witness, and through GC once enabled.
 | **D** Lifecycle claims in the same Paxos domain | per-identity delete capability / tree reservation | rejected in general form | Would need a capability per reachable identity (distributed lock over the tree, I7). Its per-library reduction is the selected design, possible only because fan-out is 1 (§6). |
 | **D-lite** Pending intents without an epoch | certifier refuses a busy library | rejected | Emptiness ABA: capture idle → intent → delete → completion → CAS sees idle again (model trace). |
 | **E** Invalidate witness on mutation | clear the witness when destroying | rejected alone | After the destroy = transient/crash window (as B-after). Before the destroy = B-before. |
+| Token set without generation | `P` as `set<uuid>`; completion removes `t` | rejected | A paused attempt of unit `t` completes after its retry re-established `t` and strips the retry's protection while it still destroys (CW-M16, `TestPCD1B4ModelStaleCompletionCannotClearRetry`). |
+| Completion predicated on the global epoch | `DELETE P[t] IF E = my_epoch` | rejected | Safe but not live: any unrelated intent advances `E` and leaves `t` stuck forever, blocking certification. |
+| Intents for D4/D5 | best-effort commit discards take intents | rejected | No durable re-drive owner: a crash leaves `P` non-empty forever. A commit proven never to be HEAD is never covered, so a proof-backed capability suffices (§10.6). |
 | Restore epoch / soft-delete as LWT | new lifecycle generation for library lifecycle | not needed | Library lifecycle does not change dependencies; the model is safe without it. |
 | **Selected** | epoch + pending intents + witness clear, all global SERIAL, capture before final revalidation | adopted | Only variant with no counterexample in any scenario; every simplification of it is RED (§12). |
 
@@ -266,15 +287,30 @@ which consult no witness, and through GC once enabled.
 
 ### 10.1 State
 `libraries.continuity_destruction_epoch timeuuid` and
-`libraries.continuity_destruction_pending set<timeuuid>`. Written **only** by
-global-SERIAL LWTs (`LibraryHeadSerialConsistency`); never by a plain write
+`libraries.continuity_destruction_pending map<uuid, timeuuid>`. Written **only**
+by global-SERIAL LWTs (`LibraryHeadSerialConsistency`); never by a plain write
 (mixing client and ballot timestamps on the same cells is unsafe).
+
+The map separates two identities that a set conflates:
+
+- **token `t`** (`uuid`, e.g. `uuid.NewMD5` of the GC item identity) — the
+  durable logical destruction unit, stable across retries;
+- **generation `g`** (`timeuuid`, the epoch value written by that intent) — the
+  execution that currently owns the unit.
+
+A plain set of tokens is unsafe: attempt G1 of unit `t` is presumed dead, retry
+G2 re-establishes `t`, G1 resumes and completes, and removing `t` strips G2's
+protection while G2 is still destroying (model
+`TestPCD1B4ModelStaleCompletionCannotClearRetry`, CW-M16). Completion must not
+be predicated on the global epoch either (`IF E = my_epoch`): an unrelated
+destroyer legitimately advances `E`, which would leave the first destroyer's
+token stuck forever.
 
 ### 10.2 Destruction intent (begin)
 ```sql
 UPDATE libraries
-SET continuity_destruction_epoch = ?,            -- fresh timeuuid per attempt
-    continuity_destruction_pending = continuity_destruction_pending + {?},
+SET continuity_destruction_epoch = :g,           -- fresh timeuuid per intent
+    continuity_destruction_pending[:t] = :g,     -- this execution owns t
     continuity_certified_head_commit_id = null,
     continuity_contract_version = null
 WHERE org_id = ? AND library_id = ?
@@ -283,10 +319,22 @@ IF EXISTS
 - APPLIED → the destroyer may write. NOT_APPLIED (row absent) → the destroyer
   may proceed only with an independent canonical-absence proof (the existing
   `LibraryGuardCanonicalMustBeAbsent` / post-`HardDeleteLibrary` guards); the
-  intent must never create a row. UNKNOWN → do not destroy; retry (idempotent:
-  set add + fresh epoch + clear).
-- The token is durable and deterministic for the unit of work (e.g.
-  `uuid.NewMD5` of the GC item identity), so a retry reuses it.
+  intent must never create a row. UNKNOWN → do not destroy; retry with a new
+  generation (fresh epoch, `P[t]` re-owned, witness cleared). An UNKNOWN intent
+  cannot overwrite a later one: the next Paxos round on the partition finishes
+  an in-flight proposal before its own.
+- The token is durable and deterministic for the unit of work, so a retry
+  reuses it and takes ownership with its own generation.
+- **Owner fencing (assumption A-OWN).** A retry starts only after the previous
+  attempt is presumed dead (lease expiry/steal), and an attempt issues each
+  destructive write only after re-checking its lease, as every current GC
+  destructive path does (`beforeMutation` fence). A paused attempt that resumes
+  can at most issue its completion, which the generation makes a no-op. A
+  paused attempt that issues a *new* destructive write after losing its lease
+  is the residual process-pause risk every existing GC destroyer already
+  carries; PC-D1B.5 should evaluate bounding it further by writing its
+  tombstones `USING TIMESTAMP` no later than its intent, so a late tombstone can
+  never shadow a later re-materialization. This is not frozen here.
 
 ### 10.3 Destroy
 Only after APPLIED. Destructive writes must be visible to the certifier's final
@@ -297,19 +345,24 @@ write may be partially applied: keep the token.
 
 ### 10.4 Completion (end)
 ```sql
-UPDATE libraries SET continuity_destruction_pending = continuity_destruction_pending - {?}
-WHERE org_id = ? AND library_id = ? IF EXISTS
+DELETE continuity_destruction_pending[:t] FROM libraries
+WHERE org_id = ? AND library_id = ?
+IF continuity_destruction_pending[:t] = :g
 ```
-Only after every destructive write of the unit is acknowledged. A crash leaves
-the token: certification is refused (liveness cost, fail closed) until the
-owner re-drives and completes. Nobody else may drop a token without first
-fencing its owner (lease); an unfenced janitor is CW-M14.
+Only after every destructive write of the unit is acknowledged, and only by the
+generation that owns `t`. NOT_APPLIED means a newer generation owns the unit
+(or it is already complete): the stale attempt stops. A crash leaves the
+entry: certification is refused (liveness cost, fail closed) until an owner
+re-drives the unit under a new generation and completes. Nobody else may drop
+an entry without first fencing its owner (lease); an unfenced janitor is
+CW-M14. Only destroyers with a durable re-drive owner may create entries (D1–D3,
+whose GC queue items are durable and retried); see §10.6.
 
 ### 10.5 Certifier
 1. Everything #228 does, unchanged, up to the final pass.
 2. **Capture** `(head, deleted_at, E0, P0)` with a SERIAL read immediately
    before the final revalidation pass (replacing the LOCAL_QUORUM
-   `finalState` read at `library_continuity_certifier.go:367`). `P0 ≠ {}` →
+   `finalState` read at `library_continuity_certifier.go:367`). `P0` non-empty →
    `NOT_CERTIFIED / identity_destruction_pending`, no witness. A read error →
    UNKNOWN. (A LOCAL_QUORUM capture is also safe — the model proves a stale
    capture costs liveness only — but SERIAL avoids spurious refusals.) An
@@ -327,21 +380,47 @@ fencing its owner (lease); an unfenced janitor is CW-M14.
 the same capture rule. `CommitLibraryContinuityWitness` (no production caller)
 either gains the predicate or is removed.
 
-### 10.6 Participants
-Every destroyer of witness-covered state while the canonical row can exist:
-D1, D2, D3 (GC), D4, D5 (rare non-GC cleanups; uniform rule, because the
-gateway cannot tell covered from uncovered without walking HEAD). Not
-participants: L6 rollback (no HEAD), D6 `pub:` cleanup (not covered), L1–L5
-lifecycle writes, writers that re-materialize a claimed digest. The gateway
-should make participation structural: `DeleteCommitIdentity` /
-`DeleteFSObjectIdentity` and the `fs:` reference removal take a typed intent
-capability (or a canonical-absence proof), like the existing authorized
-projection tokens.
+### 10.6 Participants and capabilities
+The destructive primitives (`DeleteCommitIdentity`, `DeleteFSObjectIdentity`,
+the `fs:` reference removal) accept exactly one of three typed capabilities,
+like the existing authorized projection tokens:
+
+| Capability | Minted only from | Who | Fence state |
+|---|---|---|---|
+| `DestructionIntentCapability` | an APPLIED intent for `(t, g)` | D1–D3 (GC commit/fs_object delete, `fs:` removal): durable queue items that are retried until done, so a crashed intent is always re-driven | epoch + `P[t] = g` |
+| `CanonicalAbsenceProof` | the existing canonical-absence guards (`LibraryGuardCanonicalMustBeAbsent`, post-`HardDeleteLibrary` children) | library cascade children, Phase 3/4 orphans | none (no row ⇒ no witness) |
+| `ProvenUncoveredCleanupCapability` | a proof that the target commit is not and can never become the canonical HEAD: its attempt-unique, server-minted, never-exposed id was never proposed, or its HEAD CAS definitively did not apply (`ErrLibraryHeadConflict`, `ErrLibraryHeadNotFound`, `ErrLibraryHeadUninitializable`), or it is an initial commit (empty parent, unpromotable by Sync) that lost to a different winning HEAD | D4 `cleanupFailedPublishDeleteCommitFn`, D5 `InitializeLibraryHeadIfUnset` discard and `DiscardLosingInitialCommit` | none |
+
+D4/D5 must **not** take intents. They are deliberately best-effort, with no
+durable owner that would re-drive a completion; an intent followed by a crash
+would leave `P` non-empty forever and turn a tolerated dangling-commit leak into
+a permanent certification block. They also do not need one: a witness covers
+only the commit row of its HEAD, so a commit that can never be HEAD is never
+covered. The capability applies to commit rows only; the fs_object variant
+(`cleanupFailedPublishDeleteFSObjectFn`, no production caller today) stays a
+participant because fs_objects are shared with HEAD by content addressing.
+`ProvenUncoveredCleanupCapability` must be impossible to mint from anything but
+those definitive outcomes (CW-M18).
+
+Not destroyers: L6 rollback (keeps its `IF head_commit_id = null` authority),
+D6 `pub:` cleanup (not covered), L1–L5 lifecycle writes, writers that
+re-materialize a claimed digest.
+
+### 10.7 Productive witness reads
+The witness shape and validity predicate are unchanged, but its **consumption**
+is constrained: every productive decision that treats the witness as authority
+must obtain it with a global-SERIAL read or inside an LWT of the same domain
+(as `AdvanceLibraryCertifiedFrontier` does by predicating it). A LOCAL_QUORUM
+observation of `(HEAD, certified, contract)` can be a stale copy from before an
+intent cleared the witness in another DC, and must never authorize productive
+work. Frozen in the canonical PC-D1 contract; the consumer PR owns CW-M17 and
+its 3-DC evidence.
 
 ## 11. Executable model
 
 `internal/db/pcd1b4_certification_window_model_test.go` exhaustively explores
-every interleaving of a certifier, up to two destroyers (with crash-stop), a
+every interleaving of a certifier, up to two destroyers (with crash-stop, and a
+same-token retry whose paused predecessor completes late), a
 supported writer, library lifecycle (soft-delete visible or invisible to
 Paxos, restore, hard delete racing the CAS commit), HEAD movement (including a
 hypothetical repeat), and UNKNOWN witness results. LWT steps on the libraries
@@ -354,9 +433,10 @@ its certified content; every CERTIFIED result is backed by the stored witness.
 |---|---|
 | `TestPCD1B4ModelCurrentRuntimeAdmitsFalseWitness` | main admits a false witness (R5 trace) |
 | `TestPCD1B4ModelRejectsWeakerFences` | A/B-lite, E, B, D-lite each have a counterexample |
-| `TestPCD1B4ModelSelectedFenceHoldsInvariants` | selected: 0 violations in all 5 scenarios (each explored exhaustively; state counts are logged); certifies in some executions; busy refusals reachable; a LOCAL_QUORUM capture is still safe |
+| `TestPCD1B4ModelSelectedFenceHoldsInvariants` | selected: 0 violations in all 6 scenarios (each explored exhaustively; state counts are logged); certifies in some executions; busy refusals reachable; a LOCAL_QUORUM capture is still safe |
 | `TestPCD1B4ModelLifecycleNeedsNoRestoreEpoch` | plain soft-delete/restore/hard delete safe under the selected fence |
-| `TestPCD1B4ModelMutationContract` | CW-M1..M8, M10, M14, M15 each RED |
+| `TestPCD1B4ModelStaleCompletionCannotClearRetry` | replays the audit trace `begin(t,G1) → delete → re-materialize → begin(t,G2) → stale complete(t,G1) → second delete → certify`: GREEN with generation ownership (capture refuses the busy library), a false witness with a plain token set; the exhaustive search finds an even shorter token-set counterexample |
+| `TestPCD1B4ModelMutationContract` | CW-M1..M8, M10, M14, M15, M16 each RED |
 
 ## 12. Mutation contract for PC-D1B.5
 
@@ -381,6 +461,9 @@ already proven meaningful by §11; PC-D1B.5 must reproduce it against real code.
 | CW-M13 | destroyer CL weakened so the certifier's final read does not intersect it | 3-DC: delete acknowledged in one DC, certifier in another certifies | — |
 | CW-M14 | a pending token dropped by a non-owner without fencing the owner | zombie destroyer deletes after certification | ✅ |
 | CW-M15 | identity claims become mutable, or the fence rewrites a claim | re-created divergent content under a valid witness | ✅ |
+| CW-M16 | completion removes the token without checking its generation (plain set), or is predicated on the global epoch instead | stale completion of G1 clears G2's protection → CERTIFIED over a destroyed identity (or: a token stuck after an unrelated intent) | ✅ |
+| CW-M17 | a productive witness read at LOCAL_QUORUM (consumer PR) | 3-DC: stale copy of a cleared witness authorizes work | — (consumer) |
+| CW-M18 | `ProvenUncoveredCleanupCapability` minted without a definitive never-HEAD proof, or accepted for an fs_object / `fs:` destroy | integration: a covered identity destroyed without an intent yields CERTIFIED | — |
 
 ## 13. Witness shape
 
@@ -402,7 +485,7 @@ No speculative field becomes mandatory. The stored witness stays `(H, V)`.
 | I2 | A lifecycle mutation that invalidates a certified dependency cannot leave a witness productively valid | intent clears the witness in the same global-SERIAL write (CW-M3); lifecycle writes do not invalidate dependencies (§7) |
 | I3 | Delete/recreate at the same key cannot make a witness for lifecycle A authorize B | immutable claims (#230/#231, R6/R7) + presence fenced by intents (CW-M15) |
 | I4 | Ambiguous settlement cannot invent validity | settlement reads the stored witness at SERIAL; intents clear it (CW-M10) |
-| I5 | Cross-DC stale reads cannot make a stale witness valid | all fence writes and the CAS in global SERIAL (CW-M8); consumers read at SERIAL; R12 evidence |
+| I5 | Cross-DC stale reads cannot make a stale witness valid | all fence writes and the CAS in global SERIAL (CW-M8); productive witness reads at global SERIAL only (§10.7, CW-M17); R12 evidence |
 | I6 | Authority identity immutability is preserved | the fence never writes `identity_authority_claims`; existing immutability guards |
 | I7 | No distributed lock over the reachable tree | per-library row state; an intent spans one destruction unit |
 | I8 | No upload hot-path Paxos for baseline certification | writers and HEAD writers unchanged; only destroyers pay (§16) |
@@ -436,7 +519,7 @@ No speculative field becomes mandatory. The stored witness stays `(H, V)`.
 | Dimension | Cost |
 |---|---|
 | Certifier | +0 LWT; the final state read becomes a SERIAL read (+1 Paxos read round, cold path); one extra CAS predicate column |
-| Destroyers | +2 global-SERIAL LWTs per destruction unit on the library partition (intent, completion). GC must amortize: one intent per (library, worker batch), not per row |
+| Destroyers | +2 global-SERIAL LWTs per destruction unit on the library partition (intent, completion) for D1–D3 only. GC must amortize: one intent per (library, worker batch), not per row. D4/D5: 0 (capability from an existing proof) |
 | Hot path (uploads, RecvFS/PutCommit, HEAD CAS) | 0 new operations, 0 new predicates |
 | Read amplification | none beyond the capture |
 | Write amplification | the 2 LWTs above; per-destruction witness clear |
@@ -455,15 +538,18 @@ docker run --rm -v "$PWD":/build -w /build <gotest-image> go test ./internal/db 
 go test -tags integration ./internal/integration/ -run '^TestPCD1B4' -v
 # isolated 3-DC (R12, R12b); owns sesamefs-pcd1b4-* resources only
 bash scripts/pc-d1b4-certification-window-multidc-characterization.sh
-# the guards bite: G1-G7 source/model mutations, plus C1 on real Cassandra
+# the guards bite: G1-G11 source/model mutations, plus C1 on real Cassandra
 bash scripts/pc-d1b4-certification-window-guard-mutation-validation.sh [--with-cassandra]
 ```
 
 The guard runner proves the evidence is not vacuous: an unlisted soft-delete
 (G1), an unlisted destroyer call (G2), a vanished inventoried restore (G3), a
 premature fence-column write (G4), a reused library id (G5), the selected
-fence without its epoch predicate (G6), and a model whose current runtime is
-silently fenced (G7) each turn their guard RED for the stated reason; with
+fence without its epoch predicate (G6), a model whose current runtime is
+silently fenced (G7), an aliased destroyer primitive (G8), a new destroyer
+wrapper (G9), a raw `DELETE FROM block_references` (G10) and a
+generation-blind completion (G11) each turn their guard RED for the stated
+reason; with
 `--with-cassandra`, dropping `deleted_at = null` from the witness CAS turns the
 R1 characterization RED on real Cassandra (C1).
 
@@ -478,20 +564,24 @@ keep the SAFE rows unchanged.
 2. `internal/db`: intent/completion/capture primitives (global SERIAL,
    `IF EXISTS`, tri-state outcomes); typed intent capability.
 3. Identity gateway: destructive deletes and `fs:` reference removal require
-   an intent capability or a canonical-absence proof.
+   one of the three capabilities of §10.6 as a parameter.
 4. GC: D1–D3 acquire an intent per (library, batch) with a deterministic
-   durable token, complete after acknowledged writes, keep the token on any
-   failure; DLQ/operator paths never drop a token without fencing its owner.
-5. D4/D5 participate.
+   durable token and a fresh generation, complete `IF P[t] = g` after
+   acknowledged writes, keep the entry on any failure; a stale generation stops
+   on NOT_APPLIED; DLQ/operator paths never drop an entry without fencing its
+   owner.
+5. D4/D5 take `ProvenUncoveredCleanupCapability` minted only from their
+   definitive never-HEAD outcomes; they write no fence state.
 6. Certifier: SERIAL capture before the final pass, busy refusal with a new
    reason, epoch predicate in the witness CAS; settlement unchanged.
 7. `AdvanceLibraryCertifiedFrontier` epoch predicate.
 8. Invert the UNSAFE characterization rows; extend the lifecycle inventory
    guard with the fence roles (CW-M7, CW-M9); a mutation runner covering
-   CW-M1..M15; the 3-DC script extended with CW-M8 and CW-M13 legs.
+   CW-M1..M16 and CW-M18 (CW-M17 belongs to the consumer PR); the 3-DC script
+   extended with CW-M8 and CW-M13 legs.
 
 **Acceptance criteria:** every §8 UNSAFE row inverted on real Cassandra; SAFE
-rows unchanged; CW-M1..M15 RED for their stated reason; isolated 3-DC green;
+rows unchanged; CW-M1..M16 and CW-M18 RED for their stated reason; isolated 3-DC green;
 full short suite, race, vet and Compose integration green; no hot-path
 statement changed (inventory guards); `GC_ENABLED=false`.
 

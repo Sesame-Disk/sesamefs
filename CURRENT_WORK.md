@@ -7,23 +7,31 @@ witness-covered state (HEAD commit, reachable fs_object, permanent `fs:`
 reference) can falsify a witness; claims already forbid semantic replacement,
 HEAD movement is already fenced, and soft-delete/restore/hard delete do not
 change the certified dependency set. Selected fence (for PC-D1B.5): a
-per-library `continuity_destruction_epoch` + `continuity_destruction_pending`
-on the canonical row, written only by global-SERIAL LWTs; destroyers take an
-intent (fresh epoch, token, witness cleared) before destroying and complete
-after acknowledged writes; the certifier captures the fence before its final
-revalidation, refuses a busy library and predicates the captured epoch in the
-witness CAS. Witness stays `(H, V)`; validity unchanged; no hot-path Paxos, no
-fan-out (all covered state is library-scoped), no per-identity state.
+per-library `continuity_destruction_epoch timeuuid` +
+`continuity_destruction_pending map<uuid, timeuuid>` (token -> owning
+generation) on the canonical row, written only by global-SERIAL LWTs. GC
+destroyers (D1-D3) take an intent (fresh generation as epoch, `pending[t] = g`,
+witness cleared) before destroying and complete `IF pending[t] = g` after
+acknowledged writes, so a stale attempt cannot clear a retry's protection.
+Best-effort D4/D5 cleanups of commits proven never to be HEAD take a
+`ProvenUncoveredCleanupCapability` and write no fence state. The certifier
+captures the fence before its final revalidation, refuses a busy library and
+predicates the captured epoch in the witness CAS. Witness stays `(H, V)`;
+validity unchanged; productive witness authority is read only at global
+SERIAL (frozen in the PC-D1 contract); no hot-path Paxos, no fan-out (all
+covered state is library-scoped), no per-identity state.
 Evidence: `internal/db/pcd1b4_certification_window_model_test.go` (exhaustive
 interleavings: main and four weaker fences have counterexamples, the selected
-fence has none, CW-M1..M8/M10/M14/M15 RED),
+fence has none, including the same-token stale-completion retry;
+CW-M1..M8/M10/M14/M15/M16 RED),
 `internal/db/pcd1b4_lifecycle_mutation_inventory_test.go` (source-derived
 lifecycle statements and destroyer call sites), real-Cassandra
 characterization `internal/integration/pcd1b4_certification_window_characterization_test.go`
 (R1-R11; R3b/R4/R5/R10/R10b/R11b UNSAFE today) and isolated 3-DC
 `scripts/pc-d1b4-certification-window-multidc-characterization.sh` (R12);
 `scripts/pc-d1b4-certification-window-guard-mutation-validation.sh` proves the
-guards bite (G1-G7 plus C1 on real Cassandra).
+guards bite (G1-G11 plus C1 on real Cassandra); the destroyer inventory also
+rejects aliases of destroyer primitives and raw `block_references` deletes.
 Side findings registered: `ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`,
 `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`, Phase 6 execute-time TOCTOU
 under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`. No productive runtime,

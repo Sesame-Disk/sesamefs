@@ -292,6 +292,18 @@ result. This
 invalidation guarantee depends on the global `SERIAL` domain prerequisite
 above; `LOCAL_SERIAL` cannot provide one global frontier.
 
+**Productive witness reads (frozen by PC-D1B.4).** The witness shape stays
+`(H, V)` and its validity predicate is unchanged, but every productive decision
+that treats the witness as authority must obtain `(head_commit_id,
+continuity_certified_head_commit_id, continuity_contract_version, deleted_at)`
+with a global `SERIAL` read, or evaluate it inside an LWT of the same domain
+(as the frontier advance does by predicating it). A `LOCAL_QUORUM` observation
+is never authority: once destruction intents exist, it can be a stale copy of a
+witness that an intent in another DC already cleared
+([PC-D1B-CERTIFICATION-WINDOW-FENCE.md](PC-D1B-CERTIFICATION-WINDOW-FENCE.md)
+§10.7). The first productive consumer owns the matching
+`SERIAL → LOCAL_QUORUM` mutation (CW-M17) and its 3-DC evidence.
+
 ### GC-authority interleaving (mandatory baseline rule)
 
 The HEAD conditional is necessary but not sufficient. The baseline must not
