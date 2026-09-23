@@ -54,7 +54,7 @@ M14a bypasses reachable fs_object identity verification and M14b bypasses
 commit H-to-R identity verification. M15a weakens SHA-1-only
 `identity_unproven`; M15b permits a paired mapping to disagree. The 15 frozen
 M1-M15 contracts execute as 17 targeted mutation legs, while M16/M17 retain
-their claim-lifecycle meaning. Root and directory-entry fs_ids are consumed byte-for-byte or rejected as `malformed_tree`; the Cassandra zero-block file form is accepted only after verifying its exact durable identity claim. The isolated 3-DC certifier harness also covers
+their claim-lifecycle meaning. Root and directory-entry fs_ids are consumed byte-for-byte or rejected as `malformed_tree`; the Cassandra zero-block file form is accepted only after verifying its exact durable identity claim. Seafile's `EMPTY_SHA1` is never uploaded and has no fs_objects row; when a verified commit or directory entry binds it, the certifier treats that subtree as empty. The isolated 3-DC certifier harness also covers
 complete fs_object A/B and commit H-to-R1/R2 divergence, unavailable global
 SERIAL identity authority, partial rows, exact-P bytes, EACH_QUORUM liveness, GC
 authority, moving HEAD, and ambiguous witness settlement. These controls close the certifier correctness

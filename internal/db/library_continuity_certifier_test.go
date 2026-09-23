@@ -502,3 +502,18 @@ func TestContinuityIdentityVerificationFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestWalkContinuityTreeTreatsEmptySHA1AsEmptyReachableTree(t *testing.T) {
+	// EMPTY_SHA1 has no fs_objects row by design; a nil session proves the
+	// walker never reads or claims a synthetic object for it.
+	dependencies, err := (&DB{}).walkContinuityTree(context.Background(), "org", "library", PlainBlockRepresentationID, continuityEmptyFSID, DefaultLibraryBaselineCertificationLimits)
+	if err != nil || dependencies.fsObjects != 0 || len(dependencies.fsByBlock) != 0 || len(dependencies.projections) != 0 {
+		t.Fatalf("EMPTY_SHA1 root walk = %+v, %v; want an empty reachable tree", dependencies, err)
+	}
+	if continuityEmptyFSID != strings.Repeat("0", 40) {
+		t.Fatalf("continuityEmptyFSID = %q, want Seafile EMPTY_SHA1", continuityEmptyFSID)
+	}
+	if err := validateContinuityFSID(strings.Repeat("0", 39)); err == nil {
+		t.Fatal("short all-zero id accepted as EMPTY_SHA1")
+	}
+}

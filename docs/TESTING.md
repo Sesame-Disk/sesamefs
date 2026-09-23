@@ -1095,7 +1095,7 @@ the meanings of M16/M17 remain unchanged. SHA-1-only files that require
 unauthoritative mapping must return
 `NOT_CERTIFIED/identity_unproven` before physical or liveness work.
 
-Real-Cassandra certifier edge tests cover an authority-verified zero-block file, missing authority for that shape, a present but unauthoritative SHA-1 mapping, and whitespace-bound root/directory-entry IDs; rejection cases assert no witness or physical/liveness work.
+Real-Cassandra certifier edge tests cover an authority-verified zero-block file, missing authority for that shape, a present but unauthoritative SHA-1 mapping, whitespace-bound root/directory-entry IDs, and Seafile's `EMPTY_SHA1` (`000...000`) as an authority-verified empty root and as empty file/directory entries with no `fs_objects` row; an `EMPTY_SHA1` root whose commit claim is missing or conflicting fails closed. Rejection cases assert no witness or physical/liveness work. The 3-DC runner executes these edge tests in its main certifier leg as well.
 
 The 3-DC runner uses `LOCAL_SERIAL` client sessions while metadata claims,
 HEAD/witness CAS, and ambiguous-settlement reads pin global `SERIAL`. It proves

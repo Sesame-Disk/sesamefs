@@ -269,7 +269,7 @@ docker exec "$RUNNER" env \
     W2_POST_HEAD_3DC_HOSTS=dc-na=cassandra-na:9042,dc-eu=cassandra-eu:9042,dc-asia=cassandra-asia:9042 \
     SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_EVIDENCE=1 \
     go test -tags integration -count=1 ./internal/integration/ \
-        -run '^TestLibraryBaselineCertifier3DC$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v
+        -run '^TestLibraryBaselineCertifier(3DC|EmptySHA1RealCassandra|ZeroBlockFileRealCassandra|RejectsSHA1OnlyUnprovenMappingRealCassandra|RejectsWhitespaceBoundFSIDsOnRealCassandra)$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v
 
 PARTIAL_FS_RUN_ID="$(docker exec "$RUNNER" sh -c 'cat /proc/sys/kernel/random/uuid')"
 step "Prepare a globally complete reachable file, permanent fs: reference, and exact physical bytes"

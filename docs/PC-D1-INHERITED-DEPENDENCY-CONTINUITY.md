@@ -455,6 +455,12 @@ The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier evidence
   divergence and commit H-to-R1/R2 divergence fail before physical or
   liveness work and create no witness; unavailable global SERIAL identity
   authority returns UNKNOWN without a witness;
+- real-Cassandra edge evidence, also run in the 3-DC main leg, proving that an
+  authority-verified Seafile `EMPTY_SHA1` root certifies as an empty tree
+  (one commit, zero fs_objects/blocks/liveness/physical work) and that
+  `EMPTY_SHA1` file/directory entries need no fs_objects row, while an
+  `EMPTY_SHA1` root with a missing or conflicting commit claim fails closed
+  without a witness;
 - a real EACH_QUORUM outage leg that stops only the fixture's `dc-asia` node,
   confirms it is `DN` from `dc-na`, and verifies liveness-read failure returns
   `UNKNOWN` without a witness before restoring the node.

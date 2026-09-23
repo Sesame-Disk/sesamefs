@@ -229,3 +229,120 @@ func TestLibraryBaselineCertifierRejectsWhitespaceBoundFSIDsOnRealCassandra(t *t
 		}
 	})
 }
+
+const baselineCertifierEmptySHA1 = "0000000000000000000000000000000000000000"
+
+func TestLibraryBaselineCertifierEmptySHA1RealCassandra(t *testing.T) {
+	database := shareProjectionDBForTest(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	storageManager := storage.NewManager()
+
+	assertNoEmptySHA1Row := func(t *testing.T, libraryID string) {
+		t.Helper()
+		var fsID string
+		err := database.Session().Query(`SELECT fs_id FROM fs_objects WHERE library_id = ? AND fs_id = ?`,
+			libraryID, baselineCertifierEmptySHA1).Consistency(gocql.EachQuorum).Scan(&fsID)
+		if err != gocql.ErrNotFound {
+			t.Fatalf("EMPTY_SHA1 fs_objects row lookup = %q, %v; want no row", fsID, err)
+		}
+	}
+
+	t.Run("root", func(t *testing.T) {
+		orgID, libraryID, ownerID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+		head := "pc-d1b1-empty-root-" + uuid.NewString()
+		seedLibraryBaselineCertifierLibrary(t, database, orgID, libraryID, ownerID, head, 0)
+		seedLibraryBaselineCertifierCommit(t, database, libraryID, head, baselineCertifierEmptySHA1)
+		assertNoEmptySHA1Row(t, libraryID)
+
+		result := database.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
+		if result.Outcome != dbpkg.LibraryBaselineCertificationCertified || result.Reason != dbpkg.LibraryBaselineReasonApplied ||
+			result.CommitsWalked != 1 || result.FSObjectsWalked != 0 || result.UniqueBlocks != 0 ||
+			result.PermanentLivenessWrites != 0 || result.PhysicalRevalidations != 0 {
+			t.Fatalf("authoritative EMPTY_SHA1 root certification=%+v; want CERTIFIED with an empty reachable tree", result)
+		}
+		if currentHead, witness := readLibraryBaselineCertifierWitness(t, database, orgID, libraryID); currentHead != head || witness == nil || *witness != head {
+			t.Fatalf("EMPTY_SHA1 root witness head=%q certified=%v, want %q", currentHead, witness, head)
+		}
+	})
+
+	t.Run("directory entries", func(t *testing.T) {
+		orgID, libraryID, ownerID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+		head := "pc-d1b1-empty-entries-" + uuid.NewString()
+		rootFSID := baselineCertifierTestFSID("empty-entries-root-" + head)
+		now := time.Now().Unix()
+		entries, err := json.Marshal([]map[string]interface{}{
+			{"id": baselineCertifierEmptySHA1, "mode": 33188, "mtime": now, "name": "empty.txt"},
+			{"id": baselineCertifierEmptySHA1, "mode": 16384, "mtime": now, "name": "empty-dir"},
+		})
+		if err != nil {
+			t.Fatalf("marshal EMPTY_SHA1 entries: %v", err)
+		}
+		seedLibraryBaselineCertifierLibrary(t, database, orgID, libraryID, ownerID, head, 0)
+		seedLibraryBaselineCertifierCommit(t, database, libraryID, head, rootFSID)
+		w2PostHeadRetryEachQuorum(t, "seed EMPTY_SHA1-entry root", func() error {
+			return database.Session().Query(`INSERT INTO fs_objects (library_id, fs_id, obj_type, dir_entries, mtime) VALUES (?, ?, ?, ?, ?)`,
+				libraryID, rootFSID, "dir", string(entries), now).Consistency(gocql.EachQuorum).Exec()
+		})
+		if _, err := dbpkg.AuthorizeFSObjectProjection(context.Background(), database.Session(), dbpkg.FSObjectProjection{
+			LibraryID: libraryID, FSID: rootFSID, ObjectType: "dir", DirectoryEntries: string(entries),
+		}); err != nil {
+			t.Fatalf("authorize EMPTY_SHA1-entry root: %v", err)
+		}
+		assertNoEmptySHA1Row(t, libraryID)
+
+		result := database.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
+		if result.Outcome != dbpkg.LibraryBaselineCertificationCertified || result.Reason != dbpkg.LibraryBaselineReasonApplied ||
+			result.FSObjectsWalked != 1 || result.UniqueBlocks != 0 ||
+			result.PermanentLivenessWrites != 0 || result.PhysicalRevalidations != 0 {
+			t.Fatalf("EMPTY_SHA1 file/dir entries certification=%+v; want CERTIFIED with only the root walked", result)
+		}
+		if currentHead, witness := readLibraryBaselineCertifierWitness(t, database, orgID, libraryID); currentHead != head || witness == nil || *witness != head {
+			t.Fatalf("EMPTY_SHA1 entries witness head=%q certified=%v, want %q", currentHead, witness, head)
+		}
+	})
+
+	seedUnclaimedEmptyRootCommit := func(t *testing.T, libraryID, head string) {
+		t.Helper()
+		w2PostHeadRetryEachQuorum(t, "seed EMPTY_SHA1 commit source", func() error {
+			return database.Session().Query(`
+				INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+			`, libraryID, head, "", baselineCertifierEmptySHA1, uuid.NewString(), "pc-d1b1 certifier", time.Now().UTC()).Consistency(gocql.EachQuorum).Exec()
+		})
+	}
+	assertRejected := func(t *testing.T, orgID, libraryID, head string, reason dbpkg.LibraryBaselineCertificationReason) {
+		t.Helper()
+		result := database.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
+		if result.Outcome != dbpkg.LibraryBaselineCertificationNotCertified || result.Reason != reason ||
+			result.CommitsWalked != 0 || result.FSObjectsWalked != 0 ||
+			result.PermanentLivenessWrites != 0 || result.PhysicalRevalidations != 0 {
+			t.Fatalf("EMPTY_SHA1 root without matching commit authority=%+v; want NOT_CERTIFIED/%s", result, reason)
+		}
+		if _, witness := readLibraryBaselineCertifierWitness(t, database, orgID, libraryID); witness != nil {
+			t.Fatalf("EMPTY_SHA1 root without matching commit authority created witness %v", witness)
+		}
+	}
+
+	t.Run("missing commit claim", func(t *testing.T) {
+		orgID, libraryID, ownerID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+		head := "pc-d1b1-empty-unclaimed-" + uuid.NewString()
+		seedLibraryBaselineCertifierLibrary(t, database, orgID, libraryID, ownerID, head, 0)
+		seedUnclaimedEmptyRootCommit(t, libraryID, head)
+		assertRejected(t, orgID, libraryID, head, dbpkg.LibraryBaselineReasonIdentityUnproven)
+	})
+
+	t.Run("conflicting commit claim", func(t *testing.T) {
+		orgID, libraryID, ownerID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+		head := "pc-d1b1-empty-conflict-" + uuid.NewString()
+		seedLibraryBaselineCertifierLibrary(t, database, orgID, libraryID, ownerID, head, 0)
+		if _, err := dbpkg.AuthorizeCommitProjection(context.Background(), database.Session(), dbpkg.CommitProjection{
+			LibraryID: libraryID, CommitID: head, ParentID: "", RootFSID: baselineCertifierTestFSID("claimed-root-" + head),
+			CreatorID: uuid.NewString(), Description: "pc-d1b1 certifier", CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("claim H->R1: %v", err)
+		}
+		seedUnclaimedEmptyRootCommit(t, libraryID, head)
+		assertRejected(t, orgID, libraryID, head, dbpkg.LibraryBaselineReasonIdentityConflict)
+	})
+}

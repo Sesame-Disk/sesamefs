@@ -553,6 +553,10 @@ func readContinuityCommitProjectionContext(ctx context.Context, database *DB, li
 	return projection, nil
 }
 
+// continuityEmptyFSID is Seafile's EMPTY_SHA1: an empty library root, empty
+// directory, or empty file.
+const continuityEmptyFSID = "0000000000000000000000000000000000000000"
+
 // fs_id values are SHA-1 object identities. Once the commit or directory
 // projection has been verified, traversal must use that exact primary key;
 // normalizing it could redirect the walk to a different fs_objects row.
@@ -691,6 +695,13 @@ func (w *continuityTreeWalker) visit(fsID string, depth int) error {
 	}
 	if err := validateContinuityFSID(fsID); err != nil {
 		return err
+	}
+	// EMPTY_SHA1 is Seafile's canonical empty directory/file identity. Clients
+	// never upload it, so it has no fs_objects row or fs_object claim: the
+	// verified parent (commit root or directory entry) is the only authority
+	// and the reachable content below it is empty.
+	if fsID == continuityEmptyFSID {
+		return nil
 	}
 	if depth > w.limits.MaxDepth {
 		return fmt.Errorf("%w: depth %d exceeds %d", errContinuityTraversalLimit, depth, w.limits.MaxDepth)
