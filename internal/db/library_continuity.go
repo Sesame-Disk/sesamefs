@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -143,6 +144,42 @@ func AdvanceLibraryCertifiedFrontier(session *gocql.Session, orgID, libraryID, o
 	result := libraryContinuityCASResult(applied, err, state)
 	if err != nil {
 		return result, fmt.Errorf("advance library certified frontier: %w", err)
+	}
+	return result, nil
+}
+
+// CommitLibraryContinuityWitnessContext is the context-bound form of
+// CommitLibraryContinuityWitness. The LWT is intentionally identical: callers
+// must prove the complete dependency contract before entering this CAS, and an
+// ambiguous result remains UNKNOWN until the certifier settles it separately.
+func CommitLibraryContinuityWitnessContext(ctx context.Context, session *gocql.Session, orgID, libraryID, observedHead, contractVersion string) (LibraryContinuityCASResult, error) {
+	if session == nil {
+		return LibraryContinuityCASResult{Outcome: LibraryContinuityCASUnknown}, fmt.Errorf("%w: nil Cassandra session", ErrInvalidLibraryContinuityInput)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return LibraryContinuityCASResult{Outcome: LibraryContinuityCASUnknown}, err
+	}
+	if err := validateLibraryContinuityInput(orgID, libraryID, observedHead, contractVersion); err != nil {
+		return LibraryContinuityCASResult{Outcome: LibraryContinuityCASUnknown}, err
+	}
+
+	state := map[string]interface{}{}
+	applied, err := session.Query(`
+		UPDATE libraries
+		SET continuity_certified_head_commit_id = ?, continuity_contract_version = ?
+		WHERE org_id = ? AND library_id = ?
+		IF head_commit_id = ?
+		AND deleted_at = null
+	`, observedHead, contractVersion, orgID, libraryID, observedHead).
+		WithContext(ctx).
+		SerialConsistency(LibraryHeadSerialConsistency).
+		MapScanCAS(state)
+	result := libraryContinuityCASResult(applied, err, state)
+	if err != nil {
+		return result, fmt.Errorf("commit library continuity witness: %w", err)
 	}
 	return result, nil
 }

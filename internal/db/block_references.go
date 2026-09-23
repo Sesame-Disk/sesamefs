@@ -1667,3 +1667,213 @@ func (db *DB) GetBlockS3OrphanInfo(orgID, blockID string) (BlockS3OrphanInfo, bo
 	}
 	return info, true, nil
 }
+
+// readBlockRepairAuthorityContextFn is the context-aware equivalent of the
+// existing repair-authority seam. It preserves the same read ordering and
+// consistency selection while allowing a certification deadline to stop work.
+var readBlockRepairAuthorityContextFn = func(ctx context.Context, database *DB, orgID, blockID string, mode BlockAuthorityRead) (blockRepairAuthorityRow, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var row blockRepairAuthorityRow
+	var storageClass *string
+	var storageKey *string
+	err := mode.apply(database.Session().Query(`
+		SELECT representation_id, sha1, size_bytes, storage_class, storage_key, gc_state, gc_claim_id, gc_claimed_at, created_at
+		FROM blocks
+		WHERE org_id = ? AND block_id = ?
+	`, orgID, blockID).WithContext(ctx)).Scan(
+		&row.RepresentationID,
+		&row.Sha1,
+		&row.SizeBytes,
+		&storageClass,
+		&storageKey,
+		&row.GCState,
+		&row.GCClaimID,
+		&row.GCClaimedAt,
+		&row.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return blockRepairAuthorityRow{}, false, nil
+		}
+		return blockRepairAuthorityRow{}, false, err
+	}
+	if storageClass != nil {
+		row.StorageClass = *storageClass
+		row.StorageClassPresent = true
+	}
+	if storageKey != nil {
+		row.StorageKey = *storageKey
+		row.StorageKeyPresent = true
+	}
+	return row, true, nil
+}
+
+var blockRepairHasS3OrphanContextFn = func(ctx context.Context, database *DB, orgID, blockID string, mode BlockAuthorityRead) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var existingBlockID string
+	err := mode.apply(database.Session().Query(`
+		SELECT block_id FROM gc_s3_orphans WHERE org_id = ? AND block_id = ? LIMIT 1
+	`, orgID, blockID).WithContext(ctx)).Scan(&existingBlockID)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return existingBlockID != "", nil
+}
+
+func validateContinuityPhysicalAuthorityInput(blockID string, expected BlockPhysicalLocation) error {
+	if blockID != NormalizeBlockID(blockID) || !IsSHA256BlockID(blockID) {
+		return blockRepairPermanentError("block id %q is not a canonical lower-case SHA-256", blockID)
+	}
+	if !config.IsCanonicalStorageClassName(expected.StorageClass) {
+		return blockRepairPermanentError("non-canonical storage class %q for block %s", expected.StorageClass, blockID)
+	}
+	if expected.StorageKey == "" || strings.TrimSpace(expected.StorageKey) != expected.StorageKey {
+		return blockRepairPermanentError("invalid storage key for block %s", blockID)
+	}
+	return nil
+}
+
+func classifyContinuityPhysicalAuthority(row blockRepairAuthorityRow, found, hasOrphan bool, blockID string, expected BlockPhysicalLocation) (BlockRepairAuthorityOutcome, error) {
+	if !found {
+		if hasOrphan {
+			return BlockRepairAuthorityBlocked, fmt.Errorf("%w: block %s has an orphan fence without a canonical row", ErrBlockRepairBlocked, blockID)
+		}
+		return BlockRepairAuthorityChanged, fmt.Errorf("%w: canonical row for block %s is absent", ErrBlockRepairAuthorityChanged, blockID)
+	}
+	if row.CreatedAt == nil || !row.StorageClassPresent || !row.StorageKeyPresent || !config.IsCanonicalStorageClassName(row.StorageClass) || row.StorageKey == "" || strings.TrimSpace(row.StorageKey) != row.StorageKey {
+		return BlockRepairAuthorityPermanent, blockRepairPermanentError("block %s has incomplete or malformed canonical locator", blockID)
+	}
+	if row.SizeBytes < 0 {
+		return BlockRepairAuthorityPermanent, blockRepairPermanentError("block %s has invalid negative size", blockID)
+	}
+	activeClaim, repairClaim, ownershipErr := classifyBlockClaimOwnership(row.GCState, row.GCClaimID, row.GCClaimedAt)
+	if ownershipErr != nil {
+		return BlockRepairAuthorityPermanent, blockRepairPermanentError("block %s has malformed GC ownership: %v", blockID, ownershipErr)
+	}
+	current := BlockPhysicalLocation{StorageClass: row.StorageClass, StorageKey: row.StorageKey}
+	if current != expected {
+		return BlockRepairAuthorityChanged, fmt.Errorf("%w: block %s now names %s/%s", ErrBlockRepairAuthorityChanged, blockID, current.StorageClass, current.StorageKey)
+	}
+	if activeClaim || repairClaim {
+		return BlockRepairAuthorityBlocked, fmt.Errorf("%w: block %s has an active %s claim", ErrBlockRepairBlocked, blockID, strings.TrimSpace(row.GCState))
+	}
+	if hasOrphan {
+		return BlockRepairAuthorityBlocked, fmt.Errorf("%w: block %s has an S3 orphan fence", ErrBlockRepairBlocked, blockID)
+	}
+	return BlockRepairAuthorityAuthorized, nil
+}
+
+// ValidateLibraryContinuityPhysicalAuthorityContext revalidates one exact
+// canonical incarnation immediately after permanent liveness is established.
+// It deliberately uses global SERIAL and the GC lifecycle's row-then-orphan
+// read order; a successful result is the only physical authority accepted by
+// the baseline certifier.
+func (db *DB) ValidateLibraryContinuityPhysicalAuthorityContext(ctx context.Context, orgID, blockID string, expected BlockPhysicalLocation) (BlockRepairAuthorityOutcome, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return BlockRepairAuthorityUnknown, err
+	}
+	if err := validateContinuityPhysicalAuthorityInput(blockID, expected); err != nil {
+		return BlockRepairAuthorityPermanent, err
+	}
+	row, found, err := readBlockRepairAuthorityContextFn(ctx, db, orgID, blockID, BlockAuthorityStrong)
+	if err != nil {
+		return BlockRepairAuthorityUnknown, fmt.Errorf("read continuity block authority for %s: %w", blockID, err)
+	}
+	hasOrphan, err := blockRepairHasS3OrphanContextFn(ctx, db, orgID, blockID, BlockAuthorityStrong)
+	if err != nil {
+		return BlockRepairAuthorityUnknown, fmt.Errorf("read continuity S3 orphan fence for %s: %w", blockID, err)
+	}
+	return classifyContinuityPhysicalAuthority(row, found, hasOrphan, blockID, expected)
+}
+
+// AddBlockReferenceContext is the context-bound form of AddBlockReference.
+// The write remains a permanent LOCAL_QUORUM insert when ttlSeconds is zero.
+func (db *DB) AddBlockReferenceContext(ctx context.Context, orgID, blockID, referrer, libraryID string, ttlSeconds int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	query := db.Session().Query(`
+		INSERT INTO block_references (org_id, block_id, referrer, library_id, created_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, orgID, blockID, referrer, libraryID, now).WithContext(ctx).Consistency(BlockReferenceWriteConsistency)
+	if ttlSeconds > 0 {
+		query = db.Session().Query(`
+			INSERT INTO block_references (org_id, block_id, referrer, library_id, created_at)
+			VALUES (?, ?, ?, ?, ?) USING TTL ?
+		`, orgID, blockID, referrer, libraryID, now, ttlSeconds).WithContext(ctx).Consistency(BlockReferenceWriteConsistency)
+	}
+	return query.Exec()
+}
+
+// BlockReferenceExistsEachQuorumContext is the context-bound exact-reference
+// read used by the certifier to prove durable visibility in the same global
+// domain used by GC.
+func (db *DB) BlockReferenceExistsEachQuorumContext(ctx context.Context, orgID, blockID, referrer string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	var existing string
+	err := db.Session().Query(`
+		SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
+	`, orgID, blockID, referrer).WithContext(ctx).Consistency(SyncBlockReferenceCrossDCFallbackConsistency).Scan(&existing)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// BlockReferencePermanentExistsEachQuorumContext proves that the exact
+// fs:<library>:<fs_object> row is both visible in every datacenter and
+// non-expiring. A row with the right primary key but a different library_id is
+// treated as corrupt rather than silently repaired: the certifier must never
+// turn ambiguous provenance into authority.
+func (db *DB) BlockReferencePermanentExistsEachQuorumContext(ctx context.Context, orgID, blockID, referrer, libraryID string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	var storedLibraryID *string
+	var libraryTTL *int
+	var createdTTL *int
+	err := db.Session().Query(`
+		SELECT library_id, TTL(library_id), TTL(created_at)
+		FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
+	`, orgID, blockID, referrer).WithContext(ctx).Consistency(SyncBlockReferenceCrossDCFallbackConsistency).Scan(&storedLibraryID, &libraryTTL, &createdTTL)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if storedLibraryID == nil || strings.TrimSpace(*storedLibraryID) == "" {
+		return false, fmt.Errorf("block reference %s has no library_id", referrer)
+	}
+	if strings.TrimSpace(*storedLibraryID) != strings.TrimSpace(libraryID) {
+		return false, fmt.Errorf("block reference %s belongs to library %s, not %s", referrer, *storedLibraryID, libraryID)
+	}
+	libraryPermanent := libraryTTL == nil || *libraryTTL == -1
+	createdPermanent := createdTTL == nil || *createdTTL == -1
+	return libraryPermanent && createdPermanent, nil
+}

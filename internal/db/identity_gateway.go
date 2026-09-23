@@ -695,6 +695,30 @@ func wrapIdentityAuthorityReadError(operation string, err error) error {
 	return fmt.Errorf("%w: %s: %v", IdentityAuthorityUnavailable, operation, err)
 }
 
+// VerifyCommitProjection checks an existing commit projection against its
+// durable identity claim. It is read-only: certification must never create or
+// repair identity authority while proving a historical baseline.
+func VerifyCommitProjection(ctx context.Context, session *gocql.Session, input CommitProjection) (IdentityVerificationOutcome, error) {
+	if input.CreatedAt.IsZero() {
+		return IdentityVerificationUnknown, fmt.Errorf("%w: commit created_at is required for verification", ErrInvalidIdentityAuthorityInput)
+	}
+	p, err := validateCommitProjection(input)
+	if err != nil {
+		return IdentityVerificationUnknown, err
+	}
+	digest, err := CommitIdentityDigest(p.LibraryID, p.CommitID, p.ParentID, p.RootFSID, p.CreatorID, p.Description, p.CreatedAt)
+	if err != nil {
+		return IdentityVerificationUnknown, err
+	}
+	outcome, err := VerifyIdentityAuthority(ctx, session, p.LibraryID, IdentityKindCommit, p.CommitID, SupportedIdentityDigestVersion, digest)
+	if err != nil {
+		if errors.Is(err, ErrInvalidIdentityAuthorityInput) {
+			return IdentityVerificationUnknown, err
+		}
+		return IdentityVerificationUnknown, wrapIdentityAuthorityReadError("verify commit authority", err)
+	}
+	return outcome, nil
+}
 func VerifyFSObjectProjection(ctx context.Context, session *gocql.Session, input FSObjectProjection) (IdentityVerificationOutcome, error) {
 	p, digest, err := validateFSObjectProjection(input)
 	if err != nil {

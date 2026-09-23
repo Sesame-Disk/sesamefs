@@ -533,14 +533,16 @@ func TestP2PhysicalIdentityAuthorityGuard(t *testing.T) {
 		receiver string
 	}
 	wantValidations := map[expectedUse]int{
-		{file: "upload_reuse.go", symbol: "ResolveNeedsPutBlockStoreForPhase", receiver: "canonicalStore"}:  1,
-		{file: "upload_reuse.go", symbol: "StoreUploadedBlockForProbeForPhase", receiver: "canonicalStore"}: 1,
-		{file: "canonical_block_reader.go", symbol: "newCanonicalBlockReader", receiver: "store"}:           1,
-		{file: "worker.go", symbol: "(*Worker).processBlock", receiver: "resolved"}:                         1,
-		{file: "worker.go", symbol: "(*Worker).RecoverS3Orphans", receiver: "blockStore"}:                   1,
+		{file: "upload_reuse.go", symbol: "ResolveNeedsPutBlockStoreForPhase", receiver: "canonicalStore"}:        1,
+		{file: "upload_reuse.go", symbol: "StoreUploadedBlockForProbeForPhase", receiver: "canonicalStore"}:       1,
+		{file: "canonical_block_reader.go", symbol: "newCanonicalBlockReader", receiver: "store"}:                 1,
+		{file: "worker.go", symbol: "(*Worker).processBlock", receiver: "resolved"}:                               1,
+		{file: "worker.go", symbol: "(*Worker).RecoverS3Orphans", receiver: "blockStore"}:                         1,
+		{file: "library_continuity_certifier.go", symbol: "(*DB).CertifyLibraryBaseline", receiver: "blockStore"}: 1,
 	}
 	wantMintedValidations := map[expectedUse]int{
-		{file: "fs_helpers.go", symbol: "(*FSHelper).RegisterUploadedBlockTarget", receiver: "target.Store"}: 1,
+		{file: "library_continuity_certifier.go", symbol: "(*DB).CertifyLibraryBaseline", receiver: "blockStore"}: 1,
+		{file: "fs_helpers.go", symbol: "(*FSHelper).RegisterUploadedBlockTarget", receiver: "target.Store"}:      1,
 	}
 	validationCounts := map[expectedUse]int{}
 	mintedValidationCounts := map[expectedUse]int{}
