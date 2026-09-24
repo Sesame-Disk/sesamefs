@@ -36,6 +36,20 @@ follow-up, not a merge prerequisite for this decision PR, but is mandatory
 before GC activation or the productive consumer.
 No productive runtime or schema change; `GC_ENABLED=false` remains mandatory.
 
+## 2026-09-24 - PR #232 canonical-absence and writer-clock authority
+
+Third cross-audit correction for PC-D1B.4. CW-M31 makes local
+`CanonicalLibraryExists == false` non-authoritative for a fence bypass; only an
+explicit canonical-row `EACH_QUORUM` absence read mints `GlobalCanonicalAbsenceProof`.
+Its isolated 3-DC test creates dc-na-absent / dc-eu-present and the mutation
+weakening the proof read to LOCAL_QUORUM turns RED. CW-M32 extends CW-M29's
+clock-health lease to commit/fs_object/permanent-reference writers and
+Cassandra timestamp coordinators, with local admission and no new Cassandra
+round trip/Paxos. CW-M30 evidence now includes fixed block, commit and fs_object
+UUIDv5 vectors. Decision remains mergeable; PC-D1B.5 is the runtime follow-up,
+required before GC activation or a productive consumer. No productive runtime
+or schema change; `GC_ENABLED=false` remains mandatory.
+
 ## 2026-09-19 - Publish-repair dead-row cadence and tracking scope
 
 Ninth review of #225, documentation only.

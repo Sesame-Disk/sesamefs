@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-23 (PC-D1B.4 certification-window fence decision and characterization)
+**Last Updated**: 2026-09-24 (PC-D1B.4 cross-audit decision closure)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -6291,7 +6291,7 @@ retirement mechanism, and it is not a merge precondition for PR #228 or #229.
 
 ### ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01: A witness can be born over, or survive, the destruction of the state it certifies
 
-**Status**: 🟢 Decision closed / mergeable 2026-09-24 (CW-M29/CW-M30 contract and evidence frozen); PC-D1B.5 runtime OPEN as follow-up, mandatory before destructive GC activation and before the first productive consumer
+**Status**: 🟢 Decision closed / mergeable 2026-09-24 (CW-M29–CW-M32 contracts and evidence frozen); PC-D1B.5 runtime OPEN as follow-up, mandatory before destructive GC activation and before the first productive consumer
 **Severity**: High (P1) — certified-baseline correctness; dormant today (no production caller of the certifier or the witness, `GC_ENABLED=false`)
 **Affected**: `CertifyLibraryBaseline` witness settlement, `CommitLibraryContinuityWitness*`, `AdvanceLibraryCertifiedFrontier`, the identity-gateway source deletes and the GC `fs:` reference removal
 **Registered**: 2026-09-23, PC-D1B.4
@@ -6329,11 +6329,22 @@ timestamp-sending clients, and Cassandra coordinators that assign default write
 timestamps. W for a whole-row delete remains the maximum timestamp of every
 live regular cell the tombstone must dominate, including display metadata.
 
+CW-M31 closes the absent-row bypass: a local `CanonicalLibraryExists == false`
+is only a local observation and never mints a bypass capability. A
+`GlobalCanonicalAbsenceProof` is minted only when an explicit EACH_QUORUM read
+across the canonical row reports absence; errors/timeouts retain the item. The
+3-DC fixture covers dc-na absent / dc-eu present and verifies the global
+EACH_QUORUM read sees the remote row. CW-M32 assigns CW-M29 admission to every timestamp
+authority, not only GC: commit/fs_object/permanent-reference writers and
+Cassandra coordinators must not accept timestamped writes without current
+clock-health authority.
+
 The intent LWT compares observed E/P/S and the non-null immutable canonical
 `created_at` sentinel; canonical absence is NOT_APPLIED and must not create a
 partial row. Tokens derive from persisted durable queue `identity_at`; enqueue
 already persists its effective value and requeue preserves it. UUIDv5 now has
-an exact namespace UUID, byte encoding and known vector (CW-M30). V1 has no
+an exact namespace UUID, byte encoding, and block/commit/fs_object known vectors
+(CW-M30). V1 has no
 batch amortization, and an ambiguous reaffirmation may be repeated. Each successful
 destroyer completes with `DELETE pending[t] IF pending[t] = g`, so a stale
 attempt cannot clear a retry's protection. Queue items holding an entry leave
@@ -6344,19 +6355,22 @@ fence state. The certifier captures the fence before its final revalidation,
 refuses a busy library, and its CAS predicates the captured epoch. Witness
 shape stays `(H, V)` and validity is unchanged, but productive witness authority
 must be read at global SERIAL. Soft-delete, restore and hard delete need no
-change. The PC-D1B.4 decision is closed/mergeable; the P2 status/sequence and
-UUIDv5 identity contract are resolved. PC-D1B.5 is OPEN but does not have to
-exist before this decision PR merges. It remains required before
-activation/consumer. Evidence: exhaustive two-clock model, fixed UUIDv5 vector,
+change. The PC-D1B.4 decision is closed/mergeable; canonical-absence authority,
+writer-side clock admission, status/sequence, and UUIDv5 identity findings are
+resolved in the decision contract. PC-D1B.5 is OPEN but does not have to exist
+before this decision PR merges. It remains required before activation/consumer.
+Evidence: two-clock/writer-gate models, block/commit/fs_object UUIDv5 vectors,
 real-Cassandra absent-row/whole-row-W/future-tombstone characterizations,
-isolated 3-DC post-UNKNOWN local-only-state retry characterization, and
-source-derived lifecycle/destroyer/alias guards (G1-G14 and C1 mutations RED).
+isolated 3-DC post-UNKNOWN and local-absent/remote-present absence-proof tests,
+and lifecycle/destroyer/alias/clock/vector guards (G1-G15, G17-G18, isolated
+3-DC G16, and C1 RED).
 
 #### Remaining
 
 PC-D1B.5 implements the fence and its mutation contract (CW-M1..M16,
-CW-M18..CW-M30) exactly as scoped in the decision record, implements the
-CW-M29 clock-safety lease and the frozen UUIDv5 tuple, and inverts the UNSAFE
+CW-M18..CW-M32) exactly as scoped in the decision record, wires global absence
+proof and writer-side clock admission, implements the CW-M29 lease and the
+frozen UUIDv5 tuple, and inverts the UNSAFE
 characterization rows. It is the runtime follow-up and need not precede merging
 the decision PR, but it must land before destructive GC activation or the first
 productive consumer. Phase 5/6 fixes, mapping authority, soft-delete serialization

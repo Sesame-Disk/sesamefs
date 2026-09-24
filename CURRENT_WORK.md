@@ -1,6 +1,6 @@
 # Current Work - SesameFS
 
-**PC-D1B.4 certification-window lifecycle fence — cross-audit round 2 + executable characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
+**PC-D1B.4 certification-window lifecycle fence — cross-audit round 3 + executable characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
 Decision record: [docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md](docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md),
 `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01`. Only the destruction of
 witness-covered state (HEAD commit, reachable fs_object, permanent `fs:`
@@ -28,9 +28,12 @@ regressed clock health blocks destructive writes while retaining P for retry.
 Whole-row W covers every live regular cell, including display and reference
 metadata. Real Cassandra characterizes partial-row survival and same-clock
 future-tombstone poisoning (CW-M26/M28). Durable token derivation now freezes
-the RFC URL namespace UUID, exact field encodings and a fixed CW-M30 vector;
-enqueue persists effective `identity_at` and requeue preserves it, with no
-producer stamping change.
+the RFC URL namespace UUID, exact field encodings and block/commit/fs_object
+CW-M30 vectors; enqueue persists effective `identity_at` and requeue preserves
+it, with no producer stamping change. CW-M31 requires global `EACH_QUORUM` absence
+proof for any E/P/S bypass; a local `CanonicalLibraryExists` miss never mints
+authority. CW-M32 applies the clock-health lease to supported writers as well
+as GC.
 DLQ/expiry/operator paths abandon-by-takeover before an item leaves the queue;
 the pending map has a backpressure cap.
 Best-effort D4/D5 cleanups of commits proven never to be HEAD take a
@@ -43,21 +46,24 @@ covered state is library-scoped), no per-identity state.
 Evidence: `internal/db/pcd1b4_certification_window_model_test.go` (exhaustive
 interleavings: main and four weaker fences have counterexamples, the selected
 fence has none, including the same-token stale-completion retry, paused
-generations issuing late deletes, CW-M27 local-timestamp skip, and CW-M28
-future-tombstone poisoning, and CW-M29 independent-clock skew),
+generations issuing late deletes, CW-M27 local-timestamp skip, CW-M28
+same-clock future-tombstone poisoning, CW-M29 independent-clock skew, CW-M31
+global-absence proof requirements, and CW-M32 writer-side clock admission),
 `internal/db/pcd1b4_lifecycle_mutation_inventory_test.go` (source-derived
 lifecycle statements and destroyer call sites), real-Cassandra
 characterization `internal/integration/pcd1b4_certification_window_characterization_test.go`
 (R1-R11; R3b/R4/R5/R10/R10b/R11b UNSAFE today; CW-M11/M26/M28 evidence) and
 isolated 3-DC `scripts/pc-d1b4-certification-window-multidc-characterization.sh`
-(R12, CW-M23/M27);
+(R12, CW-M23/M27/M31 and G16 local-proof mutation);
 `scripts/pc-d1b4-certification-window-guard-mutation-validation.sh` proves the
-guards bite (G1-G14 plus C1 on real Cassandra); the destroyer inventory also
+guards bite (G1-G15/G17/G18 plus C1 on real Cassandra); G16 is the isolated-3DC
+global-to-local absence mutation. The destroyer inventory also
 rejects aliases of destroyer primitives and raw `block_references` deletes.
-Cross-audit round 2 closes the CW-M29 decision gap by freezing an enforceable
-fleet-wide clock-safety lease and testing the independent-clock counterexample;
-CW-M27, CW-M28, the P2 status/sequence and exact CW-M30 UUIDv5 namespace/vector
-are also closed. The PC-D1B.4 decision is now mergeable. PC-D1B.5 remains an
+Cross-audit rounds 2–3 close CW-M29's clock premise and CW-M31's global
+canonical-absence authority by freezing their proofs and model/3-DC evidence;
+CW-M27/M28, CW-M30's block/commit/fs_object vectors, the P2 status/sequence,
+and CW-M32 writer-side lease requirement are also closed as decision contracts.
+The PC-D1B.4 decision is now mergeable. PC-D1B.5 remains an
 OPEN runtime follow-up, not a prerequisite to merge #232; it is required before
 GC activation or a productive consumer. No productive runtime, schema,
 certifier, writer, GC, mapping-authority, consumer or PC-2 change.

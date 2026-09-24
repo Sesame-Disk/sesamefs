@@ -1155,3 +1155,55 @@ func TestPCD1B4ModelCrossNodeClockSkewCannotPoisonWriter(t *testing.T) {
 		t.Fatal("CW-M29: a clock regression must fail closed")
 	}
 }
+
+// CW-M32: the skew proof is only durable if every ordinary timestamp authority
+// remains gated after the GC tombstone. A missing lease must refuse supported
+// commit, fs_object and permanent-reference writes, not just future GC work.
+func TestPCD1B4ModelClockLeaseGatesEveryWriterAuthority(t *testing.T) {
+	valid := cwClockSafety{
+		gcNow: 105, slowWriterNow: 102, maxPairwiseSkew: 3, observedPairwiseSkew: 3,
+		timestampGuard: 1, epoch: 100, targetW: 99, healthy: true, monotonic: true,
+	}
+	if _, ok := valid.mintSafeGeneration(); !ok {
+		t.Fatal("CW-M32 setup: valid clock lease must allow a generation in its safe interval")
+	}
+
+	for _, authority := range []string{"commit materializer", "fs_object materializer", "permanent fs: writer"} {
+		invalid := valid
+		invalid.healthy = false // expired/stale lease after a GC tombstone.
+		if invalid.timestampAuthoritiesMayWrite() {
+			t.Fatalf("CW-M32: %s bypassed invalid clock-health admission", authority)
+		}
+	}
+}
+
+type cwCanonicalAbsenceReadScope uint8
+
+const (
+	cwCanonicalAbsenceLocal cwCanonicalAbsenceReadScope = iota
+	cwCanonicalAbsenceEachQuorum
+)
+
+// A local miss is not an absence capability: a library row can exist in a
+// different DC without being visible to this coordinator. The future
+// GlobalCanonicalAbsenceProof is minted only from a read covering every DC.
+func cwCanMintGlobalCanonicalAbsenceProof(scope cwCanonicalAbsenceReadScope, absent bool) bool {
+	return scope == cwCanonicalAbsenceEachQuorum && absent
+}
+
+func TestPCD1B4ModelCanonicalAbsenceRequiresGlobalRead(t *testing.T) {
+	localAbsent, remotePresent := true, true
+	globallyAbsent := !remotePresent
+	if !localAbsent || !remotePresent {
+		t.Fatal("CW-M31 precondition: local DC must miss while a remote DC retains the canonical row")
+	}
+	if cwCanMintGlobalCanonicalAbsenceProof(cwCanonicalAbsenceLocal, localAbsent) {
+		t.Fatal("CW-M31: local absence must not mint a global canonical-absence proof")
+	}
+	if cwCanMintGlobalCanonicalAbsenceProof(cwCanonicalAbsenceEachQuorum, globallyAbsent) {
+		t.Fatal("CW-M31: a remote canonical row must prevent proof even after a global read")
+	}
+	if !cwCanMintGlobalCanonicalAbsenceProof(cwCanonicalAbsenceEachQuorum, true) {
+		t.Fatal("CW-M31 liveness: a globally observed canonical absence may mint the capability")
+	}
+}

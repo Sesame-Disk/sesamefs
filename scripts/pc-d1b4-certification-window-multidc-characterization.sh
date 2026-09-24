@@ -15,6 +15,8 @@ RUNNER=sesamefs-pcd1b4-runner
 IMAGE=sesamefs-pcd1b4-gotest
 KEEP=0
 STOPPED=()
+ABSENCE_TARGET=""
+ABSENCE_BACKUP=""
 
 export CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX"
 export CASSANDRA_NA_HOST_PORT=0
@@ -33,9 +35,18 @@ done
 step() { echo "==> $*"; }
 fail() { echo "FAILED: $*" >&2; exit 1; }
 
+restore_absence_mutation() {
+    if [ -n "$ABSENCE_BACKUP" ] && [ -f "$ABSENCE_BACKUP" ]; then
+        mv -f "$ABSENCE_BACKUP" "$ABSENCE_TARGET"
+        ABSENCE_BACKUP=""
+        ABSENCE_TARGET=""
+    fi
+}
+
 cleanup() {
     local rc=$?
     set +e
+    restore_absence_mutation
     docker rm -f "$RUNNER" >/dev/null 2>&1 || true
     if [ "$KEEP" -eq 0 ]; then
         CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX" "${THREE_DC[@]}" down -v >/dev/null 2>&1 || true
@@ -150,6 +161,28 @@ run_phase() {
     rm -f "$log"
 }
 
+expect_red_phase() {
+    local phase="$1" test="$2" diagnostic="$3" log
+    log="$(mktemp)"
+    if docker exec "$RUNNER" env \
+        SESAMEFS_PCD1B4_3DC_PHASE="$phase" \
+        SESAMEFS_PCD1B4_3DC_RUN_ID="$RUN_ID" \
+        SESAMEFS_PCD1B4_3DC_HOSTS="$HOSTS" \
+        go test -tags integration -count=1 ./internal/integration/pcd1b4multidc/ \
+            -run "^${test}\$" -v >"$log" 2>&1; then
+        cat "$log"
+        rm -f "$log"
+        fail "$phase mutation stayed green"
+    fi
+    if ! grep -q -- "$diagnostic" "$log"; then
+        cat "$log"
+        rm -f "$log"
+        fail "$phase did not trip its targeted assertion: $diagnostic"
+    fi
+    echo "RED as required: $phase ($diagnostic)"
+    rm -f "$log"
+}
+
 step "Start the isolated Cassandra 3-DC fixture"
 CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX" "${THREE_DC[@]}" up -d
 for node in na eu asia; do wait_healthy "$node"; done
@@ -161,7 +194,7 @@ NETWORK="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{
 
 step "Build the branch-local test image and start the runner"
 docker build -f Dockerfile.gotest -t "$IMAGE" .
-docker run -d --name "$RUNNER" --network "$NETWORK" "$IMAGE" sleep 3600 >/dev/null
+docker run -d --name "$RUNNER" --network "$NETWORK" -v "$PWD":/build -w /build "$IMAGE" sleep 3600 >/dev/null
 
 step "Apply this branch's migrations to the isolated keyspace"
 docker exec "$RUNNER" env \
@@ -251,4 +284,34 @@ run_phase m27-retry TestPCD1B4UnknownReaffirmationRetry3DC
 step "m27-verify: the stale tombstone leaves the certified row present in every DC"
 run_phase m27-verify TestPCD1B4UnknownReaffirmationRetry3DC
 
-echo "PC-D1B.4 3-DC characterization passed: R12 witness settled after a remote acknowledged soft-delete, stale dc-asia LOCAL_QUORUM reader saw it valid, blind-DC gateway delete refused, converged row invalid while deleted, restore revived the witness; CW-M23 proves EACH_QUORUM is required. CW-M27's model covers partial EACH_QUORUM/UNKNOWN; this fixture reproduces the resulting local-only high-WRITETIME state and proves the retry must reaffirm globally."
+step "Disable hinted handoff, then leave only dc-eu running"
+for node in na eu asia; do docker exec "$PREFIX-$node" nodetool disablehandoff >/dev/null; done
+stop_nodes na asia
+wait_down eu na asia
+
+step "a31-seed: insert a canonical library in dc-eu only"
+run_phase a31-seed TestPCD1B4CanonicalAbsenceProof3DC
+
+step "a31-verify: restore dc-na/dc-asia without hints; local absence must not mint proof"
+start_nodes na asia
+for node in na eu asia; do wait_gossip_stable "$node"; done
+
+step "G16/CW-M31: weakening the GlobalCanonicalAbsenceProof source to LOCAL_QUORUM must turn the divergence test RED"
+ABSENCE_TARGET=internal/integration/pcd1b4multidc/certification_window_3dc_test.go
+ABSENCE_BACKUP="$ABSENCE_TARGET.pcd1b4bak.$$"
+cp "$ABSENCE_TARGET" "$ABSENCE_BACKUP"
+perl -0pi -e 's/(func pcd1b4CanonicalAbsenceProofConsistency\(\) gocql\.Consistency \{\r?\n\treturn gocql\.)EachQuorum/$1LocalQuorum/' "$ABSENCE_TARGET"
+cmp -s "$ABSENCE_TARGET" "$ABSENCE_BACKUP" && fail "CW-M31 local-consistency mutation did not apply"
+if ! grep -A1 'func pcd1b4CanonicalAbsenceProofConsistency' "$ABSENCE_TARGET" | grep -q 'return gocql.LocalQuorum'; then
+    fail "CW-M31 mutation did not replace the proof read's consistency"
+fi
+expect_red_phase a31-verify TestPCD1B4CanonicalAbsenceProof3DC "CW-M31: global absence proof consistency is not EACH_QUORUM"
+restore_absence_mutation
+
+step "a31-verify: the global EACH_QUORUM read sees the remote library and refuses absence proof (CW-M31)"
+run_phase a31-verify TestPCD1B4CanonicalAbsenceProof3DC
+for node in na eu asia; do
+    docker exec "$PREFIX-$node" nodetool enablehandoff >/dev/null
+done
+
+echo "PC-D1B.4 3-DC characterization passed: R12, CW-M23 EACH_QUORUM visibility, CW-M27 post-UNKNOWN local-only retry, CW-M31 local-absent/remote-present global-EACH_QUORUM proof, and G16 (EACH_QUORUM-to-LOCAL_QUORUM mutation RED). CW-M29/M32 clock safety and CW-M30 UUIDv5 vectors are model-characterized; runtime enforcement remains PC-D1B.5."

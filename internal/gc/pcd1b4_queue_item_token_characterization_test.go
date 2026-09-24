@@ -113,28 +113,17 @@ func encodePCD1B4TimestampMillis(at time.Time) []byte {
 	return encoded[:]
 }
 
-// TestPCD1B4DestructionTokenV1KnownVector freezes the namespace UUID, domain
-// tag, field order, UUID/time encoding and nested block-candidate encoding. The
-// runtime token derivation in PC-D1B.5 must produce this same durable value.
-func TestPCD1B4DestructionTokenV1KnownVector(t *testing.T) {
-	const namespaceV1 = "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
-	identityAt := time.Date(2024, time.January, 2, 3, 4, 5, 6_000_000, time.UTC)
-	item := QueueItem{
-		OrgID:      uuid.MustParse("00000000-0000-0000-0000-000000000001"),
-		LibraryID:  uuid.MustParse("00000000-0000-0000-0000-000000000002"),
-		ItemType:   ItemBlock,
-		ItemID:     "block-42",
-		IdentityAt: identityAt,
-		BlockGCCandidateIdentity: BlockGCCandidateIdentity{
-			Target:      BlockDeleteTarget{StorageClass: "hot-s3-na", StorageKey: "org/blocks/abc123"},
-			CandidateAt: identityAt,
-		},
+const pcd1b4DestructionTokenNamespaceV1 = "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
+
+func pcd1b4DestructionTokenV1(item QueueItem) string {
+	blockCandidate := []byte{}
+	if !item.BlockGCCandidateIdentity.Target.IsZero() || !item.BlockGCCandidateIdentity.CandidateAt.IsZero() {
+		blockCandidate = encodePCD1B4LengthDelimitedV1(
+			[]byte(item.BlockGCCandidateIdentity.Target.StorageClass),
+			[]byte(item.BlockGCCandidateIdentity.Target.StorageKey),
+			encodePCD1B4TimestampMillis(item.BlockGCCandidateIdentity.CandidateAt),
+		)
 	}
-	blockCandidate := encodePCD1B4LengthDelimitedV1(
-		[]byte(item.BlockGCCandidateIdentity.Target.StorageClass),
-		[]byte(item.BlockGCCandidateIdentity.Target.StorageKey),
-		encodePCD1B4TimestampMillis(item.BlockGCCandidateIdentity.CandidateAt),
-	)
 	name := encodePCD1B4LengthDelimitedV1(
 		[]byte("sesamefs/pcd1b4/destruction-token/v1"),
 		item.OrgID[:],
@@ -144,9 +133,49 @@ func TestPCD1B4DestructionTokenV1KnownVector(t *testing.T) {
 		encodePCD1B4TimestampMillis(item.IdentityAt),
 		blockCandidate,
 	)
-	got := uuid.NewSHA1(uuid.MustParse(namespaceV1), name).String()
-	const want = "6af2fa07-6d4b-565e-b9f7-29a17ebd5476"
-	if got != want {
-		t.Fatalf("CW-M30 destruction-token vector = %s, want %s", got, want)
+	return uuid.NewSHA1(uuid.MustParse(pcd1b4DestructionTokenNamespaceV1), name).String()
+}
+
+// TestPCD1B4DestructionTokenV1KnownVector freezes the namespace UUID, domain
+// tag, field order, UUID/time encoding, zero-length non-block candidate branch,
+// and nested block-candidate encoding. The runtime derivation must match every
+// vector so commit/fs_object QueueItems cannot drift on the production branch.
+func TestPCD1B4DestructionTokenV1KnownVector(t *testing.T) {
+	identityAt := time.Date(2024, time.January, 2, 3, 4, 5, 6_000_000, time.UTC)
+	orgID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	libraryID := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+	block := QueueItem{
+		OrgID: orgID, LibraryID: libraryID, ItemType: ItemBlock,
+		ItemID: "block-42", IdentityAt: identityAt,
+		BlockGCCandidateIdentity: BlockGCCandidateIdentity{
+			Target:      BlockDeleteTarget{StorageClass: "hot-s3-na", StorageKey: "org/blocks/abc123"},
+			CandidateAt: identityAt,
+		},
+	}
+	commit := QueueItem{OrgID: orgID, LibraryID: libraryID, ItemType: ItemCommit, ItemID: "commit-42", IdentityAt: identityAt}
+	fsObject := QueueItem{OrgID: orgID, LibraryID: libraryID, ItemType: ItemFSObject, ItemID: "fs-42", IdentityAt: identityAt}
+
+	vectors := []struct {
+		name string
+		item QueueItem
+		want string
+	}{
+		{name: "block_candidate", item: block, want: "6af2fa07-6d4b-565e-b9f7-29a17ebd5476"},
+		{name: "commit_zero_candidate", item: commit, want: "e69245e7-9a55-5765-be8c-46c519d4f359"},
+		{name: "fs_object_zero_candidate", item: fsObject, want: "dc3ef498-f802-53a1-a05b-178c0a7d36d0"},
+	}
+	for _, vector := range vectors {
+		vector := vector
+		t.Run(vector.name, func(t *testing.T) {
+			if got := pcd1b4DestructionTokenV1(vector.item); got != vector.want {
+				t.Errorf("CW-M30 destruction-token vector = %s, want %s", got, vector.want)
+			}
+			retried := vector.item
+			retried.QueuedAt = identityAt.Add(time.Hour)
+			retried.RetryCount++
+			if got, want := pcd1b4DestructionTokenV1(retried), pcd1b4DestructionTokenV1(vector.item); got != want {
+				t.Errorf("durable token changed across retry: got %s, want %s", got, want)
+			}
+		})
 	}
 }

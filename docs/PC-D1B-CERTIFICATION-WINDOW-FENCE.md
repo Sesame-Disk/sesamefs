@@ -1,9 +1,11 @@
 # PC-D1B.4 — Certification-window lifecycle fence: decision and characterization
 
 **Status:** architecture decision + executable characterization. **Decision
-MERGEABLE (2026-09-24)** after freezing CW-M29's cross-node clock bound and
-CW-M30's UUIDv5 identity vector. PC-D1B.5 is the runtime follow-up, not a
-prerequisite for merging this decision; it is required before destructive GC
+MERGEABLE (2026-09-24)** after freezing CW-M29/CW-M32's cross-node clock
+authorities, CW-M30's UUIDv5 identity vectors and CW-M31's global-absence
+capability.
+PC-D1B.5 is the runtime follow-up, not a prerequisite for merging this
+decision; it is required before destructive GC
 activation or a productive consumer. No productive runtime, schema, certifier,
 writer, GC, mapping-authority or consumer change.
 **Base:** `main@62a2c0e0` (PR #228 merged). **Runtime follow-up:** PC-D1B.5.
@@ -62,7 +64,9 @@ Destruction of witness-covered state while the canonical row exists
     certified state (§10.3).
 
 Proven-uncovered cleanups (D4/D5: commits proven never to be HEAD) take a
-ProvenUncoveredCleanup capability instead and write no fence state.
+ProvenUncoveredCleanup capability instead and write no fence state. A
+canonical-absence bypass uses `GlobalCanonicalAbsenceProof` from an `EACH_QUORUM` read;
+a local `CanonicalLibraryExists == false` never authorizes destruction.
 
 Productive witness authority: read only at global SERIAL (or inside an LWT of
 the same domain). A LOCAL_QUORUM witness observation never authorizes work.
@@ -374,10 +378,12 @@ IF continuity_destruction_epoch = :e_read
   `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01`: before GC activation a HEAD-less
   `libraries` row must count as canonically absent (or be cleaned) for every
   GC and restore decision.
-- APPLIED → the destroyer may write. Row absent → the destroyer may proceed
-  only with an independent canonical-absence proof (the existing
-  `LibraryGuardCanonicalMustBeAbsent` / post-`HardDeleteLibrary` guards).
-  UNKNOWN → do not destroy; retry with a new generation. An UNKNOWN intent
+- APPLIED → the destroyer may write. Row absent from a local
+  `CanonicalLibraryExists` read is **not** authority to bypass the fence. An
+  absent-row bypass requires `GlobalCanonicalAbsenceProof` minted from an
+  explicit `EACH_QUORUM` read of the canonical `libraries` row (§10.6); a local miss
+  can coexist with the row present in a remote DC (CW-M31).
+- UNKNOWN → do not destroy; retry with a new generation. An UNKNOWN intent
   cannot land after a later one: the next Paxos round on the partition
   finishes an in-flight proposal before its own.
 - **Token tuple (frozen).** UUIDv5 namespace is the exact UUID
@@ -397,7 +403,7 @@ IF continuity_destruction_epoch = :e_read
   `UnixMilli()`. The namespace, domain tag, field order, encodings and timestamp
   precision are persistent identity and may not vary by implementation.
 
-  Known vector (block item):
+  Known vectors (same organization, library and persisted timestamp):
 
   ```text
   namespace       = 6ba7b811-9dad-11d1-80b4-00c04fd430c8
@@ -410,9 +416,21 @@ IF continuity_destruction_epoch = :e_read
   storage_key     = "org/blocks/abc123"
   candidate_at    = 2024-01-02T03:04:05.006Z
   token           = 6af2fa07-6d4b-565e-b9f7-29a17ebd5476
+
+  ---
+  item_type       = "commit"
+  item_id         = "commit-42"
+  block_candidate = <zero-length field>
+  token           = e69245e7-9a55-5765-be8c-46c519d4f359
+
+  item_type       = "fs_object"
+  item_id         = "fs-42"
+  block_candidate = <zero-length field>
+  token           = dc3ef498-f802-53a1-a05b-178c0a7d36d0
   ```
 
-  `TestPCD1B4DestructionTokenV1KnownVector` freezes this vector (CW-M30).
+  `TestPCD1B4DestructionTokenV1KnownVector` freezes all three vectors and retry
+  stability (CW-M30).
 
   `identity_at` is read from the persisted durable queue row. `QueueItem.Identity()`
   is **not** the token: it carries only `IdentityAt` and the block candidate,
@@ -672,7 +690,7 @@ like the existing authorized projection tokens:
 | Capability | Minted only from | Who | Fence state |
 |---|---|---|---|
 | `DestructionIntentCapability` | an APPLIED intent for `(t, g)` | D1–D3 (GC commit/fs_object delete, `fs:` removal): durable queue items that are retried until done, so a crashed intent is always re-driven | epoch + `P[t] = g` |
-| `CanonicalAbsenceProof` | the existing canonical-absence guards (`LibraryGuardCanonicalMustBeAbsent`, post-`HardDeleteLibrary` children) | library cascade children, Phase 3/4 orphans | none (no row ⇒ no witness) |
+| `GlobalCanonicalAbsenceProof` | an explicit `Consistency(EACH_QUORUM)` read of the canonical `libraries` row returns absent in every DC; errors/timeout or a local `CanonicalLibraryExists == false` never mint it | library cascade children, Phase 3/4 orphans using `LibraryGuardCanonicalMustBeAbsent` as work classification only | none after global absence is proved (no row ⇒ no witness) |
 | `ProvenUncoveredCleanupCapability` | a proof that the target commit is not and can never become the canonical HEAD: its attempt-unique, server-minted, never-exposed id was never proposed, or its HEAD CAS definitively did not apply (`ErrLibraryHeadConflict`, `ErrLibraryHeadNotFound`, `ErrLibraryHeadUninitializable`), or it is an initial commit (empty parent, unpromotable by Sync) that lost to a different winning HEAD | D4 `cleanupFailedPublishDeleteCommitFn`, D5 `InitializeLibraryHeadIfUnset` discard and `DiscardLosingInitialCommit` | none |
 
 D4/D5 must **not** take intents. They are deliberately best-effort, with no
@@ -730,7 +748,9 @@ its certified content; every CERTIFIED result is backed by the stored witness.
 | `TestPCD1B4ModelStaleGenerationCannotDestroyLate` | replays the audit trace (G1 passes its fence and pauses; G2 takes over, destroys and completes; F re-materialized; certifier revalidates; G1's old delete lands before the CAS) and the stronger trace (G2 keeps F; G1 deletes the original version): both safe with the selected fence, RED under CW-M19 and CW-M20 respectively |
 | `TestPCD1B4ModelMutationContract` | CW-M1..M8, M10, M14, M15, M16, M19, M20, M21 each RED |
 | `TestPCD1B4ModelCrossNodeClockSkewCannotPoisonWriter` | fast-GC/slow-writer clocks cannot mint a future tombstone; absent, stale or regressed clock health fails closed (CW-M29) |
-| `TestPCD1B4DestructionTokenV1KnownVector` | exact UUIDv5 namespace/encoding maps the fixed durable block QueueItem to its frozen token (CW-M30) |
+| `TestPCD1B4ModelClockLeaseGatesEveryWriterAuthority` | commit, fs_object and permanent-reference timestamp authorities refuse writes after health expires (CW-M32) |
+| `TestPCD1B4ModelCanonicalAbsenceRequiresGlobalRead` | local absence with a remote-present row cannot mint `GlobalCanonicalAbsenceProof` (CW-M31) |
+| `TestPCD1B4DestructionTokenV1KnownVector` | exact UUIDv5 namespace/encoding maps fixed block, commit and fs_object durable QueueItems to their tokens; retry-only fields do not change the token (CW-M30) |
 
 ## 12. Mutation contract for PC-D1B.5
 
@@ -769,7 +789,9 @@ already proven meaningful by §11; PC-D1B.5 must reproduce it against real code.
 | CW-M27 | a retry skips global reaffirmation because its local `WRITETIME > S0` after a partial EACH_QUORUM attempt returned UNKNOWN | 3-DC: stale tombstone leaves the certified row absent in another DC | exhaustive model + isolated 3-DC |
 | CW-M28 | a destroyer mints `g > W` while `g` is ahead of wall clock instead of postponing | real Cassandra: a normal successful rematerialization remains hidden by the future row tombstone | single-node Cassandra + model |
 | CW-M29 | omit/understate fleet-wide `Δ`, accept unknown/stale clock health, or exclude a timestamp source | a fast GC clock legally emits `g` under local now but ahead of a slow writer; the later successful materialization remains hidden | two-clock model |
-| CW-M30 | change UUIDv5 namespace, domain tag, field order, length encoding, millisecond precision, or candidate encoding | the frozen durable block QueueItem vector changes from `6af2fa07-6d4b-565e-b9f7-29a17ebd5476` | exact known vector |
+| CW-M30 | change UUIDv5 namespace, domain tag, field order, length encoding, millisecond precision, or block/non-block candidate encoding | one of the frozen block/commit/fs_object QueueItem vectors changes | three exact known vectors |
+| CW-M31 | mint `GlobalCanonicalAbsenceProof` from a local `CanonicalLibraryExists == false` instead of an explicit EACH_QUORUM absence read | 3-DC: dc-na sees absent while dc-eu retains the library; local proof would authorize a fence-bypass destroy | model + isolated 3-DC |
+| CW-M32 | a materializer/reference writer bypasses its expired or unknown `ClockSafetyLease` | a successful client/coordinator write with a regressed clock can remain hidden by the earlier GC tombstone | writer-authority model |
 
 ## 13. Witness shape
 
@@ -834,9 +856,9 @@ No speculative field becomes mandatory. The stored witness stays `(H, V)`.
 | Dimension | Cost |
 |---|---|
 | Certifier | +0 LWT; the final state read becomes a SERIAL read (+1 Paxos read round, cold path); one extra CAS predicate column; write-time reads of every covered row in the final pass; when S0 is non-null, an `EACH_QUORUM` reaffirmation write plus re-read for every covered row on each attempt |
-| Destroyers | For D1–D3, +2 global-SERIAL LWTs per destructive GC `QueueItem` on the library partition (intent, completion), plus a SERIAL read or CAS retry when the fence values moved, one verification read per target, and a fresh `ClockSafetyLease` check before mint/write. No batch amortization in v1: `DequeueBatch` has no durable batch identity, and a durable batch/membership record is a later optimization if metrics require it. D4/D5: 0 (capability from an existing proof) |
+| Destroyers | For D1–D3, +2 global-SERIAL LWTs per destructive GC `QueueItem` on the library partition (intent, completion), plus a SERIAL read or CAS retry when the fence values moved, one verification read per target, and a fresh `ClockSafetyLease` check before mint/write. A `GlobalCanonicalAbsenceProof` costs one explicit EACH_QUORUM read on its guarded absence path. No batch amortization in v1: `DequeueBatch` has no durable batch identity, and a durable batch/membership record is a later optimization if metrics require it. D4/D5: 0 (capability from an existing proof) |
 | Certifier reaffirmation | one `EACH_QUORUM` write per covered row per certification attempt while S0 is non-null; ambiguous attempts do not establish proof and retries may repeat the writes; 0 when S0 is null |
-| Hot path (uploads, RecvFS/PutCommit, HEAD CAS) | 0 new operations, 0 new predicates |
+| Hot path (uploads, RecvFS/PutCommit, HEAD CAS) | 0 new Cassandra round trips, 0 new Paxos/predicates; one local cached `ClockSafetyLease` admission before each timestamped identity/reference CQL write |
 | Read amplification | certifier: the SERIAL capture and write times of covered rows (folded into the existing final-pass reads), plus a re-read of each reaffirmed row; destroyers: one verification read per target (with its write time) |
 | Write amplification | destroyers: the 2 LWTs per item; per-destruction witness clear. Certifier: one `EACH_QUORUM` reaffirmation per covered row per attempt while S0 is non-null; an ambiguous retry may repeat it |
 | Fan-out | 1 (library-scoped keys, §6) |
@@ -854,9 +876,9 @@ docker run --rm -v "$PWD":/build -w /build <gotest-image> go test ./internal/db 
 docker run --rm -v "$PWD":/build -w /build <gotest-image> go test ./internal/gc -run PCD1B4 -v
 # single-node real-Cassandra characterization (Docker Compose test stack)
 docker compose --profile test run --rm --build go-integration-test
-# isolated 3-DC (R12, CW-M23 consistency, CW-M27 partial-UNKNOWN retry); owns sesamefs-pcd1b4-* resources only
+# isolated 3-DC (R12, CW-M23, CW-M27 retry, CW-M31 global-absence authority); owns sesamefs-pcd1b4-* resources only
 bash scripts/pc-d1b4-certification-window-multidc-characterization.sh
-# the guards bite: G1-G14 source/model mutations, plus C1 on real Cassandra
+# the guards bite: G1-G15, G17 and G18 source/model mutations, plus C1 on real Cassandra
 bash scripts/pc-d1b4-certification-window-guard-mutation-validation.sh [--with-cassandra]
 ```
 
@@ -867,8 +889,12 @@ fence without its epoch predicate (G6), a model whose current runtime is
 silently fenced (G7), an aliased destroyer primitive (G8), a new destroyer
 wrapper (G9), a raw `DELETE FROM block_references` (G10), a
 generation-blind completion (G11), destructive writes at a current timestamp
-(G12), removal of the cross-node skew margin (G13), and UUIDv5 namespace drift
-(G14) each turn their guard RED for the stated reason; with
+(G12), removal of the cross-node skew margin (G13), UUIDv5 namespace drift
+(G14), local-only canonical-absence proof (G15), writer clock-health bypass
+(G17), and non-block token-encoding drift (G18) each turn their guard RED for
+the stated reason. The isolated 3-DC script
+also mutates the global EACH_QUORUM proof read to LOCAL_QUORUM (G16) and requires its
+absent-local/present-remote characterization to turn RED. With
 `--with-cassandra`, dropping `deleted_at = null` from the witness CAS turns the
 R1 characterization RED on real Cassandra (C1).
 
@@ -886,13 +912,20 @@ before merging this decision PR.
 **Scope (exact):**
 1. Next available migration (`028` if #233's `027_block_mapping_authority_claims.cql` lands first): the three fence columns.
 2. `internal/db`: intent/completion/capture primitives (global SERIAL,
-   observed E/P/S plus the canonical non-null `created_at` existence
-   predicate, tri-state outcomes); typed intent capability.
+    observed E/P/S plus the canonical non-null `created_at` existence
+    predicate, tri-state outcomes); typed intent capability; mint
+   `GlobalCanonicalAbsenceProof` only from an explicit canonical-row
+   `EACH_QUORUM` read whose absence result covers every DC.
 3. Identity gateway: destructive deletes and `fs:` reference removal require
    one of the three capabilities of §10.6 as a parameter; new
    `VerifiedReaffirmationCapability` and the reaffirmation writers of §10.3.1
    (commit, fs_object, permanent `fs:` reference), `EACH_QUORUM`, explicit
-   timestamp, full projection, inventoried.
+   timestamp, full projection, inventoried. All supported commit/fs_object and
+   permanent `fs:` timestamped materializers also require a local cached
+   `ClockSafetyLease` admission before CQL; an expired/unknown lease refuses
+   the write. Cassandra coordinators that assign default timestamps must be
+   fenced by the same fleet clock-health provider; pin the timestamp authority
+   used by every relevant statement rather than relying on driver defaults.
 4. GC: derive tokens from each persisted durable queue tuple (do not expand
    producers merely to stamp in-memory `IdentityAt`); D1–D3 acquire a fresh,
    valid `ClockSafetyLease` before an intent/generation, then mint `g` above E
@@ -905,7 +938,9 @@ before merging this decision PR.
    on NOT_APPLIED; DLQ exhaustion, DLQ expiry and operator paths
    abandon-by-takeover before an item leaves the queue; backpressure caps P.
 5. D4/D5 take `ProvenUncoveredCleanupCapability` minted only from their
-   definitive never-HEAD outcomes; they write no fence state.
+   definitive never-HEAD outcomes; they write no fence state. Library-cascade
+   children and Phase 3/4 orphan bypasses require `GlobalCanonicalAbsenceProof`;
+   local `CanonicalLibraryExists` results remain non-authoritative.
 6. Certifier: SERIAL capture of (E, P, S) before the final pass, busy refusal
    with a new reason, gateway `EACH_QUORUM` reaffirmation of every covered row
    whenever S0 is non-null (regardless of local WRITETIME; fail closed and
@@ -914,14 +949,15 @@ before merging this decision PR.
 7. `AdvanceLibraryCertifiedFrontier` epoch predicate.
 8. Invert the UNSAFE characterization rows; extend the lifecycle inventory
    guard with the fence roles (CW-M7, CW-M9); a mutation runner covering
-   CW-M1..M16 and CW-M18..M30 (CW-M17 belongs to the consumer PR); the 3-DC
-   script covers CW-M8, CW-M13, CW-M23 and the partial-UNKNOWN retry proof
-   CW-M27. CW-M28 must invert the real-Cassandra same-clock future-tombstone
-   poisoning characterization; CW-M29 must require the fleet skew lease and
-   margin; CW-M30 must preserve the known UUIDv5 vector.
+   CW-M1..M16 and CW-M18..M32 (CW-M17 belongs to the consumer PR); the 3-DC
+   script covers CW-M8, CW-M13, CW-M23, CW-M27 and CW-M31. CW-M28 must invert
+   the real-Cassandra same-clock future-tombstone poisoning characterization;
+   CW-M29 must require the fleet skew lease and margin; CW-M30 must preserve
+   all known UUIDv5 vectors; CW-M31 must reject local-absence authority; CW-M32
+   must fence each writer-side timestamp authority on invalid health.
 
 **Acceptance criteria:** every §8 UNSAFE row inverted on real Cassandra; SAFE
-rows unchanged; CW-M1..M16 and CW-M18..CW-M30 RED for their stated reason; a
+rows unchanged; CW-M1..M16 and CW-M18..CW-M32 RED for their stated reason; a
 real-Cassandra leg in which a paused generation's late delete lands after a
 takeover and after certification without breaking the witness; isolated 3-DC green;
 full short suite, race, vet and Compose integration green; no hot-path

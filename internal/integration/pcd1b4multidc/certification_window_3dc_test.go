@@ -210,6 +210,10 @@ func fileVisible(t *testing.T, database *dbpkg.DB, f fixture) bool {
 	return true
 }
 
+func pcd1b4CanonicalAbsenceProofConsistency() gocql.Consistency {
+	return gocql.EachQuorum
+}
+
 // TestPCD1B4CertificationWindow3DC characterizes R12 on main@62a2c0e0:
 //
 //	prepare  all DCs up: a certifiable library (commit + root + zero-block file)
@@ -298,7 +302,7 @@ func TestPCD1B4CertificationWindow3DC(t *testing.T) {
 			t.Fatal("merge: nothing destroyed the tree in this leg; the revived witness is true only by accident (see R10)")
 		}
 
-	case "rprepare", "rdegrade", "rverify":
+	case "rprepare", "rdegrade", "rverify", "m27-prepare", "m27-unknown", "m27-retry", "m27-verify", "a31-seed", "a31-verify":
 		t.Skip("reaffirmation phases belong to TestPCD1B4ReaffirmationConsistency3DC")
 	default:
 		t.Fatalf("%s=%q, want prepare, degrade, certify or merge", phaseEnv, phase)
@@ -384,7 +388,7 @@ func TestPCD1B4ReaffirmationConsistency3DC(t *testing.T) {
 				t.Fatalf("rverify: LOCAL_QUORUM-reaffirmed row visible in %s = %v, want %v (CW-M23: it survives only where it was reaffirmed)", dc, got, wantLocal)
 			}
 		}
-	case "prepare", "degrade", "certify", "merge":
+	case "prepare", "degrade", "certify", "merge", "a31-seed", "a31-verify", "m27-prepare", "m27-unknown", "m27-retry", "m27-verify":
 		t.Skip("certification-window phases belong to TestPCD1B4CertificationWindow3DC")
 	default:
 		t.Fatalf("%s=%q is not a reaffirmation phase", phaseEnv, phase)
@@ -483,9 +487,73 @@ func TestPCD1B4UnknownReaffirmationRetry3DC(t *testing.T) {
 				t.Fatalf("CW-M27: after UNKNOWN then successful EACH_QUORUM retry, stale tombstone removed the certified identity in %s", dc)
 			}
 		}
-	case "prepare", "degrade", "certify", "merge", "rprepare", "rdegrade", "rverify":
+	case "prepare", "degrade", "certify", "merge", "rprepare", "rdegrade", "rverify", "a31-seed", "a31-verify":
 		t.Skip("other certification-window phases belong to their dedicated 3-DC characterization")
 	default:
 		t.Fatalf("unexpected CW-M27 phase %q", phase)
+	}
+}
+
+// TestPCD1B4CanonicalAbsenceProof3DC shows that a LOCAL_QUORUM miss cannot
+// authorize a capability which bypasses the per-library fence. The test writes
+// a canonical library row in dc-eu while dc-na is down, then compares dc-na's
+// ordinary local absence observation with an EACH_QUORUM read that obtains a
+// quorum in every DC. A failed/unavailable read cannot mint an absence
+// capability.
+func TestPCD1B4CanonicalAbsenceProof3DC(t *testing.T) {
+	phase := strings.TrimSpace(os.Getenv(phaseEnv))
+	if phase == "" {
+		t.Skipf("%s is not set; run scripts/pc-d1b4-certification-window-multidc-characterization.sh", phaseEnv)
+	}
+	f := newFixture(t)
+	orgID := uuid.NewSHA1(uuid.MustParse(f.orgID), []byte("canonical-absence-proof-org")).String()
+	libraryID := uuid.NewSHA1(uuid.MustParse(f.libraryID), []byte("canonical-absence-proof-library")).String()
+
+	switch phase {
+	case "a31-seed":
+		eu := connect(t, "dc-eu")
+		now := time.Now().UTC()
+		retry(t, "seed canonical library in dc-eu only", func() error {
+			return eu.Session().Query(`
+				INSERT INTO libraries (org_id, library_id, name, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?)
+			`, orgID, libraryID, "pc-d1b4-canonical-absence", now, now).Consistency(gocql.LocalQuorum).Exec()
+		})
+	case "a31-verify":
+		na, eu := connect(t, "dc-na"), connect(t, "dc-eu")
+		localExists, err := gcpkg.NewCassandraStore(na).CanonicalLibraryExists(uuid.MustParse(orgID), uuid.MustParse(libraryID))
+		if err != nil {
+			t.Fatalf("local CanonicalLibraryExists in dc-na: %v", err)
+		}
+		remoteExists, err := gcpkg.NewCassandraStore(eu).CanonicalLibraryExists(uuid.MustParse(orgID), uuid.MustParse(libraryID))
+		if err != nil {
+			t.Fatalf("local CanonicalLibraryExists in dc-eu: %v", err)
+		}
+		if localExists || !remoteExists {
+			t.Fatalf("CW-M31 precondition: want dc-na absent / dc-eu present; got na=%v eu=%v", localExists, remoteExists)
+		}
+		if pcd1b4CanonicalAbsenceProofConsistency() != gocql.EachQuorum {
+			t.Fatal("CW-M31: global absence proof consistency is not EACH_QUORUM")
+		}
+
+		var found string
+		err = na.Session().Query(`
+			SELECT library_id FROM libraries WHERE org_id = ? AND library_id = ?
+		`, orgID, libraryID).Consistency(pcd1b4CanonicalAbsenceProofConsistency()).Scan(&found)
+		if errors.Is(err, gocql.ErrNotFound) {
+			t.Fatal("CW-M31: the global proof read must see a canonical row retained in dc-eu")
+		}
+		if err != nil {
+			t.Fatalf("global EACH_QUORUM canonical-row proof read: %v", err)
+		}
+		if found != libraryID {
+			t.Fatalf("CW-M31: global proof read returned %q, want remotely present library %s", found, libraryID)
+		}
+		// No global absence proof exists, therefore this fixture must not
+		// authorize the GlobalCanonicalAbsenceProof bypass or destroy anything.
+	case "prepare", "degrade", "certify", "merge", "rprepare", "rdegrade", "rverify", "m27-prepare", "m27-unknown", "m27-retry", "m27-verify":
+		t.Skip("other certification-window phases belong to their dedicated 3-DC characterization")
+	default:
+		t.Fatalf("unexpected CW-M31 phase %q", phase)
 	}
 }

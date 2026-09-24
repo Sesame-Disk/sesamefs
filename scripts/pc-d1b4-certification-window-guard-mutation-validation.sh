@@ -165,6 +165,21 @@ expect_red "G13 missing cross-node clock-skew margin" "CW-M29: with no safe inte
 mutate internal/gc/pcd1b4_queue_item_token_characterization_test.go 's/6ba7b811-9dad-11d1-80b4-00c04fd430c8/6ba7b811-9dad-11d1-80b4-00c04fd430c9/'
 expect_red "G14 UUIDv5 namespace drift" "CW-M30 destruction-token vector" '^TestPCD1B4DestructionTokenV1KnownVector$' ./internal/gc
 
+# G15/CW-M31: replacing the global absence proof with a local row miss must
+# authorize a false absence in the model and turn its assertion RED.
+mutate internal/db/pcd1b4_certification_window_model_test.go 's/return scope == cwCanonicalAbsenceEachQuorum && absent/return absent/'
+expect_red "G15 local absence mints global capability" "CW-M31: local absence must not mint a global canonical-absence proof" '^TestPCD1B4ModelCanonicalAbsenceRequiresGlobalRead$'
+
+# G17/CW-M32: a timestamp writer cannot bypass a stale/unknown clock-health
+# lease merely because the GC-side skew calculation was safe earlier.
+mutate internal/db/pcd1b4_certification_window_model_test.go 's/return c\.healthy && c\.monotonic && c\.maxPairwiseSkew >= 0 && c\.observedPairwiseSkew <= c\.maxPairwiseSkew/return true/'
+expect_red "G17 writer bypasses clock-health admission" "CW-M32: commit materializer bypassed invalid clock-health admission" '^TestPCD1B4ModelClockLeaseGatesEveryWriterAuthority$'
+
+# G18/CW-M30: replacing the required zero-length candidate field for
+# non-block items with an encoded empty candidate must change their token.
+mutate internal/gc/pcd1b4_queue_item_token_characterization_test.go 's/blockCandidate := \[\]byte\{\}/blockCandidate := encodePCD1B4LengthDelimitedV1([]byte{}, []byte{}, encodePCD1B4TimestampMillis(time.Time{}))/'
+expect_red "G18 non-block candidate encoding drift" "CW-M30 destruction-token vector" '^TestPCD1B4DestructionTokenV1KnownVector$' ./internal/gc
+
 if [ "$WITH_CASSANDRA" -eq 1 ]; then
     # C1: a witness CAS without the deleted_at predicate changes R1 on real Cassandra.
     mutate internal/db/library_continuity.go 's/(func CommitLibraryContinuityWitnessContext.*?IF head_commit_id = \?.*?)\n\t\tAND deleted_at = null/$1/s'
