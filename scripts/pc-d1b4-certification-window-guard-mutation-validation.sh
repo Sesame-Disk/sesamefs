@@ -89,6 +89,7 @@ docker run -d --name "$RUNNER" "${network_args[@]}" -v "$PWD":/build -w /build "
 
 echo "==> baseline: every PC-D1B.4 guard is green"
 docker exec "$RUNNER" go test ./internal/db -count=1 -run 'PCD1B4' >/dev/null || fail "baseline PC-D1B.4 guards are not green"
+docker exec "$RUNNER" go test ./internal/gc -count=1 -run 'PCD1B4' >/dev/null || fail "baseline PC-D1B.4 token/vector tests are not green"
 
 # G1: a new soft-delete statement outside the inventory.
 append internal/gc/store_cassandra.go '
@@ -153,6 +154,16 @@ expect_red "G11 generation-blind completion" "PC-D1B.4 MODEL: selected fence vio
 # delete breaks a certified witness.
 mutate internal/db/pcd1b4_certification_window_model_test.go 's/\t\ttombstoneAtGeneration: true, recordsSuperseded: true, certifierReaffirms: true,/\t\trecordsSuperseded: true, certifierReaffirms: true,/'
 expect_red "G12 stale generation writes with a current timestamp" "PC-D1B.4 MODEL: audit stale destructive write under" '^TestPCD1B4ModelStaleGenerationCannotDestroyLate$'
+
+# G13/CW-M29: removing the pairwise-skew margin admits a future-to-writer
+# tombstone, so the two-clock model must reject the generation.
+mutate internal/db/pcd1b4_certification_window_model_test.go 's/safeNow := c\.gcNow - c\.maxPairwiseSkew - c\.timestampGuard/safeNow := c.gcNow - c.timestampGuard/'
+expect_red "G13 missing cross-node clock-skew margin" "CW-M29: with no safe interval below the slow writer clock" '^TestPCD1B4ModelCrossNodeClockSkewCannotPoisonWriter$'
+
+# G14/CW-M30: changing the exact UUIDv5 namespace must break the durable known
+# vector, rather than silently minting different tokens after a deploy.
+mutate internal/gc/pcd1b4_queue_item_token_characterization_test.go 's/6ba7b811-9dad-11d1-80b4-00c04fd430c8/6ba7b811-9dad-11d1-80b4-00c04fd430c9/'
+expect_red "G14 UUIDv5 namespace drift" "CW-M30 destruction-token vector" '^TestPCD1B4DestructionTokenV1KnownVector$' ./internal/gc
 
 if [ "$WITH_CASSANDRA" -eq 1 ]; then
     # C1: a witness CAS without the deleted_at predicate changes R1 on real Cassandra.

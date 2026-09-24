@@ -21,6 +21,21 @@ canonical `created_at` sentinel, and queue tokens use persisted durable
 amortization / once-only reaffirmation wording. `GC_ENABLED=false` remains
 mandatory.
 
+## 2026-09-24 - PR #232 cross-node clock and UUIDv5 contract
+
+Second cross-audit correction for PC-D1B.4. CW-M29 now freezes an enforceable
+fleet-wide pairwise clock-skew lease over every Cassandra/client timestamp
+source, the `safe_now = gc_local_now - Δ - 1us` frontier, monotonic/health
+requirements, and fail-closed retry when no safe timestamp interval exists.
+CW-M30 freezes the RFC URL namespace UUID, exact length-delimited UUIDv5
+encoding, millisecond timestamp normalization, and a fixed durable-QueueItem
+token vector. CW-M29 and M30 are now closed as decision-contract findings;
+CW-M27, same-clock CW-M28 and the P2 merge-sequence contradiction were already
+closed. The PC-D1B.4 decision is mergeable. PC-D1B.5 remains an OPEN runtime
+follow-up, not a merge prerequisite for this decision PR, but is mandatory
+before GC activation or the productive consumer.
+No productive runtime or schema change; `GC_ENABLED=false` remains mandatory.
+
 ## 2026-09-19 - Publish-repair dead-row cadence and tracking scope
 
 Ninth review of #225, documentation only.

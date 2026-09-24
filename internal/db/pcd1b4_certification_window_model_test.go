@@ -1076,3 +1076,82 @@ func TestPCD1B4ModelFutureTombstoneCannotBeMinted(t *testing.T) {
 		t.Fatal("CW-M28 liveness: after wall clock safely passes W and E, a non-future generation can be minted")
 	}
 }
+
+type cwClockSafety struct {
+	gcNow, slowWriterNow int64
+	maxPairwiseSkew      int64
+	observedPairwiseSkew int64
+	timestampGuard       int64
+	epoch, targetW       int64
+	healthy, monotonic   bool
+}
+
+func (c cwClockSafety) timestampAuthoritiesMayWrite() bool {
+	return c.healthy && c.monotonic && c.maxPairwiseSkew >= 0 && c.observedPairwiseSkew <= c.maxPairwiseSkew
+}
+
+func (c cwClockSafety) mintSafeGeneration() (int64, bool) {
+	if !c.timestampAuthoritiesMayWrite() || c.timestampGuard < 1 {
+		return 0, false
+	}
+	safeNow := c.gcNow - c.maxPairwiseSkew - c.timestampGuard
+	floor := max(c.epoch, c.targetW)
+	if floor >= safeNow {
+		return 0, false
+	}
+	return floor + 1, true
+}
+
+// CW-M29: a GC-local timestamp can be behind local now but ahead of a slow
+// normal writer's clock. The fleet-wide skew lease and one-microsecond LWW tie
+// guard force the destructive generation below the slowest writer timestamp.
+func TestPCD1B4ModelCrossNodeClockSkewCannotPoisonWriter(t *testing.T) {
+	clock := cwClockSafety{
+		gcNow: 103, slowWriterNow: 100, maxPairwiseSkew: 3, observedPairwiseSkew: 3, timestampGuard: 1,
+		epoch: 100, targetW: 99, healthy: true, monotonic: true,
+	}
+	if _, ok := clock.mintSafeGeneration(); ok {
+		t.Fatal("CW-M29: with no safe interval below the slow writer clock, GC must postpone destruction")
+	}
+
+	// The old single-clock rule admits g=102: it is above E/W and below the
+	// fast GC clock, but ahead of the supported writer on the slow node.
+	unsafeGeneration := clock.gcNow - 1
+	if unsafeGeneration <= max(clock.epoch, clock.targetW) || unsafeGeneration > clock.gcNow || unsafeGeneration <= clock.slowWriterNow {
+		t.Fatalf("CW-M29 precondition: expected a GC-legal but writer-future timestamp, got g=%d clock=%+v", unsafeGeneration, clock)
+	}
+	cell := cwReplicaCell{writeTs: clock.targetW, content: cwContentA}
+	cell.delete(unsafeGeneration)
+	cell.reaffirm(clock.slowWriterNow + 1) // writer rematerializes at real time T+ε.
+	if cell.visible() {
+		t.Fatal("CW-M29 mutation precondition: the GC-local future tombstone must hide the normal writer's successful materialization")
+	}
+
+	// At a later real time the same enforced Δ admits a timestamp which is
+	// strictly behind every supported writer clock and above E/W.
+	later := clock
+	later.gcNow, later.slowWriterNow = 105, 102
+	g, ok := later.mintSafeGeneration()
+	if !ok || g <= max(later.epoch, later.targetW) || g > later.gcNow-later.maxPairwiseSkew-later.timestampGuard || g >= later.slowWriterNow {
+		t.Fatalf("CW-M29 liveness: expected a safe timestamp below the slow writer clock, got g=%d ok=%v clock=%+v", g, ok, later)
+	}
+
+	unknownHealth := later
+	unknownHealth.healthy = false
+	if _, ok := unknownHealth.mintSafeGeneration(); ok {
+		t.Fatal("CW-M29: unknown clock health must fail closed")
+	}
+	if unknownHealth.timestampAuthoritiesMayWrite() {
+		t.Fatal("CW-M29: a timestamp authority with unknown clock health must be fenced from writes")
+	}
+	understatedBound := later
+	understatedBound.maxPairwiseSkew = 2
+	if _, ok := understatedBound.mintSafeGeneration(); ok {
+		t.Fatal("CW-M29: an observed skew above the configured fleet bound must fail closed")
+	}
+	regressedClock := later
+	regressedClock.monotonic = false
+	if _, ok := regressedClock.mintSafeGeneration(); ok {
+		t.Fatal("CW-M29: a clock regression must fail closed")
+	}
+}

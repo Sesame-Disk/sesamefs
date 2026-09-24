@@ -1,6 +1,8 @@
 package gc
 
 import (
+	"bytes"
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -91,5 +93,60 @@ func TestPCD1B4Characterization_PersistedIdentityAtSurvivesRetry(t *testing.T) {
 		if item.ItemID == "commit-1" && (!item.IdentityAt.Equal(firstIdentityAt) || item.QueuedAt.Equal(queuedAt)) {
 			t.Fatalf("retry must move queued_at but preserve durable identity_at; got %+v", item)
 		}
+	}
+}
+
+func encodePCD1B4LengthDelimitedV1(fields ...[]byte) []byte {
+	var encoded bytes.Buffer
+	for _, field := range fields {
+		var length [4]byte
+		binary.BigEndian.PutUint32(length[:], uint32(len(field)))
+		_, _ = encoded.Write(length[:])
+		_, _ = encoded.Write(field)
+	}
+	return encoded.Bytes()
+}
+
+func encodePCD1B4TimestampMillis(at time.Time) []byte {
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], uint64(at.UTC().UnixMilli()))
+	return encoded[:]
+}
+
+// TestPCD1B4DestructionTokenV1KnownVector freezes the namespace UUID, domain
+// tag, field order, UUID/time encoding and nested block-candidate encoding. The
+// runtime token derivation in PC-D1B.5 must produce this same durable value.
+func TestPCD1B4DestructionTokenV1KnownVector(t *testing.T) {
+	const namespaceV1 = "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
+	identityAt := time.Date(2024, time.January, 2, 3, 4, 5, 6_000_000, time.UTC)
+	item := QueueItem{
+		OrgID:      uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+		LibraryID:  uuid.MustParse("00000000-0000-0000-0000-000000000002"),
+		ItemType:   ItemBlock,
+		ItemID:     "block-42",
+		IdentityAt: identityAt,
+		BlockGCCandidateIdentity: BlockGCCandidateIdentity{
+			Target:      BlockDeleteTarget{StorageClass: "hot-s3-na", StorageKey: "org/blocks/abc123"},
+			CandidateAt: identityAt,
+		},
+	}
+	blockCandidate := encodePCD1B4LengthDelimitedV1(
+		[]byte(item.BlockGCCandidateIdentity.Target.StorageClass),
+		[]byte(item.BlockGCCandidateIdentity.Target.StorageKey),
+		encodePCD1B4TimestampMillis(item.BlockGCCandidateIdentity.CandidateAt),
+	)
+	name := encodePCD1B4LengthDelimitedV1(
+		[]byte("sesamefs/pcd1b4/destruction-token/v1"),
+		item.OrgID[:],
+		item.LibraryID[:],
+		[]byte(item.ItemType),
+		[]byte(item.ItemID),
+		encodePCD1B4TimestampMillis(item.IdentityAt),
+		blockCandidate,
+	)
+	got := uuid.NewSHA1(uuid.MustParse(namespaceV1), name).String()
+	const want = "6af2fa07-6d4b-565e-b9f7-29a17ebd5476"
+	if got != want {
+		t.Fatalf("CW-M30 destruction-token vector = %s, want %s", got, want)
 	}
 }

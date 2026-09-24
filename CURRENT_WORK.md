@@ -1,6 +1,6 @@
 # Current Work - SesameFS
 
-**PC-D1B.4 certification-window lifecycle fence — cross-audit corrections + executable characterization (2026-09-23, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
+**PC-D1B.4 certification-window lifecycle fence — cross-audit round 2 + executable characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
 Decision record: [docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md](docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md),
 `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01`. Only the destruction of
 witness-covered state (HEAD commit, reachable fs_object, permanent `fs:`
@@ -20,14 +20,17 @@ row on every attempt through a gateway-only `VerifiedReaffirmationCapability`
 `WRITETIME`; UNKNOWN requires a global retry. The 3-DC harness proves both
 that LOCAL_QUORUM loses the row outside its DC (CW-M23) and that a local-only
 post-UNKNOWN state with a high timestamp must be globally reaffirmed on retry
-(CW-M27; the model covers the partial/UNKNOWN transition). Destructive
-timestamps may never be minted ahead of wall clock: if W or E is too far ahead,
-postpone and retry. Whole-row W covers every live regular cell, including
-display metadata;
-real Cassandra characterizes partial-row survival and future-tombstone writer
-poisoning (CW-M26/M28). Tokens use persisted durable `identity_at`; enqueue
-already persists the effective value and requeue preserves it, so no producer
-stamping change is called for.
+(CW-M27; the model covers the partial/UNKNOWN transition). CW-M28 forbids
+same-clock future tombstones. CW-M29 now makes cross-node time an explicit
+premise: a fleet-wide lease bounds skew across every application/Cassandra
+timestamp source, `safe_now = gc_local_now - Δ - 1us`, and unknown, stale or
+regressed clock health blocks destructive writes while retaining P for retry.
+Whole-row W covers every live regular cell, including display and reference
+metadata. Real Cassandra characterizes partial-row survival and same-clock
+future-tombstone poisoning (CW-M26/M28). Durable token derivation now freezes
+the RFC URL namespace UUID, exact field encodings and a fixed CW-M30 vector;
+enqueue persists effective `identity_at` and requeue preserves it, with no
+producer stamping change.
 DLQ/expiry/operator paths abandon-by-takeover before an item leaves the queue;
 the pending map has a backpressure cap.
 Best-effort D4/D5 cleanups of commits proven never to be HEAD take a
@@ -41,7 +44,7 @@ Evidence: `internal/db/pcd1b4_certification_window_model_test.go` (exhaustive
 interleavings: main and four weaker fences have counterexamples, the selected
 fence has none, including the same-token stale-completion retry, paused
 generations issuing late deletes, CW-M27 local-timestamp skip, and CW-M28
-future-tombstone poisoning),
+future-tombstone poisoning, and CW-M29 independent-clock skew),
 `internal/db/pcd1b4_lifecycle_mutation_inventory_test.go` (source-derived
 lifecycle statements and destroyer call sites), real-Cassandra
 characterization `internal/integration/pcd1b4_certification_window_characterization_test.go`
@@ -49,12 +52,14 @@ characterization `internal/integration/pcd1b4_certification_window_characterizat
 isolated 3-DC `scripts/pc-d1b4-certification-window-multidc-characterization.sh`
 (R12, CW-M23/M27);
 `scripts/pc-d1b4-certification-window-guard-mutation-validation.sh` proves the
-guards bite (G1-G12 plus C1 on real Cassandra); the destroyer inventory also
+guards bite (G1-G14 plus C1 on real Cassandra); the destroyer inventory also
 rejects aliases of destroyer primitives and raw `block_references` deletes.
-The decision still requires PC-D1B.5 runtime implementation before merge:
-P1 local-timestamp-vs-global-proof and future-tombstone prevention; P2
-intent-existence, whole-row W, persisted `IdentityAt` scope, and
-cost/UNKNOWN retry wording are corrected here. No productive runtime, schema,
+Cross-audit round 2 closes the CW-M29 decision gap by freezing an enforceable
+fleet-wide clock-safety lease and testing the independent-clock counterexample;
+CW-M27, CW-M28, the P2 status/sequence and exact CW-M30 UUIDv5 namespace/vector
+are also closed. The PC-D1B.4 decision is now mergeable. PC-D1B.5 remains an
+OPEN runtime follow-up, not a prerequisite to merge #232; it is required before
+GC activation or a productive consumer. No productive runtime, schema,
 certifier, writer, GC, mapping-authority, consumer or PC-2 change.
 Registered PRE-CONSUMER `ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01` (mutable
 mapping rows vs Mapping Authority after #233). The runtime migration is the

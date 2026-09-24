@@ -6291,7 +6291,7 @@ retirement mechanism, and it is not a merge precondition for PR #228 or #229.
 
 ### ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01: A witness can be born over, or survive, the destruction of the state it certifies
 
-**Status**: 🔴 NO MERGE — two P1 timestamp-proof contract findings remain open (cross-audit 2026-09-23); runtime fence OPEN (PC-D1B.5). Mandatory before destructive GC activation and before the first productive consumer
+**Status**: 🟢 Decision closed / mergeable 2026-09-24 (CW-M29/CW-M30 contract and evidence frozen); PC-D1B.5 runtime OPEN as follow-up, mandatory before destructive GC activation and before the first productive consumer
 **Severity**: High (P1) — certified-baseline correctness; dormant today (no production caller of the certifier or the witness, `GC_ENABLED=false`)
 **Affected**: `CertifyLibraryBaseline` witness settlement, `CommitLibraryContinuityWitness*`, `AdvanceLibraryCertifiedFrontier`, the identity-gateway source deletes and the GC `fs:` reference removal
 **Registered**: 2026-09-23, PC-D1B.4
@@ -6314,22 +6314,27 @@ state; the gateway primitives and GC Phase 5/6 can.
 A per-library destruction fence on the canonical row, in the global SERIAL HEAD
 domain, remains the selected architecture: E destruction epoch, P token-to-owner
 generation, S superseded high-water, generation-owned intents, and witness
-invalidation. Before merge, two P1 timestamp-proof requirements are mandatory:
-when S0 is non-null, every covered row must be reaffirmed with its identical
-verified projection through EACH_QUORUM on every certification attempt,
-regardless of a local `WRITETIME > S0`; a partial EACH_QUORUM application with
-UNKNOWN is not global proof, and retry repeats EACH_QUORUM (CW-M27). A
-destructive generation/tombstone must never be ahead of wall clock; if target W
-or E prevents minting a generation above both without moving into the future,
-postpone destruction with durable retry/backoff (CW-M28). W for a whole-row
-delete is the maximum timestamp of every live regular cell the tombstone must
-dominate, including display metadata.
+invalidation. CW-M27 closes the local-timestamp proof gap: when S0 is non-null,
+every covered row is reaffirmed with its identical verified projection through
+EACH_QUORUM on every certification attempt, regardless of local
+`WRITETIME > S0`; partial/UNKNOWN is not global proof, so retry repeats
+EACH_QUORUM. CW-M28 closes a future tombstone relative to the same clock. CW-M29
+closes the cross-node variant: a fast GC clock cannot issue a tombstone ahead of
+a slow writer's clock just because it is legal under the GC node's local wall
+clock. The contract requires a fleet-wide `ClockSafetyLease` with a
+finite maximum pairwise skew Δ, fresh monotonic health for every timestamp
+source, `safe_now = gc_local_now - Δ - 1us`, and no destructive write when the
+lease/health/safe interval is absent. The lease must cover GC workers, supported
+timestamp-sending clients, and Cassandra coordinators that assign default write
+timestamps. W for a whole-row delete remains the maximum timestamp of every
+live regular cell the tombstone must dominate, including display metadata.
 
 The intent LWT compares observed E/P/S and the non-null immutable canonical
 `created_at` sentinel; canonical absence is NOT_APPLIED and must not create a
 partial row. Tokens derive from persisted durable queue `identity_at`; enqueue
-already persists its effective value and requeue preserves it. V1 has no batch
-amortization, and an ambiguous reaffirmation may be repeated. Each successful
+already persists its effective value and requeue preserves it. UUIDv5 now has
+an exact namespace UUID, byte encoding and known vector (CW-M30). V1 has no
+batch amortization, and an ambiguous reaffirmation may be repeated. Each successful
 destroyer completes with `DELETE pending[t] IF pending[t] = g`, so a stale
 attempt cannot clear a retry's protection. Queue items holding an entry leave
 the queue (DLQ expiry, operator delete) only after abandon-by-takeover, and a
@@ -6339,17 +6344,22 @@ fence state. The certifier captures the fence before its final revalidation,
 refuses a busy library, and its CAS predicates the captured epoch. Witness
 shape stays `(H, V)` and validity is unchanged, but productive witness authority
 must be read at global SERIAL. Soft-delete, restore and hard delete need no
-change. Evidence: exhaustive interleaving model, real-Cassandra absent-row,
-whole-row-W and future-tombstone characterizations, isolated 3-DC
-post-UNKNOWN local-only-state retry characterization, plus source-derived
-lifecycle/destroyer/alias inventory guards (G1-G12 and C1 mutations RED).
+change. The PC-D1B.4 decision is closed/mergeable; the P2 status/sequence and
+UUIDv5 identity contract are resolved. PC-D1B.5 is OPEN but does not have to
+exist before this decision PR merges. It remains required before
+activation/consumer. Evidence: exhaustive two-clock model, fixed UUIDv5 vector,
+real-Cassandra absent-row/whole-row-W/future-tombstone characterizations,
+isolated 3-DC post-UNKNOWN local-only-state retry characterization, and
+source-derived lifecycle/destroyer/alias guards (G1-G14 and C1 mutations RED).
 
 #### Remaining
 
 PC-D1B.5 implements the fence and its mutation contract (CW-M1..M16,
-CW-M18..CW-M28) exactly as scoped in the decision record, closes both P1
-timestamp-proof findings with required 3-DC and real-Cassandra evidence, and
-inverts the UNSAFE characterization rows. Phase 5/6 fixes, mapping authority, soft-delete serialization
+CW-M18..CW-M30) exactly as scoped in the decision record, implements the
+CW-M29 clock-safety lease and the frozen UUIDv5 tuple, and inverts the UNSAFE
+characterization rows. It is the runtime follow-up and need not precede merging
+the decision PR, but it must land before destructive GC activation or the first
+productive consumer. Phase 5/6 fixes, mapping authority, soft-delete serialization
 (`ISSUE-LIB-DELETED-FENCE-01`), the productive consumer and PC-2 remain
 separate.
 
