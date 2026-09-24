@@ -32,8 +32,8 @@ the RFC URL namespace UUID, exact field encodings and block/commit/fs_object
 CW-M30 vectors; enqueue persists effective `identity_at` and requeue preserves
 it, with no producer stamping change. CW-M31 requires global `EACH_QUORUM` absence
 proof for any E/P/S bypass; a local `CanonicalLibraryExists` miss never mints
-authority. CW-M32 applies the clock-health lease to supported writers as well
-as GC.
+authority. CW-M32 applies the clock-health lease to supported writers and
+Cassandra timestamp coordinators, not only GC.
 DLQ/expiry/operator paths abandon-by-takeover before an item leaves the queue;
 the pending map has a backpressure cap.
 Best-effort D4/D5 cleanups of commits proven never to be HEAD take a

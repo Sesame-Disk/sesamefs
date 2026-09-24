@@ -1164,15 +1164,35 @@ func TestPCD1B4ModelClockLeaseGatesEveryWriterAuthority(t *testing.T) {
 		gcNow: 105, slowWriterNow: 102, maxPairwiseSkew: 3, observedPairwiseSkew: 3,
 		timestampGuard: 1, epoch: 100, targetW: 99, healthy: true, monotonic: true,
 	}
-	if _, ok := valid.mintSafeGeneration(); !ok {
+	g, ok := valid.mintSafeGeneration()
+	if !ok {
 		t.Fatal("CW-M32 setup: valid clock lease must allow a generation in its safe interval")
 	}
+	covered := cwReplicaCell{writeTs: valid.targetW, content: cwContentA}
+	covered.delete(g) // GC deletes under a valid lease.
+	if covered.visible() {
+		t.Fatalf("CW-M32 setup: safe GC tombstone at %d should hide W=%d", g, valid.targetW)
+	}
 
-	for _, authority := range []string{"commit materializer", "fs_object materializer", "permanent fs: writer"} {
+	for _, authority := range []string{"commit materializer", "fs_object materializer", "permanent fs: writer", "Cassandra default-timestamp coordinator"} {
 		invalid := valid
 		invalid.healthy = false // expired/stale lease after a GC tombstone.
+		invalid.slowWriterNow = 97 // writer clock regressed below the tombstone.
+		unsafe := covered
+		unsafe.reaffirm(invalid.slowWriterNow + 1)
+		if unsafe.visible() {
+			t.Fatalf("CW-M32 precondition: regressed-clock %s write should be hidden by GC tombstone", authority)
+		}
+		cqlWriteIssued := false
 		if invalid.timestampAuthoritiesMayWrite() {
+			cqlWriteIssued = true
+			covered.reaffirm(invalid.slowWriterNow + 1)
+		}
+		if cqlWriteIssued {
 			t.Fatalf("CW-M32: %s bypassed invalid clock-health admission", authority)
+		}
+		if covered.visible() {
+			t.Fatalf("CW-M32: refused %s request mutated Cassandra state", authority)
 		}
 	}
 }

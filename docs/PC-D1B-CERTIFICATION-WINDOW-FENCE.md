@@ -2,8 +2,8 @@
 
 **Status:** architecture decision + executable characterization. **Decision
 MERGEABLE (2026-09-24)** after freezing CW-M29/CW-M32's cross-node clock
-authorities, CW-M30's UUIDv5 identity vectors and CW-M31's global-absence
-capability.
+authority/writer-gating contract, CW-M30's UUIDv5 identity vectors, and
+CW-M31's global-absence capability.
 PC-D1B.5 is the runtime follow-up, not a prerequisite for merging this
 decision; it is required before destructive GC
 activation or a productive consumer. No productive runtime, schema, certifier,
@@ -748,7 +748,7 @@ its certified content; every CERTIFIED result is backed by the stored witness.
 | `TestPCD1B4ModelStaleGenerationCannotDestroyLate` | replays the audit trace (G1 passes its fence and pauses; G2 takes over, destroys and completes; F re-materialized; certifier revalidates; G1's old delete lands before the CAS) and the stronger trace (G2 keeps F; G1 deletes the original version): both safe with the selected fence, RED under CW-M19 and CW-M20 respectively |
 | `TestPCD1B4ModelMutationContract` | CW-M1..M8, M10, M14, M15, M16, M19, M20, M21 each RED |
 | `TestPCD1B4ModelCrossNodeClockSkewCannotPoisonWriter` | fast-GC/slow-writer clocks cannot mint a future tombstone; absent, stale or regressed clock health fails closed (CW-M29) |
-| `TestPCD1B4ModelClockLeaseGatesEveryWriterAuthority` | commit, fs_object and permanent-reference timestamp authorities refuse writes after health expires (CW-M32) |
+| `TestPCD1B4ModelClockLeaseGatesEveryWriterAuthority` | commit/fs_object/permanent-reference materializers and Cassandra coordinators refuse timestamps after health expires (CW-M32) |
 | `TestPCD1B4ModelCanonicalAbsenceRequiresGlobalRead` | local absence with a remote-present row cannot mint `GlobalCanonicalAbsenceProof` (CW-M31) |
 | `TestPCD1B4DestructionTokenV1KnownVector` | exact UUIDv5 namespace/encoding maps fixed block, commit and fs_object durable QueueItems to their tokens; retry-only fields do not change the token (CW-M30) |
 
@@ -791,7 +791,7 @@ already proven meaningful by §11; PC-D1B.5 must reproduce it against real code.
 | CW-M29 | omit/understate fleet-wide `Δ`, accept unknown/stale clock health, or exclude a timestamp source | a fast GC clock legally emits `g` under local now but ahead of a slow writer; the later successful materialization remains hidden | two-clock model |
 | CW-M30 | change UUIDv5 namespace, domain tag, field order, length encoding, millisecond precision, or block/non-block candidate encoding | one of the frozen block/commit/fs_object QueueItem vectors changes | three exact known vectors |
 | CW-M31 | mint `GlobalCanonicalAbsenceProof` from a local `CanonicalLibraryExists == false` instead of an explicit EACH_QUORUM absence read | 3-DC: dc-na sees absent while dc-eu retains the library; local proof would authorize a fence-bypass destroy | model + isolated 3-DC |
-| CW-M32 | a materializer/reference writer bypasses its expired or unknown `ClockSafetyLease` | a successful client/coordinator write with a regressed clock can remain hidden by the earlier GC tombstone | writer-authority model |
+| CW-M32 | a materializer/reference writer or Cassandra timestamp coordinator bypasses its expired/unknown `ClockSafetyLease` | a successful client/coordinator write with a regressed clock can remain hidden by the earlier GC tombstone | writer-authority model |
 
 ## 13. Witness shape
 
