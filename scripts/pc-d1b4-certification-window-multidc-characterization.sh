@@ -226,4 +226,29 @@ done
 step "rverify: a stale tombstone removes the LOCAL_QUORUM-reaffirmed row outside dc-na, never the EACH_QUORUM one (CW-M23)"
 run_phase rverify TestPCD1B4ReaffirmationConsistency3DC
 
-echo "PC-D1B.4 3-DC characterization passed: R12 witness settled after a remote acknowledged soft-delete, stale dc-asia LOCAL_QUORUM reader saw it valid, blind-DC gateway delete refused, converged row invalid while deleted, restore revived the witness; reaffirmation must be EACH_QUORUM (LOCAL_QUORUM loses the certified row to a stale tombstone outside the reaffirming DC; EACH_QUORUM without every DC fails closed)."
+step "m27-prepare: seed a fresh covered row at T0 in all DCs"
+run_phase m27-prepare TestPCD1B4UnknownReaffirmationRetry3DC
+
+step "Disable hinted handoff, then leave only dc-na running"
+for node in na eu asia; do docker exec "$PREFIX-$node" nodetool disablehandoff >/dev/null; done
+stop_nodes eu asia
+wait_down na eu asia
+
+step "m27-unknown: EACH_QUORUM refuses with remote DCs down; construct its local-only partial state (WRITETIME>S)"
+run_phase m27-unknown TestPCD1B4UnknownReaffirmationRetry3DC
+
+step "Restore dc-eu and dc-asia without hints, then re-enable hinted handoff"
+start_nodes eu asia
+for node in na eu asia; do wait_gossip_stable "$node"; done
+for node in na eu asia; do
+    docker exec "$PREFIX-$node" nodetool enablehandoff >/dev/null
+    wait_each_quorum_ready "$node"
+done
+
+step "m27-retry: retry still performs EACH_QUORUM despite local WRITETIME>S"
+run_phase m27-retry TestPCD1B4UnknownReaffirmationRetry3DC
+
+step "m27-verify: the stale tombstone leaves the certified row present in every DC"
+run_phase m27-verify TestPCD1B4UnknownReaffirmationRetry3DC
+
+echo "PC-D1B.4 3-DC characterization passed: R12 witness settled after a remote acknowledged soft-delete, stale dc-asia LOCAL_QUORUM reader saw it valid, blind-DC gateway delete refused, converged row invalid while deleted, restore revived the witness; CW-M23 proves EACH_QUORUM is required. CW-M27's model covers partial EACH_QUORUM/UNKNOWN; this fixture reproduces the resulting local-only high-WRITETIME state and proves the retry must reaffirm globally."

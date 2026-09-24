@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/google/uuid"
 )
 
@@ -30,10 +31,12 @@ func TestPCD1B4Characterization_QueueItemIdentityCollidesAcrossUnits(t *testing.
 	}
 }
 
-// With a zero IdentityAt, Identity() falls back to QueuedAt, which a retry
-// rewrites (IncrementRetry requeues with a new QueuedAt), so a token derived
-// from it would change across retries of the same durable item.
-func TestPCD1B4Characterization_QueueItemIdentityChangesAcrossRetryWithoutIdentityAt(t *testing.T) {
+// Before persistence, a zero IdentityAt makes Identity() fall back to
+// QueuedAt. This is not evidence that durable retries lose identity: enqueue
+// persists the effective identity_at and the requeue path keeps that stored
+// value. It does show why PC-D1B.5 must derive a token from a hydrated durable
+// row rather than a pre-persistence QueueItem.
+func TestPCD1B4Characterization_PrePersistenceIdentityFallsBackToQueuedAt(t *testing.T) {
 	first := QueueItem{OrgID: uuid.New(), LibraryID: uuid.New(), ItemType: ItemCommit, ItemID: "commit-1", QueuedAt: time.Unix(1_700_000_000, 0).UTC()}
 	retried := first
 	retried.QueuedAt = first.QueuedAt.Add(time.Minute)
@@ -48,5 +51,45 @@ func TestPCD1B4Characterization_QueueItemIdentityChangesAcrossRetryWithoutIdenti
 	stampedRetry.RetryCount++
 	if stamped.Identity() != stampedRetry.Identity() {
 		t.Fatal("a stamped IdentityAt must stay stable across retries")
+	}
+}
+
+func TestPCD1B4Characterization_PersistedIdentityAtSurvivesRetry(t *testing.T) {
+	orgID, libraryID := uuid.New(), uuid.New()
+	queuedAt := time.Unix(1_700_000_000, 0).UTC()
+	store := NewMockStore()
+	queue := NewQueue(store)
+	items := []QueueItem{
+		{OrgID: orgID, LibraryID: libraryID, ItemType: ItemCommit, ItemID: "commit-1", QueuedAt: queuedAt, BlockRepresentationID: dbpkg.PlainBlockRepresentationID},
+		{OrgID: orgID, LibraryID: libraryID, ItemType: ItemCommit, ItemID: "commit-2", QueuedAt: queuedAt, BlockRepresentationID: dbpkg.PlainBlockRepresentationID},
+	}
+	if err := queue.EnqueueBatch(items); err != nil {
+		t.Fatalf("enqueue durable items: %v", err)
+	}
+	persisted := store.QueueItems(orgID)
+	if len(persisted) != 2 {
+		t.Fatalf("persisted queue rows = %d, want 2", len(persisted))
+	}
+	for _, item := range persisted {
+		if item.IdentityAt.IsZero() || !item.IdentityAt.Equal(queuedAt) {
+			t.Fatalf("persisted identity_at = %v, want durable fallback %v", item.IdentityAt, queuedAt)
+		}
+	}
+	if persisted[0].IdentityAt != persisted[1].IdentityAt || persisted[0].ItemID == persisted[1].ItemID {
+		t.Fatal("test precondition: distinct durable items share identity_at but retain distinct item identities")
+	}
+
+	firstIdentityAt := persisted[0].IdentityAt
+	if err := queue.IncrementRetry(persisted[0]); err != nil {
+		t.Fatalf("retry persisted queue item: %v", err)
+	}
+	afterRetry := store.QueueItems(orgID)
+	if len(afterRetry) != 2 {
+		t.Fatalf("queue rows after retry = %d, want 2", len(afterRetry))
+	}
+	for _, item := range afterRetry {
+		if item.ItemID == "commit-1" && (!item.IdentityAt.Equal(firstIdentityAt) || item.QueuedAt.Equal(queuedAt)) {
+			t.Fatalf("retry must move queued_at but preserve durable identity_at; got %+v", item)
+		}
 	}
 }

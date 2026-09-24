@@ -184,6 +184,124 @@ func requirePCD1B4Outcome(t *testing.T, label string, got dbpkg.LibraryBaselineC
 	}
 }
 
+// The intent LWT must compare the observed E/P/S values and an authoritative
+// canonical-row sentinel. A literal IF EXISTS is not a substitute for those
+// state predicates; created_at is the non-null immutable sentinel used by the
+// contract. Prove a conditional update with a non-null sentinel cannot create a
+// partial libraries row when the partition row is completely absent.
+func TestPCD1B4IntentDoesNotCreateAbsentLibrary(t *testing.T) {
+	database := shareProjectionDBForTest(t)
+	orgID, libraryID := uuid.NewString(), uuid.NewString()
+	createdAt := time.Now().UTC().Add(-time.Minute)
+
+	applied, err := database.Session().Query(`
+		UPDATE libraries SET updated_at = ?
+		WHERE org_id = ? AND library_id = ?
+		IF created_at = ?
+	`, time.Now().UTC(), orgID, libraryID, createdAt).
+		SerialConsistency(dbpkg.LibraryHeadSerialConsistency).ScanCAS()
+	if err != nil {
+		t.Fatalf("absent-row canonical-existence LWT: %v", err)
+	}
+	if applied {
+		t.Fatal("absent-row canonical-existence LWT applied; it must not create a partial libraries row")
+	}
+
+	var observed time.Time
+	err = database.Session().Query(`
+		SELECT created_at FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, libraryID).Consistency(gocql.Serial).Scan(&observed)
+	if !errors.Is(err, gocql.ErrNotFound) {
+		t.Fatalf("absent-row LWT must leave the canonical row absent, read err=%v created_at=%v", err, observed)
+	}
+}
+
+// A whole-row tombstone also competes with display-only regular cells. The
+// destructive progress W therefore has to include all live cells, not just
+// identity-projection cells, or a higher full_path cell can keep the row alive.
+func TestPCD1B4WholeRowDeleteWIncludesDisplayCells(t *testing.T) {
+	database := shareProjectionDBForTest(t)
+	libraryID := uuid.NewString()
+	fsID := baselineCertifierTestFSID("pc-d1b4-whole-row-w-" + uuid.NewString())
+	t0 := time.Now().UTC().Add(-5 * time.Second).UnixMicro()
+	t1, deleteTs := t0+20, t0+10
+	session := database.Session()
+
+	if err := session.Query(`
+		INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes)
+		VALUES (?, ?, 'file', 0) USING TIMESTAMP ?
+	`, libraryID, fsID, t0).Exec(); err != nil {
+		t.Fatalf("seed identity cells at T0: %v", err)
+	}
+	if err := session.Query(`
+		UPDATE fs_objects USING TIMESTAMP ? SET full_path = ?
+		WHERE library_id = ? AND fs_id = ?
+	`, t1, "display-only-path", libraryID, fsID).Exec(); err != nil {
+		t.Fatalf("seed display cell at T1: %v", err)
+	}
+	var identityWriteTime, displayWriteTime int64
+	if err := session.Query(`
+		SELECT WRITETIME(obj_type), WRITETIME(full_path) FROM fs_objects
+		WHERE library_id = ? AND fs_id = ?
+	`, libraryID, fsID).Consistency(gocql.LocalQuorum).Scan(&identityWriteTime, &displayWriteTime); err != nil {
+		t.Fatalf("read target cell write times: %v", err)
+	}
+	if identityWriteTime != t0 || displayWriteTime != t1 || !(identityWriteTime < deleteTs && deleteTs < displayWriteTime) {
+		t.Fatalf("write-time precondition: obj_type=%d full_path=%d delete=%d, want T0 < delete < T1", identityWriteTime, displayWriteTime, deleteTs)
+	}
+
+	if err := session.Query(`
+		DELETE FROM fs_objects USING TIMESTAMP ? WHERE library_id = ? AND fs_id = ?
+	`, deleteTs, libraryID, fsID).Consistency(gocql.EachQuorum).Exec(); err != nil {
+		t.Fatalf("whole-row delete between identity and display timestamps: %v", err)
+	}
+	var objectType, fullPath *string
+	if err := session.Query(`
+		SELECT obj_type, full_path FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, libraryID, fsID).Consistency(gocql.LocalQuorum).Scan(&objectType, &fullPath); err != nil {
+		t.Fatalf("read partially surviving row: %v", err)
+	}
+	if objectType != nil || fullPath == nil || *fullPath != "display-only-path" {
+		t.Fatalf("expected identity cell hidden while the higher display cell survives; obj_type=%v full_path=%v", objectType, fullPath)
+	}
+}
+
+// Characterize the Cassandra LWW hazard CW-M28 prohibits: after a whole-row
+// delete is deliberately assigned a future timestamp, a normal successful
+// materializer write can still be hidden by that tombstone.
+func TestPCD1B4FutureTombstonePoisonsNormalMaterialization(t *testing.T) {
+	database := shareProjectionDBForTest(t)
+	libraryID := uuid.NewString()
+	fsID := baselineCertifierTestFSID("pc-d1b4-future-tombstone-" + uuid.NewString())
+	w := time.Now().UTC().Add(-time.Second).UnixMicro()
+	futureDelete := time.Now().UTC().Add(5 * time.Minute).UnixMicro()
+	session := database.Session()
+
+	if err := session.Query(`
+		INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes)
+		VALUES (?, ?, 'file', 0) USING TIMESTAMP ?
+	`, libraryID, fsID, w).Exec(); err != nil {
+		t.Fatalf("seed target at W: %v", err)
+	}
+	if err := session.Query(`
+		DELETE FROM fs_objects USING TIMESTAMP ? WHERE library_id = ? AND fs_id = ?
+	`, futureDelete, libraryID, fsID).Consistency(gocql.EachQuorum).Exec(); err != nil {
+		t.Fatalf("apply intentionally future row tombstone: %v", err)
+	}
+	if err := session.Query(`
+		INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes) VALUES (?, ?, 'file', 0)
+	`, libraryID, fsID).Exec(); err != nil {
+		t.Fatalf("normal materializer returns success: %v", err)
+	}
+	var objectType *string
+	err := session.Query(`
+		SELECT obj_type FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, libraryID, fsID).Consistency(gocql.LocalQuorum).Scan(&objectType)
+	if !errors.Is(err, gocql.ErrNotFound) || objectType != nil {
+		t.Fatalf("CW-M28 Cassandra behavior changed: normal write after a future tombstone must be hidden (err=%v obj_type=%v)", err, objectType)
+	}
+}
+
 // R4/R5 — a covered identity deleted after the final revalidation. UNSAFE:
 // the witness settles and stays valid while the certified tree is gone.
 func TestPCD1B4Characterization_InWindowIdentityDeleteSettlesWitness(t *testing.T) {

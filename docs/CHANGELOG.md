@@ -6,6 +6,21 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-23 - PR #232 cross-audit timestamp proofs
+
+Cross-audit correction to the PC-D1B.4 fence decision and its characterization;
+still no productive runtime or schema changes. When S is non-null, every
+covered row now requires `EACH_QUORUM` reaffirmation on every certification
+attempt, even after an ambiguous attempt left a higher local `WRITETIME`;
+CW-M27 adds model and isolated 3-DC evidence. Destruction now postpones rather
+than minting a timestamp ahead of wall clock; CW-M28 characterizes how a future
+row tombstone can hide a normal successful writer. Whole-row progress W covers
+all live regular cells, intent CAS conditions combine observed E/P/S with the
+canonical `created_at` sentinel, and queue tokens use persisted durable
+`identity_at` without widening producer scope. Removed residual batch
+amortization / once-only reaffirmation wording. `GC_ENABLED=false` remains
+mandatory.
+
 ## 2026-09-19 - Publish-repair dead-row cadence and tracking scope
 
 Ninth review of #225, documentation only.

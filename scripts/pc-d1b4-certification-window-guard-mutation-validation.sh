@@ -156,7 +156,7 @@ expect_red "G12 stale generation writes with a current timestamp" "PC-D1B.4 MODE
 
 if [ "$WITH_CASSANDRA" -eq 1 ]; then
     # C1: a witness CAS without the deleted_at predicate changes R1 on real Cassandra.
-    mutate internal/db/library_continuity.go 's/(func CommitLibraryContinuityWitnessContext.*?IF head_commit_id = \?)\n\t\tAND deleted_at = null/$1/s'
+    mutate internal/db/library_continuity.go 's/(func CommitLibraryContinuityWitnessContext.*?IF head_commit_id = \?.*?)\n\t\tAND deleted_at = null/$1/s'
     expect_red "C1 characterization detects a weaker witness CAS" "R1: certification=CERTIFIED/witness_applied" '^TestPCD1B4Characterization_InWindowLibraryLifecycle$' ./internal/integration/ -tags=integration
 fi
 

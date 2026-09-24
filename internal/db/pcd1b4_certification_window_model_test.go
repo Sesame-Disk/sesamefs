@@ -81,9 +81,9 @@ type cwDesign struct {
 	// older generation raise the superseded high-water mark S in the same
 	// LWT. A superseded generation may still be a paused process.
 	recordsSuperseded bool
-	// certifierReaffirms makes the certifier rewrite, with a timestamp above
-	// the captured S, every covered cell whose write time is not above S, so
-	// no tombstone of a superseded generation can shadow certified state.
+	// certifierReaffirms makes the certifier globally rewrite every covered
+	// row whenever captured S is non-null, regardless of locally observed
+	// write time, so a local timestamp is never mistaken for global proof.
 	certifierReaffirms bool
 	endBumpsEpoch      bool // completion LWT sets a fresh epoch
 	endClearsWit       bool // completion LWT nulls the stored witness
@@ -383,10 +383,15 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 				n := s
 				n.certPC = cwCertCaptureLate
 				label := "certifier final revalidation sees F=A"
-				if d.certifierReaffirms && s.writeTs <= s.certS {
-					// Rewrite the identical claimed content above S.
-					n.writeTs = s.certS + 1
-					label += fmt.Sprintf(" and reaffirms it at ts=%d", n.writeTs)
+				if d.certifierReaffirms && s.certS != 0 {
+					// A successful globally acknowledged write cannot lower an
+					// already newer local cell; other DCs may still need the S+1
+					// mutation, which the separate replica model represents.
+					reaffirmTs := s.certS + 1
+					if n.writeTs < reaffirmTs {
+						n.writeTs = reaffirmTs
+					}
+					label += fmt.Sprintf(" and globally reaffirms it at ts=%d", reaffirmTs)
 				}
 				steps = append(steps, cwStep{label: label, next: n})
 			} else {
@@ -956,4 +961,118 @@ func TestPCD1B4ModelStaleGenerationCannotDestroyLate(t *testing.T) {
 	check("audit stale destructive write", noFencedTombstones, audit, false)
 	check("stale write against the original version", cwSelected, stronger, true)
 	check("stale write against the original version", noReaffirm, stronger, false)
+}
+
+// CW-M27: one DC may retain the partial application of an EACH_QUORUM write
+// that returned UNKNOWN. That local timestamp is not proof that the other DCs
+// received the projection; a retry must repeat EACH_QUORUM even if its local
+// WRITETIME is already above S.
+type cwReplicaCell struct {
+	writeTs int64
+	tombTs  int64
+	content cwContent
+}
+
+func (c cwReplicaCell) visible() bool {
+	return c.content != cwAbsent && c.writeTs > c.tombTs
+}
+
+func (c *cwReplicaCell) reaffirm(ts int64) {
+	if ts > c.writeTs {
+		c.writeTs = ts
+		c.content = cwContentA
+	}
+}
+
+func (c *cwReplicaCell) delete(ts int64) {
+	if ts > c.tombTs {
+		c.tombTs = ts
+	}
+}
+
+func TestPCD1B4ModelUnknownReaffirmationRetryCannotTrustLocalTimestamp(t *testing.T) {
+	const (
+		t0       = int64(10)
+		s        = int64(20)
+		reaffirm = s + 1
+	)
+	initial := map[string]*cwReplicaCell{
+		"dc-na":   {writeTs: t0, content: cwContentA},
+		"dc-eu":   {writeTs: t0, content: cwContentA},
+		"dc-asia": {writeTs: t0, content: cwContentA},
+	}
+
+	// First EACH_QUORUM attempt applies in dc-na, then returns UNKNOWN because
+	// the other DCs are unavailable. Retry observes WRITETIME>S locally.
+	partial := make(map[string]*cwReplicaCell, len(initial))
+	for dc, cell := range initial {
+		cloned := *cell
+		partial[dc] = &cloned
+	}
+	partial["dc-na"].reaffirm(reaffirm)
+	if partial["dc-na"].writeTs <= s {
+		t.Fatal("CW-M27 precondition: the ambiguous local application must leave WRITETIME>S")
+	}
+
+	applyRetry := func(skipOnLocalHighTimestamp bool) map[string]*cwReplicaCell {
+		retried := make(map[string]*cwReplicaCell, len(partial))
+		for dc, cell := range partial {
+			cloned := *cell
+			retried[dc] = &cloned
+		}
+		if !skipOnLocalHighTimestamp || retried["dc-na"].writeTs <= s {
+			// Successful EACH_QUORUM retry acknowledges all three DCs.
+			for _, dc := range []string{"dc-na", "dc-eu", "dc-asia"} {
+				retried[dc].reaffirm(reaffirm)
+			}
+		}
+		// A stale generation's tombstone is later delivered with EACH_QUORUM.
+		for _, dc := range []string{"dc-na", "dc-eu", "dc-asia"} {
+			retried[dc].delete(s)
+		}
+		return retried
+	}
+
+	for _, dc := range []string{"dc-na", "dc-eu", "dc-asia"} {
+		if !applyRetry(false)[dc].visible() {
+			t.Fatalf("CW-M27 correct retry: certified identity missing in %s after EACH_QUORUM reaffirmation", dc)
+		}
+	}
+	mutated := applyRetry(true) // RED mutation: local WRITETIME>S skips the retry.
+	for _, dc := range []string{"dc-na", "dc-eu", "dc-asia"} {
+		if mutated[dc].visible() != (dc == "dc-na") {
+			t.Fatalf("CW-M27 mutation should leave the identity only in dc-na; %s visible=%v", dc, mutated[dc].visible())
+		}
+	}
+}
+
+// CW-M28: a future row tombstone can outlive a normal successful materializer
+// write under Cassandra LWW. Progress is allowed only when a generation above
+// both E and W can be minted at or before wall clock; otherwise destruction is
+// postponed.
+func TestPCD1B4ModelFutureTombstoneCannotBeMinted(t *testing.T) {
+	canMint := func(now, epoch, targetW int64) bool {
+		return max(epoch, targetW) < now
+	}
+	const (
+		now      = int64(100)
+		epoch    = int64(99)
+		writeW   = int64(104)
+		futureGC = int64(105)
+		writerTs = int64(101)
+	)
+	if canMint(now, epoch, writeW) {
+		t.Fatal("CW-M28: a target WRITETIME ahead of wall clock must postpone destruction")
+	}
+	// Cassandra LWW characterization: the contract's rejected future DELETE
+	// timestamp hides a later normal writer that returned success.
+	cell := cwReplicaCell{writeTs: writeW, content: cwContentA}
+	cell.delete(futureGC)
+	cell.reaffirm(writerTs)
+	if cell.visible() {
+		t.Fatal("CW-M28 precondition: normal writer should be hidden by the future row tombstone")
+	}
+	if !canMint(writeW+1, epoch, writeW) {
+		t.Fatal("CW-M28 liveness: after wall clock safely passes W and E, a non-future generation can be minted")
+	}
 }

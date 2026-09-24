@@ -1,6 +1,6 @@
 # Current Work - SesameFS
 
-**PC-D1B.4 certification-window lifecycle fence — decision + executable characterization (2026-09-23, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
+**PC-D1B.4 certification-window lifecycle fence — cross-audit corrections + executable characterization (2026-09-23, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
 Decision record: [docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md](docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md),
 `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01`. Only the destruction of
 witness-covered state (HEAD commit, reachable fs_object, permanent `fs:`
@@ -14,15 +14,20 @@ only by global-SERIAL LWTs. GC destroyers (D1-D3) take an intent per durable
 QueueItem (fresh generation as epoch, `pending[t] = g`, witness cleared,
 superseded high-water raised on takeover), issue every destructive write
 `USING TIMESTAMP ts(g)`, and complete `IF pending[t] = g` after acknowledged
-writes. The certifier reaffirms covered cells written at or before the
-captured high-water mark through a gateway-only
-`VerifiedReaffirmationCapability` (full identity projection, `EACH_QUORUM`,
-fail closed), so neither a stale completion nor a paused generation's late
-delete can break a witness (no owner-fencing assumption). The isolated 3-DC
-harness shows a LOCAL_QUORUM reaffirmation loses the row outside its DC
-(CW-M23). Tokens come from a frozen durable-item tuple, not
-`QueueItem.Identity()`, which collides across units and changes across retries
-without `IdentityAt` (characterized in `internal/gc`).
+writes. When captured S is non-null, the certifier must reaffirm every covered
+row on every attempt through a gateway-only `VerifiedReaffirmationCapability`
+(full identity projection, `EACH_QUORUM`, fail closed), regardless of local
+`WRITETIME`; UNKNOWN requires a global retry. The 3-DC harness proves both
+that LOCAL_QUORUM loses the row outside its DC (CW-M23) and that a local-only
+post-UNKNOWN state with a high timestamp must be globally reaffirmed on retry
+(CW-M27; the model covers the partial/UNKNOWN transition). Destructive
+timestamps may never be minted ahead of wall clock: if W or E is too far ahead,
+postpone and retry. Whole-row W covers every live regular cell, including
+display metadata;
+real Cassandra characterizes partial-row survival and future-tombstone writer
+poisoning (CW-M26/M28). Tokens use persisted durable `identity_at`; enqueue
+already persists the effective value and requeue preserves it, so no producer
+stamping change is called for.
 DLQ/expiry/operator paths abandon-by-takeover before an item leaves the queue;
 the pending map has a backpressure cap.
 Best-effort D4/D5 cleanups of commits proven never to be HEAD take a
@@ -34,17 +39,23 @@ SERIAL (frozen in the PC-D1 contract); no hot-path Paxos, no fan-out (all
 covered state is library-scoped), no per-identity state.
 Evidence: `internal/db/pcd1b4_certification_window_model_test.go` (exhaustive
 interleavings: main and four weaker fences have counterexamples, the selected
-fence has none, including the same-token stale-completion retry;
-and paused generations issuing late deletes; CW-M1..M8/M10/M14/M15/M16/M19/M20/M21
-RED),
+fence has none, including the same-token stale-completion retry, paused
+generations issuing late deletes, CW-M27 local-timestamp skip, and CW-M28
+future-tombstone poisoning),
 `internal/db/pcd1b4_lifecycle_mutation_inventory_test.go` (source-derived
 lifecycle statements and destroyer call sites), real-Cassandra
 characterization `internal/integration/pcd1b4_certification_window_characterization_test.go`
-(R1-R11; R3b/R4/R5/R10/R10b/R11b UNSAFE today) and isolated 3-DC
-`scripts/pc-d1b4-certification-window-multidc-characterization.sh` (R12);
+(R1-R11; R3b/R4/R5/R10/R10b/R11b UNSAFE today; CW-M11/M26/M28 evidence) and
+isolated 3-DC `scripts/pc-d1b4-certification-window-multidc-characterization.sh`
+(R12, CW-M23/M27);
 `scripts/pc-d1b4-certification-window-guard-mutation-validation.sh` proves the
 guards bite (G1-G12 plus C1 on real Cassandra); the destroyer inventory also
 rejects aliases of destroyer primitives and raw `block_references` deletes.
+The decision still requires PC-D1B.5 runtime implementation before merge:
+P1 local-timestamp-vs-global-proof and future-tombstone prevention; P2
+intent-existence, whole-row W, persisted `IdentityAt` scope, and
+cost/UNKNOWN retry wording are corrected here. No productive runtime, schema,
+certifier, writer, GC, mapping-authority, consumer or PC-2 change.
 Registered PRE-CONSUMER `ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01` (mutable
 mapping rows vs Mapping Authority after #233). The runtime migration is the
 next available number (`028` if #233 lands first).
@@ -52,8 +63,7 @@ Side findings registered: `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` (was
 `ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`; now also covers the intent LWT),
 `ISSUE-PCD1B-STALE-TOMBSTONE-DISPLAY-METADATA-01`,
 `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`, Phase 6 execute-time TOCTOU
-under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`. No productive runtime,
-schema, certifier, writer, GC, mapping-authority, consumer or PC-2 change.
+under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`.
 `GC_ENABLED=false`.
 
 **Historical merged PR #230 — PC-D1B identity-authority primitive (2026-09-21, `feat/pcd1b-metadata-identity-authority-primitive`):**

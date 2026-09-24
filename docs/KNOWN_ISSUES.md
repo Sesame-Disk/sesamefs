@@ -6291,7 +6291,7 @@ retirement mechanism, and it is not a merge precondition for PR #228 or #229.
 
 ### ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01: A witness can be born over, or survive, the destruction of the state it certifies
 
-**Status**: 🟡 Decision closed 2026-09-23 (PC-D1B.4); runtime fence OPEN (PC-D1B.5). Mandatory before destructive GC activation and before the first productive consumer
+**Status**: 🔴 NO MERGE — two P1 timestamp-proof contract findings remain open (cross-audit 2026-09-23); runtime fence OPEN (PC-D1B.5). Mandatory before destructive GC activation and before the first productive consumer
 **Severity**: High (P1) — certified-baseline correctness; dormant today (no production caller of the certifier or the witness, `GC_ENABLED=false`)
 **Affected**: `CertifyLibraryBaseline` witness settlement, `CommitLibraryContinuityWitness*`, `AdvanceLibraryCertifiedFrontier`, the identity-gateway source deletes and the GC `fs:` reference removal
 **Registered**: 2026-09-23, PC-D1B.4
@@ -6312,44 +6312,44 @@ state; the gateway primitives and GC Phase 5/6 can.
 #### Decision (PC-D1B.4)
 
 A per-library destruction fence on the canonical row, in the global SERIAL HEAD
-domain. Each GC destroyer of witness-covered state (D1-D3) takes an intent LWT
-before destroying: a fresh generation `g` becomes the new
-`continuity_destruction_epoch`, `continuity_destruction_pending[t] = g` for the
-token `t` of its durable GC QueueItem, the witness is cleared, and a takeover of
-an uncompleted older generation raises the superseded high-water mark
-`continuity_destruction_superseded`. Every destructive write is issued
-`USING TIMESTAMP ts(g)`, and the certifier reaffirms covered rows written at or
-before the captured high-water mark (through a gateway-only
-`VerifiedReaffirmationCapability`, full identity projection, `EACH_QUORUM`,
-fail closed), so a paused superseded generation can never make a late delete
-effective against certified state. Tokens use a frozen tuple (org, library,
-item type, item id, durable identity time, block candidate), not
-`QueueItem.Identity()`, and a destroy that loses to a newer write time moves
-the next generation above it (bounded by a future-skew limit). After its writes
-are acknowledged a destroyer completes with
-`DELETE pending[t] IF pending[t] = g`, so a stale attempt cannot clear a
-retry's protection. Queue items holding an entry leave the queue (DLQ expiry,
-operator delete) only after abandon-by-takeover, and a backpressure cap bounds
-the pending map. The
-best-effort D4/D5 cleanups of commits proven never to be HEAD take a
-`ProvenUncoveredCleanupCapability` and write no fence state, because they have
-no durable re-drive owner. The certifier captures the fence before its final
-revalidation, refuses a busy library, and its CAS predicates the captured
-epoch. Witness shape stays `(H, V)` and validity is unchanged, but productive
-witness authority must be read at global SERIAL. Soft-delete, restore and hard
-delete need no change. Evidence: exhaustive interleaving model (current runtime
-and four weaker fences have counterexamples; the selected fence has none,
-including the same-token stale-completion retry and paused generations that
-issue late destructive writes; CW-M1..M8, M10, M14, M15, M16, M19, M20, M21
-RED), single-node real-Cassandra characterization (R1-R11), isolated 3-DC R12,
-and source-derived lifecycle/destroyer/alias inventory guards (G1-G12 and C1
-mutations RED).
+domain, remains the selected architecture: E destruction epoch, P token-to-owner
+generation, S superseded high-water, generation-owned intents, and witness
+invalidation. Before merge, two P1 timestamp-proof requirements are mandatory:
+when S0 is non-null, every covered row must be reaffirmed with its identical
+verified projection through EACH_QUORUM on every certification attempt,
+regardless of a local `WRITETIME > S0`; a partial EACH_QUORUM application with
+UNKNOWN is not global proof, and retry repeats EACH_QUORUM (CW-M27). A
+destructive generation/tombstone must never be ahead of wall clock; if target W
+or E prevents minting a generation above both without moving into the future,
+postpone destruction with durable retry/backoff (CW-M28). W for a whole-row
+delete is the maximum timestamp of every live regular cell the tombstone must
+dominate, including display metadata.
+
+The intent LWT compares observed E/P/S and the non-null immutable canonical
+`created_at` sentinel; canonical absence is NOT_APPLIED and must not create a
+partial row. Tokens derive from persisted durable queue `identity_at`; enqueue
+already persists its effective value and requeue preserves it. V1 has no batch
+amortization, and an ambiguous reaffirmation may be repeated. Each successful
+destroyer completes with `DELETE pending[t] IF pending[t] = g`, so a stale
+attempt cannot clear a retry's protection. Queue items holding an entry leave
+the queue (DLQ expiry, operator delete) only after abandon-by-takeover, and a
+backpressure cap bounds the pending map. Best-effort D4/D5 cleanups of commits
+proven never to be HEAD take a `ProvenUncoveredCleanupCapability` and write no
+fence state. The certifier captures the fence before its final revalidation,
+refuses a busy library, and its CAS predicates the captured epoch. Witness
+shape stays `(H, V)` and validity is unchanged, but productive witness authority
+must be read at global SERIAL. Soft-delete, restore and hard delete need no
+change. Evidence: exhaustive interleaving model, real-Cassandra absent-row,
+whole-row-W and future-tombstone characterizations, isolated 3-DC
+post-UNKNOWN local-only-state retry characterization, plus source-derived
+lifecycle/destroyer/alias inventory guards (G1-G12 and C1 mutations RED).
 
 #### Remaining
 
-PC-D1B.5 implements the fence and its mutation contract (CW-M1..M16, CW-M18..M26) exactly
-as scoped in the decision record, and inverts the UNSAFE characterization
-rows. Phase 5/6 fixes, mapping authority, soft-delete serialization
+PC-D1B.5 implements the fence and its mutation contract (CW-M1..M16,
+CW-M18..CW-M28) exactly as scoped in the decision record, closes both P1
+timestamp-proof findings with required 3-DC and real-Cassandra evidence, and
+inverts the UNSAFE characterization rows. Phase 5/6 fixes, mapping authority, soft-delete serialization
 (`ISSUE-LIB-DELETED-FENCE-01`), the productive consumer and PC-2 remain
 separate.
 

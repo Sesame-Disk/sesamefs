@@ -390,3 +390,102 @@ func TestPCD1B4ReaffirmationConsistency3DC(t *testing.T) {
 		t.Fatalf("%s=%q is not a reaffirmation phase", phaseEnv, phase)
 	}
 }
+
+// TestPCD1B4UnknownReaffirmationRetry3DC characterizes CW-M27 on real
+// Cassandra. It tries EACH_QUORUM with dc-eu and dc-asia unavailable. Cassandra
+// may reject before applying anything, so the fixture then constructs the same
+// local-only post-UNKNOWN state with LOCAL_QUORUM when needed. The retry sees
+// local WRITETIME>S but must still perform EACH_QUORUM; otherwise a stale
+// generation's cross-DC tombstone removes the certified row outside dc-na.
+func TestPCD1B4UnknownReaffirmationRetry3DC(t *testing.T) {
+	phase := strings.TrimSpace(os.Getenv(phaseEnv))
+	if phase == "" {
+		t.Skipf("%s is not set; run scripts/pc-d1b4-certification-window-multidc-characterization.sh", phaseEnv)
+	}
+	f := newFixture(t)
+	libraryID := uuid.NewSHA1(uuid.MustParse(f.libraryID), []byte("unknown-reaffirmation-retry")).String()
+	fsID := testFSID(libraryID + "-covered-row")
+	const base = int64(1_700_000_100_000_000)
+	t0, stale, reaffirmTs := base, base+10, base+20
+	write := func(database *dbpkg.DB, consistency gocql.Consistency) error {
+		return database.Session().Query(`
+			INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes)
+			VALUES (?, ?, 'file', 0) USING TIMESTAMP ?
+		`, libraryID, fsID, reaffirmTs).Consistency(consistency).Exec()
+	}
+	localWriteTime := func(database *dbpkg.DB) int64 {
+		t.Helper()
+		var writeTime int64
+		if err := database.Session().Query(`
+			SELECT WRITETIME(obj_type) FROM fs_objects WHERE library_id = ? AND fs_id = ?
+		`, libraryID, fsID).Consistency(gocql.LocalQuorum).Scan(&writeTime); err != nil {
+			t.Fatalf("read local WRITETIME after ambiguous attempt: %v", err)
+		}
+		return writeTime
+	}
+	visible := func(database *dbpkg.DB) bool {
+		t.Helper()
+		var objType *string
+		err := database.Session().Query(`
+			SELECT obj_type FROM fs_objects WHERE library_id = ? AND fs_id = ?
+		`, libraryID, fsID).Consistency(gocql.LocalQuorum).Scan(&objType)
+		if errors.Is(err, gocql.ErrNotFound) {
+			return false
+		}
+		if err != nil {
+			t.Fatalf("read retry characterization row: %v", err)
+		}
+		return objType != nil
+	}
+
+	switch phase {
+	case "m27-prepare":
+		na := connect(t, "dc-na")
+		retry(t, "seed CW-M27 row at T0 in every DC", func() error {
+			return na.Session().Query(`
+				INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes)
+				VALUES (?, ?, 'file', 0) USING TIMESTAMP ?
+			`, libraryID, fsID, t0).Consistency(gocql.EachQuorum).Exec()
+		})
+	case "m27-unknown":
+		na := connect(t, "dc-na")
+		if err := write(na, gocql.EachQuorum); err == nil {
+			t.Fatal("CW-M27 precondition: EACH_QUORUM must return an error while dc-eu and dc-asia are down")
+		}
+		// Cassandra may reject an unavailable EACH_QUORUM before dispatching
+		// the mutation. In that case, create the exact partial replica state a
+		// timed-out request can leave: dc-na has S+1, the other DCs remain T0.
+		if got := localWriteTime(na); got <= stale {
+			if err := write(na, gocql.LocalQuorum); err != nil {
+				t.Fatalf("construct dc-na-only partial reaffirmation state: %v", err)
+			}
+		}
+		if got := localWriteTime(na); got != reaffirmTs || got <= stale {
+			t.Fatalf("CW-M27 requires a partial local application with WRITETIME>S; got %d, want %d > %d", got, reaffirmTs, stale)
+		}
+	case "m27-retry":
+		na := connect(t, "dc-na")
+		if got := localWriteTime(na); got != reaffirmTs || got <= stale {
+			t.Fatalf("CW-M27 retry must start with local WRITETIME>S; got %d, want %d > %d", got, reaffirmTs, stale)
+		}
+		retry(t, "repeat global EACH_QUORUM reaffirmation after UNKNOWN", func() error {
+			return write(na, gocql.EachQuorum)
+		})
+	case "m27-verify":
+		na := connect(t, "dc-na")
+		retry(t, "deliver stale generation tombstone globally", func() error {
+			return na.Session().Query(`
+				DELETE FROM fs_objects USING TIMESTAMP ? WHERE library_id = ? AND fs_id = ?
+			`, stale, libraryID, fsID).Consistency(gocql.EachQuorum).Exec()
+		})
+		for _, dc := range []string{"dc-na", "dc-eu", "dc-asia"} {
+			if database := connect(t, dc); !visible(database) {
+				t.Fatalf("CW-M27: after UNKNOWN then successful EACH_QUORUM retry, stale tombstone removed the certified identity in %s", dc)
+			}
+		}
+	case "prepare", "degrade", "certify", "merge", "rprepare", "rdegrade", "rverify":
+		t.Skip("other certification-window phases belong to their dedicated 3-DC characterization")
+	default:
+		t.Fatalf("unexpected CW-M27 phase %q", phase)
+	}
+}
