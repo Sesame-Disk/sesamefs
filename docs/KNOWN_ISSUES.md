@@ -6491,10 +6491,20 @@ multi-DC.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01: A stale lease owner can resume its final lifecycle batch
 
-**Status**: 🔴 Open — found in PR #232 final cross-audit (2026-09-24); PRE-GC lifecycle follow-up, not part of the PC-D1B.4 decision
-**Severity**: High (P1) — a stale permanent-delete batch can remove a library after a newer restore; this does not create a valid HEAD/witness and is not a #232 merge blocker
-**Affected**: `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock`, `hardDeleteLibraryRowsFn`, `restoreDeletedLibrary` and their final lifecycle batches
+**Status**: 🔴 Open — CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC. Found in the PR #232 final cross-audit (2026-09-24); not part of the PC-D1B.4 decision
+**Severity**: High (P1)
+**Scope**: CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC
+**Introduced by #232**: No
+**Blocks #232**: No — this does not create a valid HEAD/witness
+**Affected**: `DELETE /api/v2.1/repos/deleted/:repo_id[/]` (`PermanentDeleteRepo`), `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock`, `hardDeleteLibraryRowsFn`, `restoreDeletedLibrary` and their final lifecycle batches
 **Registered**: 2026-09-24, PR #232 final cross-audit
+
+The current authenticated API route is registered independently of GC worker
+configuration. `PermanentDeleteRepo` calls
+`permanentlyDeleteTrashedLibraryCandidate()`, which synchronously reaches
+`hardDeleteLibraryRowsFn()` to delete the canonical library rows. Thus
+`GC_ENABLED=false` does **not** protect this permanent-delete/restore lifecycle
+from the stale-owner race; asynchronous file-data reclamation is separate.
 
 The renewable lease detects and permits takeover after a stale heartbeat, but
 the final restore/permanent-delete batch is not fenced by the generation that
@@ -6507,13 +6517,13 @@ hard delete.
 
 This is distinct from `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`: using global
 SERIAL for the lease LWTs orders acquisition but does not fence a previously
-authorized holder's later batch. Before destructive GC activation and lifecycle
-concurrency closure, introduce a generation/token carried to the final mutation
-and require that mutation to prove current ownership, or another equivalent
-fencing protocol. Characterize both stale-delete-after-restore and stale-
-restore-after-delete with the old owner paused after renewal and resumed only
-after takeover. Keep the issue PRE-GC and out of PC-D1B.4; `GC_ENABLED=false`
-remains mandatory.
+authorized holder's later batch. Treat this as a current-runtime lifecycle/API
+follow-up, and close it before destructive GC activation as well. Introduce a
+generation/token carried to the final mutation and require that mutation to
+prove current ownership, or another equivalent fencing protocol. Characterize
+both stale-delete-after-restore and stale-restore-after-delete with the old
+owner paused after renewal and resumed only after takeover. Keep it out of
+PC-D1B.4; `GC_ENABLED=false` is not protection from this API path.
 
 ### ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01: Revert/restore paths publish borrowed block dependencies with no pin, `pub:`, repair, or fence
 

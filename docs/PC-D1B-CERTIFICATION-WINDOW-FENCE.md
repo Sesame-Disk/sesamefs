@@ -1,13 +1,12 @@
 # PC-D1B.4 — Certification-window lifecycle fence: decision and characterization
 
 **Status:** architecture decision + executable characterization. **Decision
-CLOSED / MERGEABLE (2026-09-24)** after CW-M33's accepted-Paxos pause/barrier
-race passed on Cassandra 5.0.9, including the barrier-removal mutation turning
-RED. CW-M34's in-flight writer ordering property also has model, mutation and
-real-Cassandra 3-DC evidence. Neither finding adds production runtime permits or
-recovery; PC-D1B.5 remains mandatory before destructive GC activation or a
-productive consumer. No productive runtime, schema, certifier, writer, GC,
-mapping-authority or consumer change.
+CLOSED / MERGEABLE (2026-09-24)** after both CW-M33 accepted-Paxos races and
+G21/G22 mutations passed on Cassandra 5.0.9. CW-M34's in-flight writer ordering
+property also has model, mutation and real-Cassandra 3-DC evidence. Neither
+finding adds production runtime permits or recovery; PC-D1B.5 remains mandatory
+before destructive GC activation or a productive consumer. No productive
+runtime, schema, certifier, writer, GC, mapping-authority or consumer change.
 **Base:** `main@62a2c0e0` (PR #228 merged). **Runtime follow-up:** PC-D1B.5.
 **Tracking:** `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01`.
 `GC_ENABLED=false` remains mandatory. File:line references are to

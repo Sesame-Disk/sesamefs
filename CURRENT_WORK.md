@@ -89,10 +89,12 @@ next available number (`028` if #233 lands first).
 Side findings registered: `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` (was
 `ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`; now also covers the intent LWT),
 `ISSUE-PCD1B-STALE-TOMBSTONE-DISPLAY-METADATA-01`,
-`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`, separate PRE-GC
-`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`, Phase 6 execute-time TOCTOU
-under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`.
-`GC_ENABLED=false`.
+`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` (PRE-GC multi-DC),
+`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (P1, CURRENT-RUNTIME / FOLLOW-UP;
+also required PRE-GC; pre-existing, not a #232 blocker), and Phase 6 execute-time
+TOCTOU under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`.
+`GC_ENABLED=false` keeps the GC worker disabled; it does not gate the synchronous
+`PermanentDeleteRepo` API hard delete or protect the restore lifecycle race.
 
 **Historical merged PR #230 — PC-D1B identity-authority primitive (2026-09-21, `feat/pcd1b-metadata-identity-authority-primitive`):**
 PR #230 lands the commits/fs_objects identity-authority primitive authority-only,
