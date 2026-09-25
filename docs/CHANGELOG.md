@@ -21,8 +21,9 @@ The model covers drain+revalidation and recovery above the destructive floor; a
 transport, then confirms successful-but-hidden settlement. §14/§16 now account
 for SERIAL + EACH_QUORUM absence proof reads and lifetime tracking/recovery costs.
 The decision is CLOSED / MERGEABLE; PC-D1B.5 remains the runtime follow-up before
-destructive GC activation or a productive consumer. No productive runtime or
-schema change; `GC_ENABLED=false` remains mandatory.
+destructive GC activation or a productive consumer. The independent hard-delete
+lease non-fencing race is registered PRE-GC and does not block #232. No
+productive runtime or schema change; `GC_ENABLED=false` remains mandatory.
 
 ## 2026-09-23 - PR #232 cross-audit timestamp proofs
 

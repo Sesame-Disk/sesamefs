@@ -65,15 +65,16 @@ Destruction of witness-covered state while the canonical row exists
 
 Proven-uncovered cleanups (D4/D5: commits proven never to be HEAD) take a
 ProvenUncoveredCleanup capability instead and write no fence state. A
-canonical-absence bypass uses `GlobalCanonicalAbsenceProof` only after a
-global-SERIAL HEAD Paxos settlement/barrier and a subsequent `EACH_QUORUM`
-canonical absence read; a local `CanonicalLibraryExists == false` never
-authorizes destruction. Cassandra 5.0.9 characterization freezes the order as
-a global-SERIAL read that settles an accepted proposal, followed by the global
-`EACH_QUORUM` absence check. The isolated fixture pauses an accepted HEAD
-proposal after `StorageProxy.doPaxos` accepts it and before commit; the hard
-delete uses `ballot-1` so Cassandra's LWW reconciliation can expose the late
-proposal. G21 removes the SERIAL settlement and turns RED.
+canonical-absence bypass uses `GlobalCanonicalAbsenceProof` only when a
+global-SERIAL HEAD Paxos settlement/read both settles the Paxos history up to
+its own linearization point and itself returns canonical ABSENT, followed by a
+subsequent `EACH_QUORUM` canonical absence read. A present SERIAL result,
+error or timeout never mints proof; a local `CanonicalLibraryExists == false`
+never authorizes destruction. Cassandra 5.0.9 freezes the SERIAL-ABSENT then
+EACH_QUORUM-ABSENT order. The isolated fixture pauses an accepted HEAD proposal
+after `StorageProxy.doPaxos` accepts it and before commit; the hard delete uses
+`ballot-1` so Cassandra's LWW reconciliation can expose the late proposal. G21
+removes settlement; G22 ignores a present SERIAL result; both turn RED.
 
 Productive witness authority: read only at global SERIAL (or inside an LWT of
 the same domain). A LOCAL_QUORUM witness observation never authorizes work.
@@ -387,9 +388,12 @@ IF continuity_destruction_epoch = :e_read
   GC and restore decision.
 - APPLIED → the destroyer may write. Row absent from a local
   `CanonicalLibraryExists` read is **not** authority to bypass the fence. An
-  absent-row bypass requires `GlobalCanonicalAbsenceProof` minted from an
-  explicit `EACH_QUORUM` read of the canonical `libraries` row (§10.6); a local miss
-  can coexist with the row present in a remote DC (CW-M31).
+  absent-row bypass requires `GlobalCanonicalAbsenceProof` minted only when a
+  global-SERIAL read/barrier both settles prior HEAD Paxos and itself observes
+  canonical absence, followed by an explicit `EACH_QUORUM` absence read of
+  `libraries` (§10.6). A present SERIAL result permanently refuses that proof
+  attempt, even if the subsequent EACH_QUORUM read is absent (CW-M33/G22); a
+  local miss can coexist with a remote row (CW-M31).
 - UNKNOWN → do not destroy; retry with a new generation. An UNKNOWN intent
   cannot land after a later one: the next Paxos round on the partition
   finishes an in-flight proposal before its own.
@@ -713,7 +717,7 @@ like the existing authorized projection tokens:
 | Capability | Minted only from | Who | Fence state |
 |---|---|---|---|
 | `DestructionIntentCapability` | an APPLIED intent for `(t, g)` | D1–D3 (GC commit/fs_object delete, `fs:` removal): durable queue items that are retried until done, so a crashed intent is always re-driven | epoch + `P[t] = g` |
-| `GlobalCanonicalAbsenceProof` | global-SERIAL HEAD Paxos settlement/barrier resolves every proposal begun before proof issuance, followed by an explicit `Consistency(EACH_QUORUM)` read of the canonical `libraries` row returning absent in every DC; errors/timeout or a local `CanonicalLibraryExists == false` never mint it | library cascade children, Phase 3/4 orphans using `LibraryGuardCanonicalMustBeAbsent` as work classification only | none after stable global absence is proved (no row ⇒ no witness) |
+| `GlobalCanonicalAbsenceProof` | a global-SERIAL HEAD Paxos read/barrier settles history up to its own linearization point **and itself returns canonical ABSENT**; only then an explicit `Consistency(EACH_QUORUM)` read of canonical `libraries` may confirm absence in every DC. Any present SERIAL row/result, error/timeout, non-ABSENT EACH_QUORUM result, or local `CanonicalLibraryExists == false` refuses the proof | library cascade children, Phase 3/4 orphans using `LibraryGuardCanonicalMustBeAbsent` as work classification only | none after stable global absence is proved (no row ⇒ no witness) |
 | `ProvenUncoveredCleanupCapability` | a proof that the target commit is not and can never become the canonical HEAD: its attempt-unique, server-minted, never-exposed id was never proposed, or its HEAD CAS definitively did not apply (`ErrLibraryHeadConflict`, `ErrLibraryHeadNotFound`, `ErrLibraryHeadUninitializable`), or it is an initial commit (empty parent, unpromotable by Sync) that lost to a different winning HEAD | D4 `cleanupFailedPublishDeleteCommitFn`, D5 `InitializeLibraryHeadIfUnset` discard and `DiscardLosingInitialCommit` | none |
 
 D4/D5 must **not** take intents. They are deliberately best-effort, with no
@@ -957,8 +961,9 @@ keep the SAFE rows unchanged.
 
 ## 18. Next PR contract — PC-D1B.5 runtime
 
-PC-D1B.4 freezes the decision and is **mergeable** after the CW-M33 accepted-
-Paxos race and G21 barrier-removal mutation passed on Cassandra 5.0.9. PC-D1B.5
+PC-D1B.4 freezes the decision and is **mergeable** after both CW-M33
+accepted-Paxos/issuance races and G21/G22 SERIAL-barrier/absence-result
+mutations passed on Cassandra 5.0.9. PC-D1B.5
 implements the frozen contract afterward; it is required before destructive GC
 activation or a productive consumer.
 
@@ -967,11 +972,11 @@ activation or a productive consumer.
 2. `internal/db`: intent/completion/capture primitives (global SERIAL,
     observed E/P/S plus the canonical non-null `created_at` existence
     predicate, tri-state outcomes); typed intent capability; mint
-    `GlobalCanonicalAbsenceProof` only after a global-SERIAL HEAD Paxos
-    settlement/barrier and an explicit canonical-row `EACH_QUORUM` read whose
-    absence result covers every DC. Cassandra 5.0.9 freezes the order as a
-    global-SERIAL read on the canonical partition, followed by the EACH_QUORUM
-    absence query; CW-M33/G21 characterize why both legs are required.
+    `GlobalCanonicalAbsenceProof` only when a global-SERIAL HEAD Paxos
+    settlement/read itself returns canonical ABSENT; present/error/timeout
+    refuses the proof attempt. A subsequent canonical-row `EACH_QUORUM` read
+    must also return ABSENT in every DC. Cassandra 5.0.9 freezes the order and
+    G21/G22 characterize both race boundaries.
 3. Identity gateway: destructive deletes and `fs:` reference removal require
    one of the three capabilities of §10.6 as a parameter; new
    `VerifiedReaffirmationCapability` and the reaffirmation writers of §10.3.1

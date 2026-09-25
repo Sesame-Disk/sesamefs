@@ -1204,9 +1204,10 @@ const (
 	cwCanonicalAbsenceEachQuorum
 )
 
-// A local miss is not an absence capability: a library row can exist in a
-// different DC without being visible to this coordinator. The future
-// GlobalCanonicalAbsenceProof is minted only from a read covering every DC.
+// CW-M31 models only the cross-DC visibility leg: a local miss is not global
+// authority because a row can exist remotely. Passing this EACH_QUORUM leg is
+// necessary, but not sufficient, for GlobalCanonicalAbsenceProof; CW-M33 also
+// requires a global-SERIAL proof-read that itself observed canonical absence.
 func cwCanMintGlobalCanonicalAbsenceProof(scope cwCanonicalAbsenceReadScope, absent bool) bool {
 	return scope == cwCanonicalAbsenceEachQuorum && absent
 }
@@ -1224,6 +1225,6 @@ func TestPCD1B4ModelCanonicalAbsenceRequiresGlobalRead(t *testing.T) {
 		t.Fatal("CW-M31: a remote canonical row must prevent proof even after a global read")
 	}
 	if !cwCanMintGlobalCanonicalAbsenceProof(cwCanonicalAbsenceEachQuorum, true) {
-		t.Fatal("CW-M31 liveness: a globally observed canonical absence may mint the capability")
+		t.Fatal("CW-M31 liveness: global absence must pass the visibility leg; CW-M33 separately gates complete proof minting")
 	}
 }

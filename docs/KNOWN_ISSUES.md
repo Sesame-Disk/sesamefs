@@ -6489,6 +6489,32 @@ LWTs to global SERIAL like the HEAD domain. Independent of the certification
 fence (restore is not a witness lifecycle event), but required before GC runs
 multi-DC.
 
+### ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01: A stale lease owner can resume its final lifecycle batch
+
+**Status**: 🔴 Open — found in PR #232 final cross-audit (2026-09-24); PRE-GC lifecycle follow-up, not part of the PC-D1B.4 decision
+**Severity**: High (P1) — a stale permanent-delete batch can remove a library after a newer restore; this does not create a valid HEAD/witness and is not a #232 merge blocker
+**Affected**: `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock`, `hardDeleteLibraryRowsFn`, `restoreDeletedLibrary` and their final lifecycle batches
+**Registered**: 2026-09-24, PR #232 final cross-audit
+
+The renewable lease detects and permits takeover after a stale heartbeat, but
+the final restore/permanent-delete batch is not fenced by the generation that
+currently owns the lease. A holder can renew, pause past the stale interval,
+lose ownership to a competing restore/delete, then resume and apply its old
+unconditional batch. For example: permanent delete pauses; restore takes over
+and restores the library; the old delete resumes and removes the restored row.
+The inverse stale-restore schedule can recreate partial canonical cells after
+hard delete.
+
+This is distinct from `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`: using global
+SERIAL for the lease LWTs orders acquisition but does not fence a previously
+authorized holder's later batch. Before destructive GC activation and lifecycle
+concurrency closure, introduce a generation/token carried to the final mutation
+and require that mutation to prove current ownership, or another equivalent
+fencing protocol. Characterize both stale-delete-after-restore and stale-
+restore-after-delete with the old owner paused after renewal and resumed only
+after takeover. Keep the issue PRE-GC and out of PC-D1B.4; `GC_ENABLED=false`
+remains mandatory.
+
 ### ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01: Revert/restore paths publish borrowed block dependencies with no pin, `pub:`, repair, or fence
 
 **Status**: 🔴 Open — characterized by the PC-0 audit (2026-09-10); reclassified, not fixed in the characterization PR
