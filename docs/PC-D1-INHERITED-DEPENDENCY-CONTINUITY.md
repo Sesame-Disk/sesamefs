@@ -1,12 +1,14 @@
 # PC-D1 - Inherited dependency continuity decision
 
 **Status:** DECIDED architecture freeze; PC-D1A authority foundation
-implemented; PR #228 implements the fail-closed certifier gate. Cold-path mapping
-promotion where SHA-1-only identities need it and a productive consumer remain open. Historical backfill is a
-greenfield non-goal (2026-09-20; see the note in section 5).
+implemented; PR #228 implements the fail-closed certifier gate; PC-D1B.3
+mapping authority/cold-path promotion is implemented in PR #233 (pending merge).
+The productive consumer remains open. Historical backfill is a greenfield
+non-goal (2026-09-20; see the note in section 5).
 **PC-D1A implementation:** canonical witness schema and HEAD-fenced/global-SERIAL
 authority primitives landed 2026-09-19. PR #228 implements the read-only certifier
-gate; mapping promotion and any productive consumer remain open.
+gate; PC-D1B.3 mapping promotion is implemented in PR #233 (pending merge), and
+a productive consumer remains open.
 **Issue:** `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
 **Branch:** `docs/pc-d1-inherited-dependency-continuity`
 **Decision development baseline:** `main@2936c1179` (PC-1 merged)
@@ -517,8 +519,8 @@ The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier evidence
   `git diff --check` validation.
 
 The issue is marked **decision resolved / PC-D1A authority foundation and
-PC-D1B.1 certifier gate implemented / mapping coverage, lifecycle fence, and
-productive-consumer work open**.
+PC-D1B.1 certifier gate implemented / PC-D1B.3 mapping coverage implemented in
+PR #233 (pending merge) / lifecycle fence and productive-consumer work open**.
 W2, R31, X1, content resurrection, G4/G5, and
 `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` remain OPEN. No funnel is migrated,
 no publication runtime changes, and no GC activation is permitted.

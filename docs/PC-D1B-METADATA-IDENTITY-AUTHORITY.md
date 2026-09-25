@@ -1,6 +1,6 @@
 # PC-D1B Metadata Identity Authority Decision
 
-**Status as of 2026-09-23:** DECIDED; PR #231 wires the merged primitive into production writers and deleters, PR #228 consumes those claims in the cold-path certifier, and PC-D1B.3 adds the Mapping Authority with cold-path promotion (M18/M19). The certification-window lifecycle fence and a productive consumer remain separate. This document owns
+**Status as of 2026-09-25:** DECIDED; PR #231 wires the merged primitive into production writers and deleters, PR #228 consumes those claims in the cold-path certifier, and PC-D1B.3 adds the Mapping Authority with cold-path promotion (M18/M19). The certification-window lifecycle fence and a productive consumer remain separate. This document owns
 the reasoning, the rejected alternatives and the required evidence. The
 current status of the finding lives in
 [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) and is deliberately not restated here.
@@ -32,7 +32,7 @@ without a matching claim and divergent or partial projections still fail closed.
 <code>library_continuity_certifier_*</code> files) exist on that branch only;
 a reader on the <code>main</code> baseline will not find them.
 
-**Runtime status:** PR #230 added the schema and authority primitive. PR #231 added the scoped writer/deleter wiring and no-bypass fence. PR #228 adds read-only claim consumption to the certifier; mapping promotion and GC activation remain separate.
+**Runtime status:** PR #230 added the schema and authority primitive. PR #231 added the scoped writer/deleter wiring and no-bypass fence. PR #228 adds read-only claim consumption to the certifier; PC-D1B.3 implements mapping promotion in PR #233 (pending merge). GC activation remains separate and prohibited.
 
 ## PR #228 implementation closure (2026-09-22)
 
@@ -88,6 +88,12 @@ has contract `V1`, evidence `physical_bytes_v1` and a canonical lowercase
 SHA-256. Anything else, including empty or unknown evidence, is an unusable
 `Conflict`.
 
+Some concurrent Paxos activity can make a Cassandra `SERIAL` read report
+`RequestErrCASWriteUnknown`. Only that typed ambiguous result is retried, with
+at most two retries; every other read failure remains immediately fail-closed.
+This applies both when settling a claim and when checking the canonical block
+metadata used for provenance.
+
 **Semantic provenance.** The mutable row only nominates a candidate. Promotion
 proves it from the canonical block, which must satisfy three conditions:
 
@@ -114,9 +120,16 @@ the authority with `USING TIMESTAMP 1<<62`
 at `EACH_QUORUM` together with `WRITETIME` to verify it.
 
 - Ordinary writers use wall-clock timestamps, orders of magnitude lower. Under
-  last-write-wins, every ordinary write, earlier, in flight, delayed, replayed
-  as a hint, or even a `DELETE`, is therefore inert against the frozen cell.
-  No writer has to cooperate, and no Paxos is added to the upload path.
+  last-write-wins, every ordinary write, earlier, in flight, delayed or replayed
+  as a hint is therefore inert against the frozen cell. The repository-wide
+  mutation contract allows an explicit `USING TIMESTAMP` only on this freeze;
+  ordinary mapping writers cannot supply one. Productive `DELETE` remains
+  prohibited and inventoried under R11a. No writer has to cooperate, and no
+  Paxos is added to the upload path.
+- `EACH_QUORUM` reaches a quorum in every replica-holding datacenter; it does
+  not reach every replica. Productive mapping resolution pins
+  `LOCAL_QUORUM`, which intersects the frozen quorum in the coordinator's local
+  datacenter even when the configured session consistency is `ONE`.
 - If the row already resolves elsewhere when the freeze runs, the projection
   is `Diverged`. It is never overwritten, and the mapping stays unusable.
 - A claim is consumable only when its projection is `Frozen`.
@@ -136,9 +149,12 @@ plus the projection state.
 
 **Cold path only.** Upload writers (`WriteBlockIDMapping`,
 `WriteVerifiedWebBlockMapping`) are unchanged: plain read-before-write with no
-LWT. An AST contract confines acquisition symbols to the primitive and the
-certifier. A real-Cassandra observer records that the upload writers issue no
-LWT or mapping-authority statement.
+LWT. AST contracts confine acquisition symbols to the primitive and certifier,
+pin productive projection reads to `LOCAL_QUORUM`, and inventory production
+mutations to `block_id_mappings`. They require exactly one ordinary timestamp-
+free INSERT, the dominant-timestamp authority freeze, and no production DELETE.
+A real-Cassandra observer records that the upload writers issue no LWT or
+mapping-authority statement.
 
 **Certifier.** For SHA-1-only files the certifier consumes only a claim whose
 projection is frozen. It then requires the named canonical block to still be
@@ -177,7 +193,7 @@ The residual cases are handled explicitly:
   until the row agrees again. It is never repaired from here.
 
 **Mutation evidence.**
-`scripts/pc-d1b3-mapping-authority-mutation-validation.sh` runs 17 directed
+`scripts/pc-d1b3-mapping-authority-mutation-validation.sh` runs 21 directed
 legs, each required to fail with its own diagnostic:
 
 - M18a: consume without a frozen projection.
@@ -195,6 +211,12 @@ legs, each required to fail with its own diagnostic:
 - S1 and S2: `LOCAL_SERIAL` claim or read.
 - H1 and H2: upload-writer LWT or promotion.
 - I1: claim retirement.
+- M20: productive mapping reads weakened from `LOCAL_QUORUM` to `ONE`.
+- M21: an ambiguous-CAS error from the strong canonical-block read is no longer
+  retried during concurrent authority promotion.
+- T2/H3: an ordinary mapping INSERT gains an explicit timestamp above the
+  frozen timestamp.
+- DEL1: a production DELETE is added despite the R11a prohibition.
 
 With `--with-integration` it also runs T1 on real Cassandra and MinIO. T1
 replaces the dominant-timestamp freeze with an ordinary rewrite. The reproducer
@@ -245,6 +267,16 @@ runs an isolated fixture under `LOCAL_SERIAL` client sessions:
   DC without repair, and certifies only after the row agrees again.
 - MAPPING-3DC-5: a mapping converged in every DC but without provenance stays
   unproven, and no claim is written.
+
+These RF=1-per-DC scenarios establish cross-DC freeze behavior; they cannot
+distinguish `ONE` from `LOCAL_QUORUM` within a DC. The productive reader floor
+is protected by the structural contract and its `LOCAL_QUORUM` → `ONE` mutation.
+
+`CassandraStore.lookupBlockMapping()` in `internal/gc/store_cassandra.go` is a
+separate GC resolver and still inherits session consistency. It remains a
+P2/PRE-GC follow-up; before GC activation, pin it to the projection-read
+contract or provide an explicit consistency proof. `GC_ENABLED=false` remains
+mandatory. This PR does not expand into GC runtime work.
 
 The main leg also runs the real-Cassandra mapping, EMPTY_SHA1, zero-block,
 SHA-1-only and whitespace edge tests.
@@ -1035,9 +1067,10 @@ by this matrix.
    <code>identity_unproven</code>; #228 must not issue a witness for it. This
    permits the certifier to land fail-closed before mapping promotion.
 5. Specify and audit the separate mapping-authority representation and
-   cold-path promotion path (M18-M19), including its operational runbook. A
-   library with SHA-1-only dependencies needs successful promotion before it
-   can be certified; promotion is not a prerequisite for #228 to fail closed.
+   cold-path promotion path (M18-M19), including its operational runbook.
+   **Implemented by PC-D1B.3 / PR #233 (pending merge).** A library with
+   SHA-1-only dependencies needs successful promotion before it can be
+   certified; promotion is not a prerequisite for #228 to fail closed.
 6. Specify the certification-window fence before destructive GC activation
    and before the first productive consumer, and re-scope it to PR #228 if a
    non-GC reachable delete is demonstrated. **Specified by PC-D1B.4**

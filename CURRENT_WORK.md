@@ -1,13 +1,17 @@
 # Current Work - SesameFS
 
-**Active branch — PR #233, PC-D1B.3 Mapping Authority (rebasing onto `origin/main@cc57cd2dc`, 2026-09-25):**
+**Active branch — PR #233, PC-D1B.3 Mapping Authority (rebased onto `origin/main@cc57cd2dc`, 2026-09-25):**
 This branch adds the write-once, byte-proven mapping authority and cold-path
 promotion, and closes the final mapping-projection cross-audit findings with a
 pinned `LOCAL_QUORUM` reader and repository-wide production mutation inventory.
-The PC-D1B.4 lifecycle decision from current `main` remains intact; its runtime
-and the separate GC resolver follow-up stay out of scope. `GC_ENABLED=false`
-remains mandatory. Re-run validation against the rebased tree before
-republishing the branch.
+Post-rebase Docker validation: `go test ./...`, `go vet ./...`, and
+`go test -race -short -timeout 20m ./...` pass; the directed source mutations
+plus real-Cassandra T1 are 22/22 expected RED; the isolated mapping 3-DC
+harness passes; the full `go-integration-test` Compose profile passes in
+279.731s. The profile's separately gated 3-DC suites require their own harness
+variables. The PC-D1B.4 lifecycle decision from current `main` remains intact;
+its runtime and the separate GC resolver follow-up stay out of scope.
+`GC_ENABLED=false` remains mandatory.
 
 **Merged PC-D1B.4 certification-window lifecycle fence — cross-audit round 4, final Paxos race characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
 Decision record: [docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md](docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md),

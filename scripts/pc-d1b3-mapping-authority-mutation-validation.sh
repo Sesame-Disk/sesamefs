@@ -157,6 +157,31 @@ i1_claim_retirement() {
     expect_red "I1 mapping claim retirement" "unauthorized operation on block_mapping_authority_claims" '^TestBlockMappingAuthorityClaimsAreImmutableRepositoryWide$'
 }
 
+# M20: productive mapping resolution falls back to a potentially stale ONE
+# replica after the EACH_QUORUM temporal freeze.
+m20_projection_reader_one() {
+    mutate "$PRIMITIVE" 's/BlockMappingProjectionReadConsistency = gocql\.LocalQuorum/BlockMappingProjectionReadConsistency = gocql.One/'
+    expect_red "M20 productive mapping reader uses ONE" "productive block mapping consistency = ONE, want LOCAL_QUORUM" '^TestBlockMappingProjectionReadsPinLocalQuorum$'
+}
+
+# M21: an ambiguous CAS result from the strong metadata read is not retried.
+m21_no_ambiguous_serial_retry() {
+    mutate "$PRIMITIVE" 's/blockMappingSerialReadRetryLimit = 2/blockMappingSerialReadRetryLimit = 0/'
+    expect_red "M21 strong SERIAL read does not retry ambiguous CAS" "strong SERIAL metadata read =" '^TestProveBlockMappingCandidateRetriesAmbiguousCASOnStrongRead$'
+}
+
+# T2/H3: an ordinary writer supplies a timestamp above the authority freeze.
+t2_ordinary_writer_supersedes_freeze() {
+    mutate "$WRITERS" 's/(INSERT INTO block_id_mappings \([^)]*\) VALUES \(\?, \?, \?, \?, \?\))/$1 USING TIMESTAMP ?/; s/, createdAt\)\.Exec\(\)/, createdAt, BlockMappingProjectionFrozenTimestamp + 1).Exec()/'
+    expect_red "T2/H3 ordinary mapping writer timestamp exceeds the freeze" "ordinary block_id_mappings INSERT must not specify USING TIMESTAMP" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# DEL1: a productive mapping DELETE bypasses the R11a mutation contract.
+del1_productive_mapping_delete() {
+    mutate "$WRITERS" 's/\z/\nconst blockMappingAuthorityDeleteMutation = "DELETE FROM block_id_mappings WHERE org_id = ?"\n/'
+    expect_red "DEL1 production mapping DELETE" "production DELETE from block_id_mappings is prohibited by R11a" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
 # T1 (behavioral, real Cassandra + MinIO, requires the running Compose stack):
 # replace the dominant-timestamp freeze with an ordinary rewrite. An ordinary
 # write between the final recheck and the witness CAS then reaches readers
@@ -198,6 +223,10 @@ ALL_MUTATIONS=(
     r1_promotion_ignores_representation
     r2_consumption_ignores_representation
     e1_accept_unsupported_evidence
+    m20_projection_reader_one
+    m21_no_ambiguous_serial_retry
+    t2_ordinary_writer_supersedes_freeze
+    del1_productive_mapping_delete
 )
 
 WITH_INTEGRATION=0
@@ -228,7 +257,7 @@ done
 docker exec "$RUNNER" go version >/dev/null || fail "Docker mutation runner did not start"
 
 # Baseline: every targeted contract must be green before any mutation.
-baseline="$(docker exec "$RUNNER" go test ./internal/db -count=1 -run '^(TestContinuityWalkerRequiresFrozenProjection|TestCertifierRechecksMappingAuthorityBeforeWitness|TestPromoteBlockMappingAuthorityClaimsOnlyProvedCandidateThenFreezes|TestBlockMappingProjectionDecisionNeverRepairsDivergence|TestRevalidateContinuityMappingAuthorityBeforeWitness|TestBlockMappingAuthorityConflictKeepsDurableWinner|TestPromoteBlockMappingAuthorityReturnsExistingClaimWithoutReadingMutable|TestBlockMappingConvergenceIsNotProvenance|TestBlockMappingProvenanceRequiresBothContentDigests|TestBlockMappingProvenanceBindsRepresentation|TestContinuityWalkerBindsMappedBlockRepresentation|TestStoredBlockMappingClaimRequiresSupportedEvidence|TestBlockMappingAuthorityPinsGlobalSerial|TestBlockMappingAuthorityAcquisitionIsColdPathOnly|TestBlockMappingAuthorityClaimsAreImmutableRepositoryWide)$' 2>&1)" || {
+baseline="$(docker exec "$RUNNER" go test ./internal/db -count=1 -run '^(TestContinuityWalkerRequiresFrozenProjection|TestCertifierRechecksMappingAuthorityBeforeWitness|TestPromoteBlockMappingAuthorityClaimsOnlyProvedCandidateThenFreezes|TestBlockMappingProjectionDecisionNeverRepairsDivergence|TestRevalidateContinuityMappingAuthorityBeforeWitness|TestBlockMappingAuthorityConflictKeepsDurableWinner|TestPromoteBlockMappingAuthorityReturnsExistingClaimWithoutReadingMutable|TestBlockMappingConvergenceIsNotProvenance|TestBlockMappingProvenanceRequiresBothContentDigests|TestBlockMappingProvenanceBindsRepresentation|TestContinuityWalkerBindsMappedBlockRepresentation|TestStoredBlockMappingClaimRequiresSupportedEvidence|TestBlockMappingAuthorityPinsGlobalSerial|TestBlockMappingAuthorityAcquisitionIsColdPathOnly|TestBlockMappingAuthorityClaimsAreImmutableRepositoryWide|TestBlockMappingProjectionReadsPinLocalQuorum|TestBlockMappingAuthoritySerialReadRetriesOnlyAmbiguousCAS|TestProveBlockMappingCandidateRetriesAmbiguousCASOnStrongRead|TestBlockMappingMutationsAreRepositoryWideInventoried)$' 2>&1)" || {
     echo "$baseline"
     fail "targeted contracts are not green before mutation"
 }

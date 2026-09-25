@@ -4,6 +4,7 @@ package db
 
 import (
 	"context"
+	"errors"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
@@ -26,9 +27,23 @@ func ClaimBlockMappingAuthorityForIntegration(ctx context.Context, session *gocq
 	if err != nil {
 		return IdentityClaimUnknown, nil, err
 	}
-	return claimBlockMappingAuthority(ctx, session, blockMappingProvenance{
+	outcome, stored, err := claimBlockMappingAuthority(ctx, session, blockMappingProvenance{
 		identity:   identity,
 		internalID: internalID,
 		evidence:   evidence,
 	})
+	if err == nil {
+		return outcome, stored, nil
+	}
+	settled, found, settleErr := readBlockMappingAuthority(ctx, session, identity)
+	if settleErr != nil {
+		return IdentityClaimUnknown, nil, errors.Join(err, settleErr)
+	}
+	if !found {
+		return IdentityClaimUnknown, nil, err
+	}
+	if settled.InternalID == internalID {
+		return IdentityClaimIdempotent, &settled, nil
+	}
+	return IdentityClaimConflict, &settled, nil
 }

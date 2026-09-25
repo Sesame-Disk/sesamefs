@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Sesame-Disk/sesamefs/internal/metrics"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -292,6 +293,35 @@ func TestPromoteBlockMappingAuthoritySettlesAmbiguousClaim(t *testing.T) {
 	other := &fakeMappingPorts{candidate: testMappingB, candidateOK: true, claimErr: unavailable, settle: storedMappingClaim(testMappingA)}
 	if result, _ := promoteBlockMappingAuthority(context.Background(), other.ports(), testMappingIdentity(t)); result.Outcome != BlockMappingAuthorityConflict || result.Authority != testMappingA {
 		t.Fatalf("ambiguous claim settled to another value = %+v; want conflict resolving A", result)
+	}
+}
+
+func TestProveBlockMappingCandidateRetriesAmbiguousCASOnStrongRead(t *testing.T) {
+	previousRead := readBlockRepairAuthorityContextFn
+	t.Cleanup(func() { readBlockRepairAuthorityContextFn = previousRead })
+	calls := 0
+	readBlockRepairAuthorityContextFn = func(_ context.Context, _ *DB, _, _ string, mode BlockAuthorityRead) (blockRepairAuthorityRow, bool, error) {
+		calls++
+		if mode != BlockAuthorityStrong {
+			return blockRepairAuthorityRow{}, false, errors.New("candidate provenance must use a strong read")
+		}
+		if calls == 1 {
+			return blockRepairAuthorityRow{}, false, &gocql.RequestErrCASWriteUnknown{}
+		}
+		return blockRepairAuthorityRow{
+			blockIdentityRepairRow: blockIdentityRepairRow{
+				RepresentationID:    PlainBlockRepresentationID,
+				StorageClass:        "STANDARD",
+				StorageClassPresent: true,
+				StorageKey:          "blocks/" + testMappingA,
+			},
+			StorageKeyPresent: true,
+		}, true, nil
+	}
+
+	_, err := proveBlockMappingCandidate(context.Background(), nil, nil, testMappingIdentity(t), testMappingA)
+	if calls != 2 || err == nil || !strings.Contains(err.Error(), "storage manager unavailable") {
+		t.Fatalf("strong SERIAL metadata read = %v after %d attempts; want retry, then fail at unavailable storage manager", err, calls)
 	}
 }
 

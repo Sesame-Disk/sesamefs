@@ -6065,9 +6065,9 @@ substitute for that pin. Migrating funnels is later PCs. W2 remains OPEN.
 
 ### ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01: PublishableInput is scoped to newly-live dependencies only, not R3's full work set
 
-**Status**: Decision resolved by PC-D1 (2026-09-12); PC-D1A authority foundation landed 2026-09-19 and PR #228 completed the fail-closed certifier gate on 2026-09-22; PC-D1B.3 added mapping authority/M18-M19 on 2026-09-23; the certification-window fence, and the first productive consumer remain OPEN before PC-2
+**Status**: Decision resolved by PC-D1 (2026-09-12); PC-D1A authority foundation landed 2026-09-19; PR #228 completed the fail-closed certifier gate; PC-D1B.3 mapping authority/M18-M19 is implemented in PR #233 (pending merge). The certification-window runtime and first productive consumer remain OPEN before PC-2
 **Severity**: High (P1) — candidate coordinator boundary completeness
-**Affected**: the publication authority/continuity definitions and candidate coordinator boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14), plus the implemented PR #228 certifier gate, remaining cold-path mapping promotion for SHA-1-only identities that need it, the certification-window lifecycle fence, and the first productive consumer (historical backfill is a greenfield non-goal). PC-D1A now provides the canonical witness/HEAD authority foundation; no productive funnel is affected and no productive runtime behavior or GC activation is in this issue closure.
+**Affected**: the publication authority/continuity definitions and candidate coordinator boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14), plus the implemented PR #228 certifier gate, PC-D1B.3 mapping authority in PR #233, the certification-window lifecycle fence, and the first productive consumer (historical backfill is a greenfield non-goal). PC-D1A now provides the canonical witness/HEAD authority foundation; no productive funnel is affected and no productive runtime behavior or GC activation is in this issue closure.
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization audit
 
 #### Problem
@@ -6082,16 +6082,16 @@ PC-0 defines "Publication authority / continuity" and "Publishable input" as cov
 
 PC-0 characterizes today's writers using precisely that delta shape (new blocks only) and carries it into the candidate `PublishableInput` contract while explicitly reproducing and recording R3's caveat without resolving it. If a future `PublicationCoordinator` requires `PublishableInput` only for newly-live dependencies, any continuity gap already present in an inherited dependency (for example, a block that first reached an earlier HEAD through a funnel whose W2 status was `CONDITIONAL` or `UNKNOWN` at the time, per the per-funnel matrix in §5) is carried forward into every later commit that keeps referencing it, and the coordinator boundary as currently drafted has no step that would ever revisit it.
 
-This does not prove the boundary is wrong: re-validating every reachable dependency would be O(tree size) per publish instead of O(new blocks). PC-D1 resolves the architectural question with a certified baseline frontier, preserving the hot path after a valid witness while requiring full certification for an absent or stale witness. PC-D1A now provides the canonical witness columns, fail-closed validity, HEAD-fenced baseline CAS, and atomic HEAD+witness global-SERIAL authority primitives. PR #228 implements the PC-D1B.1 certifier gate: authority-verified metadata, exact-P and GC-aware liveness, revalidation, and witness settlement. Mapping promotion for SHA-1-only identities, lifecycle fencing, and the first productive consumer remain prerequisites before PC-2. Historical backfill is a greenfield non-goal. The Phase 5 counterexample below remains a separate PRE-GC issue.
+This does not prove the boundary is wrong: re-validating every reachable dependency would be O(tree size) per publish instead of O(new blocks). PC-D1 resolves the architectural question with a certified baseline frontier, preserving the hot path after a valid witness while requiring full certification for an absent or stale witness. PC-D1A now provides the canonical witness columns, fail-closed validity, HEAD-fenced baseline CAS, and atomic HEAD+witness global-SERIAL authority primitives. PR #228 implements the PC-D1B.1 certifier gate: authority-verified metadata, exact-P and GC-aware liveness, revalidation, and witness settlement. Mapping promotion for SHA-1-only identities is implemented in PR #233; lifecycle fencing and the first productive consumer remain prerequisites before PC-2. Historical backfill is a greenfield non-goal. The Phase 5 counterexample below remains a separate PRE-GC issue.
 
 #### Scope / disposition
 
-Recorded by PC-D1 (`docs/PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md`). The architecture decision, PC-D1A authority foundation, and PR #228 fail-closed certifier gate are complete. This issue remains OPEN for mapping coverage, lifecycle fencing, and productive integration required before PC-2.
+Recorded by PC-D1 (`docs/PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md`). The architecture decision, PC-D1A authority foundation, and PR #228 fail-closed certifier gate are complete. This issue remains OPEN for lifecycle fencing and productive integration required before PC-2. Mapping coverage is implemented in PR #233 and must merge before a consumer relies on it.
 The single responsibility owner is the **certified baseline frontier**: observe and fully certify a concrete HEAD under continuity contract V, then persist a witness only while that HEAD is still current.
 A valid witness has the semantic form `library X / certified through HEAD H / under continuity contract V`. `WorkSetScopeNewlyLive` may be used incrementally only while that witness matches the current HEAD and accepted contract.
 If the witness is absent, stale, or invalid, the coordinator must fail closed to baseline certification; it may not treat inherited UNKNOWN/CONDITIONAL dependencies as covered by the delta.
 This keeps coordinator and GC ownership distinct: the coordinator/frontier certifies positive continuity, while GC still needs its own sharing-aware negative-retention fix before activation.
-PC-2 may assume the canonical witness columns, fail-closed authority validity, and HEAD-fenced/atomic global-SERIAL primitives; it may not assume that PC-D1B certification, cold-path mapping promotion, exact-P/liveness handshake, lifecycle serialization, or a productive consumer already exist.
+PC-2 may assume the canonical witness columns, fail-closed authority validity, and HEAD-fenced/atomic global-SERIAL primitives; it may not assume that PR #233's mapping authority has merged, or that the exact-P/liveness handshake, lifecycle serialization, or a productive consumer already exist.
 No funnel is migrated by PC-D1A, and no GC configuration changes are part of this issue closure.
 
 "The current GC already protects them" is **not** one of the options. GC Phase 5 (`scanExpiredVersions`) enqueues any
@@ -6163,6 +6163,17 @@ content-resurrection fixes, or changes to W2/R31/X1 status.
 ### ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01: A complete metadata identity is not an authoritative one, and baseline certification cannot tell them apart
 
 **Status**: 🟡 Certifier correctness closed by PR #228 on 2026-09-22: commit/fs_object claims are consumed read-only and unproven or conflicting metadata cannot receive a witness. PC-D1B.3 (2026-09-23) adds the Mapping Authority. It is a write-once global-SERIAL claim per `(org_id, representation_id, external_id)`, acquired only on the cold path after the canonical block, in the claimed representation, has stored bytes that hash to both the SHA-256 and the SHA-1 (semantic provenance). Promotion then freezes the ordinary `block_id_mappings` row to the claim with a dominant `USING TIMESTAMP`, so every wall-clock ordinary write is inert (temporal authority). A SHA-1-only dependency certifies only through a claim with a frozen projection whose block is still in the library's representation, and this is rechecked before the witness CAS. A diverged projection is `identity_conflict` and is never repaired, and a mapping without provenance stays `identity_unproven`. Lifecycle fencing and a productive consumer remain tracked by `ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01`.
+
+PR #233's final cross-audit follow-up pins productive `block_id_mappings`
+resolution to `LOCAL_QUORUM`: `EACH_QUORUM` reaches a quorum in every
+replica-holding DC, not every replica, so a session-level `ONE` read could
+otherwise choose a stale RF>1 replica. A repository-wide production-Go contract
+also inventories all mapping mutations: only the authority freeze may specify
+an explicit timestamp, the ordinary INSERT cannot specify one, and production
+DELETE remains prohibited by R11a. `CassandraStore.lookupBlockMapping()` in GC
+still inherits session consistency; it is tracked separately as P2/PRE-GC and
+must use the pinned read contract or gain an explicit consistency proof before
+GC activation. `GC_ENABLED=false` remains mandatory.
 **Severity**: High (P1) - certified-baseline correctness prerequisite
 **Affected**: the PC-D1B.1 certifier (`CertifyLibraryBaseline`, `readContinuityCommitProjectionContext`, `walkContinuityTree`, `resolveBlockIDs`), every `commits` / `fs_objects` writer and deletion path, `block_id_mappings` and every one of its writers (`WriteBlockIDMapping`, the web-only `WriteVerifiedWebBlockMapping`, and any future mapping writer), and any future consumer of the continuity witness
 **Registered**: 2026-09-20, PC-D1B metadata-identity authority audit

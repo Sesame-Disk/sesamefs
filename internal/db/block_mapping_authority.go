@@ -50,6 +50,17 @@ const BlockMappingEvidencePhysicalBytesV1 = "physical_bytes_v1"
 // never deletes block_id_mappings rows (R11a), so nothing needs to supersede it.
 const BlockMappingProjectionFrozenTimestamp int64 = 1 << 62
 
+// BlockMappingProjectionReadConsistency pins productive mapping resolution to
+// a local quorum. The promotion freeze reaches EACH_QUORUM, which guarantees a
+// quorum in each replica-holding datacenter, not every replica. A local quorum
+// read intersects the frozen quorum in the coordinator's local datacenter.
+const BlockMappingProjectionReadConsistency = gocql.LocalQuorum
+
+// A global SERIAL read can itself return Cassandra's ambiguous-CAS error while
+// a Paxos round is completing. Retry only that transient protocol result; every
+// other read failure remains fail-closed immediately.
+const blockMappingSerialReadRetryLimit = 2
+
 // BlockMappingAuthorityClaim is one stored mapping claim.
 type BlockMappingAuthorityClaim struct {
 	OrgID            string
@@ -300,14 +311,20 @@ func readBlockMappingAuthority(ctx context.Context, session *gocql.Session, iden
 	if err := ctx.Err(); err != nil {
 		return claim, false, err
 	}
-	err := session.Query(`
-		SELECT internal_id, contract_version, evidence, created_at
-		FROM block_mapping_authority_claims
-		WHERE org_id = ? AND representation_id = ? AND external_id = ?
-	`, identity.orgID, identity.representationID, identity.externalID).
-		WithContext(ctx).
-		Consistency(IdentityAuthorityReadConsistency).
-		Scan(&claim.InternalID, &claim.ContractVersion, &claim.Evidence, &claim.CreatedAt)
+	err := retryAmbiguousGlobalSerialRead(ctx, func() error {
+		claim.InternalID = ""
+		claim.ContractVersion = ""
+		claim.Evidence = ""
+		claim.CreatedAt = time.Time{}
+		return session.Query(`
+			SELECT internal_id, contract_version, evidence, created_at
+			FROM block_mapping_authority_claims
+			WHERE org_id = ? AND representation_id = ? AND external_id = ?
+		`, identity.orgID, identity.representationID, identity.externalID).
+			WithContext(ctx).
+			Consistency(IdentityAuthorityReadConsistency).
+			Scan(&claim.InternalID, &claim.ContractVersion, &claim.Evidence, &claim.CreatedAt)
+	})
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return claim, false, nil
@@ -315,6 +332,32 @@ func readBlockMappingAuthority(ctx context.Context, session *gocql.Session, iden
 		return claim, false, fmt.Errorf("read block mapping authority %s: %w", identity.externalID, err)
 	}
 	return claim, true, nil
+}
+
+func retryAmbiguousGlobalSerialRead(ctx context.Context, read func() error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := read()
+		if err == nil {
+			return nil
+		}
+		var ambiguous *gocql.RequestErrCASWriteUnknown
+		if !errors.As(err, &ambiguous) || attempt >= blockMappingSerialReadRetryLimit {
+			return err
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 // --- projection freeze (temporal authority) ---------------------------------
@@ -326,7 +369,8 @@ type blockMappingProjectionRow struct {
 }
 
 // ReadBlockMappingProjection reads the ordinary mapping row and whether it is
-// frozen, at EACH_QUORUM so every datacenter's copy is covered.
+// frozen, at EACH_QUORUM so a quorum in every replica-holding datacenter is
+// covered.
 func ReadBlockMappingProjection(ctx context.Context, session *gocql.Session, orgID, representationID, externalID string) (internalID string, frozen, found bool, err error) {
 	identity, err := canonicalBlockMappingIdentity(orgID, representationID, externalID)
 	if err != nil {
@@ -431,7 +475,13 @@ func proveBlockMappingCandidate(ctx context.Context, database *DB, storageManage
 	if !IsSHA256BlockID(candidate) || candidate != strings.ToLower(candidate) {
 		return blockMappingProvenance{}, fmt.Errorf("%w: candidate %q is not a canonical SHA-256", errBlockMappingEvidenceMismatch, candidate)
 	}
-	row, found, err := readBlockRepairAuthorityContextFn(ctx, database, identity.orgID, candidate, BlockAuthorityStrong)
+	var row blockRepairAuthorityRow
+	var found bool
+	err := retryAmbiguousGlobalSerialRead(ctx, func() error {
+		var readErr error
+		row, found, readErr = readBlockRepairAuthorityContextFn(ctx, database, identity.orgID, candidate, BlockAuthorityStrong)
+		return readErr
+	})
 	if err != nil {
 		return blockMappingProvenance{}, fmt.Errorf("read canonical block %s: %w", candidate, err)
 	}

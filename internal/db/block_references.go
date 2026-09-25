@@ -599,7 +599,10 @@ func (db *DB) GetBlockIDMappingContext(ctx context.Context, orgID, representatio
 	}
 	err = db.Session().Query(`
 		SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?
-	`, orgID, representationID, externalID).WithContext(ctx).Scan(&internalID)
+	`, orgID, representationID, externalID).
+		WithContext(ctx).
+		Consistency(BlockMappingProjectionReadConsistency).
+		Scan(&internalID)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return "", false, nil
