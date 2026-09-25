@@ -2,15 +2,22 @@
 
 **Active branch — PR #233, PC-D1B.3 Mapping Authority (rebased onto `origin/main@cc57cd2dc`, 2026-09-25):**
 This branch adds the write-once, byte-proven mapping authority and cold-path
-promotion, and closes the final mapping-projection cross-audit findings with a
-pinned `LOCAL_QUORUM` reader and repository-wide production mutation inventory.
-Post-rebase Docker validation: `go test ./...`, `go vet ./...`, and
-`go test -race -short -timeout 20m ./...` pass; the directed source mutations
-plus real-Cassandra T1 are 22/22 expected RED; the isolated mapping 3-DC
-harness passes; the full `go-integration-test` Compose profile passes in
-279.731s. The profile's separately gated 3-DC suites require their own harness
-variables. The PC-D1B.4 lifecycle decision from current `main` remains intact;
-its runtime and the separate GC resolver follow-up stay out of scope.
+promotion. Productive mapping resolution pins `LOCAL_QUORUM`; the upload
+read-before-write check inherits the configured session consistency. The source
+guard inventories both readers, resolves each `Query` at its call site, follows
+known helper arguments, fails closed on unclassified dynamic queries, checks
+the counted allowlist for existing fixed-table dynamic builders, associates
+consistency with its own query chain, and rejects aliases of the freeze
+primitive. Docker verification for this audit is
+complete: all 31 directed source mutations plus real-Cassandra T1 were expected
+RED (32/32); the 3-DC mapping authority, outage and recovery harness passed;
+`go test ./... -count=1`, `go vet ./...`, and
+`go test -race -short -timeout 20m ./...` passed; the full
+`go-integration-test` Compose profile passed in 294.258s, including
+real-Cassandra certifier and upload-writer checks. The recovery harness probes
+global SERIAL readiness after restoring the DCs before checking certification.
+The PC-D1B.4 lifecycle decision from current `main` remains intact; its runtime
+and the separate GC resolver follow-up stay out of scope.
 `GC_ENABLED=false` remains mandatory.
 
 **Merged PC-D1B.4 certification-window lifecycle fence — cross-audit round 4, final Paxos race characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
@@ -455,7 +462,7 @@ Status after PC-1 / PC-D1 / HEAD SERIAL domain:
 PC-0: CLOSED / characterization complete (#211)
 H1:   CLOSED (#214)
 PC-1: CLOSED (2026-09-11)
-PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation and the fail-closed PC-D1B.1 certifier gate landed; mapping promotion, the lifecycle fence runtime (decided by PC-D1B.4), and first productive consumer remain required before PC-2 (historical backfill is a greenfield non-goal)
+PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation, the fail-closed PC-D1B.1 certifier gate, and PC-D1B.3 Mapping Authority are implemented (PR #233 pending merge); the lifecycle fence runtime (PC-D1B.5) and first productive consumer remain before PC-2 (historical backfill is a greenfield non-goal)
 ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01: CLOSED (2026-09-14) — global SERIAL prerequisite satisfied
 PC-2: NOT STARTED
 W2:   OPEN
@@ -463,14 +470,10 @@ R31:  OPEN
 G4:   OPEN
 X1:   OPEN
 Next PC-D1B stages, in order:
-1. Add a separate mapping-authority representation, then cold-path promotion
-   (M18-M19) for SHA-1-only identities that need coverage. Until then, the
-   certifier returns `identity_unproven` without a witness for mapping-dependent
-   SHA-1-only identities.
-2. Implement the certification-window fence decided by PC-D1B.4 (PC-D1B.5,
+1. Implement the certification-window fence decided by PC-D1B.4 (PC-D1B.5,
    docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md §18) before destructive GC and
    before the first productive consumer.
-3. Add a productive consumer only after the lifecycle fence and required mapping
+2. Add a productive consumer only after the lifecycle fence and required mapping
    coverage are complete. Then PC-2 (migrate CreateFileFromBlocks / shared Once
    preserving stage < repair < final exact-P revalidation < HEAD); H4 (GC Phase 5)
    before any GC activation; H5 before X1. Preserve the atomic HEAD+witness CAS

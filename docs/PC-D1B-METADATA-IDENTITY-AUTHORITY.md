@@ -130,6 +130,10 @@ at `EACH_QUORUM` together with `WRITETIME` to verify it.
   not reach every replica. Productive mapping resolution pins
   `LOCAL_QUORUM`, which intersects the frozen quorum in the coordinator's local
   datacenter even when the configured session consistency is `ONE`.
+- The upload writers' pre-write conflict check is a separate reader. It leaves
+  consistency unset so it inherits the configured session value, preserving
+  the existing upload contract when that value is `ONE`. The source guard
+  inventories it separately from productive `LOCAL_QUORUM` resolution.
 - If the row already resolves elsewhere when the freeze runs, the projection
   is `Diverged`. It is never overwritten, and the mapping stays unusable.
 - A claim is consumable only when its projection is `Frozen`.
@@ -193,8 +197,8 @@ The residual cases are handled explicitly:
   until the row agrees again. It is never repaired from here.
 
 **Mutation evidence.**
-`scripts/pc-d1b3-mapping-authority-mutation-validation.sh` runs 21 directed
-legs, each required to fail with its own diagnostic:
+`scripts/pc-d1b3-mapping-authority-mutation-validation.sh` runs 31 directed
+source legs, each required to fail with its own diagnostic:
 
 - M18a: consume without a frozen projection.
 - M18b: a lost CAS reports its candidate.
@@ -217,8 +221,23 @@ legs, each required to fail with its own diagnostic:
 - T2/H3: an ordinary mapping INSERT gains an explicit timestamp above the
   frozen timestamp.
 - DEL1: a production DELETE is added despite the R11a prohibition.
+- A1/A2: direct or aliased calls bypass the confined freeze primitive.
+- T3/T4/D2: assembled or unresolved mapping CQL cannot escape inventory.
+- T5/T6/T7: call-site reassignment, generic helper arguments, or runtime table
+  identity cannot hide a mapping query.
+- R3/R4: unclassified mapping readers and consistency on an unrelated query
+  fail the reader contract.
 
-With `--with-integration` it also runs T1 on real Cassandra and MinIO. T1
+Unresolved CQL `Query` arguments fail closed unless they are one of the
+function-specific dynamic builders explicitly listed with an expected call-site
+count in the guard. Those allowlisted builders retain fixed non-mapping table
+identity; GC hard-delete lock builders additionally inventory their literal
+table/partition-key pairs. Migration execution is separately allowlisted to the
+checked-in migration statements.
+
+With `--with-integration` it also runs T1 on real Cassandra and MinIO in a
+private Compose project. The final suite is 32/32 expected RED: the 31 source
+legs above plus T1. T1
 replaces the dominant-timestamp freeze with an ordinary rewrite. The reproducer
 that writes B between the final recheck and the witness CAS must then fail,
 because readers resolve B after the witness. The freeze, not the recheck, is
@@ -260,7 +279,9 @@ runs an isolated fixture under `LOCAL_SERIAL` client sessions:
 - MAPPING-3DC-3: with dc-eu and dc-asia stopped, no claim can be established
   and certification is UNKNOWN without a witness. After recovery nothing was
   claimed and the library certifies. A `LOCAL_SERIAL` claim would have
-  applied here.
+  applied here. Before the recovery assertion, the harness waits for a global
+  `SERIAL` probe against a deliberately unusable claim in its disposable
+  keyspace; healthy gossip and `EACH_QUORUM` alone do not prove Paxos recovery.
 - MAPPING-3DC-4: an ordinary B written after promotion is inert in every DC,
   and the library certifies from each DC resolving A.
 - MAPPING-3DC-4b: an unfrozen claim with B in every DC fails closed from each

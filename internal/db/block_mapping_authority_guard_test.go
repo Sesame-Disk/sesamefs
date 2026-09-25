@@ -63,8 +63,44 @@ type blockMappingResolvedString struct {
 // pieces keep the known fragments so a split table name still taints the
 // statement and fails closed.
 type blockMappingSourceStrings struct {
-	functions map[string]*ast.FuncDecl
-	globals   map[string]ast.Expr
+	functions     map[string]*ast.FuncDecl
+	functionPaths map[string]string
+	globals       map[string]ast.Expr
+	dynamicValues map[ast.Expr]bool
+}
+
+// These production CQL builders use dynamic fragments but have fixed table
+// identity in their own source. Keep their exact call-site inventory explicit;
+// any new unresolved Query must be reviewed and classified before the guard can
+// pass. The hard-delete lock builders are additionally pinned to their three
+// known table/partition-key pairs below.
+type blockMappingDynamicQueryContract struct {
+	count       int
+	tableMarker string
+}
+
+var blockMappingDynamicQueryAllowlist = map[string]map[string]blockMappingDynamicQueryContract{
+	"internal/api/v2/admin.go": {
+		"UpdateOrganization": {count: 1, tableMarker: "UPDATE organizations SET"}, // validated update columns.
+	},
+	"internal/api/v2/admin_link_helpers.go": {
+		"listAdminLinkProjectionCursorPage":          {count: 1, tableMarker: "FROM admin_links_by_created"},
+		"listAdminLinkProjectionCursorPageByOrg":     {count: 1, tableMarker: "FROM admin_links_by_org_created"},
+		"listAdminLinkProjectionCursorPageByCreator": {count: 1, tableMarker: "FROM admin_links_by_org_created"},
+	},
+	"internal/api/v2/libraries.go": {
+		"UpdateLibrary": {count: 1, tableMarker: "UPDATE libraries SET"}, // dynamic SET fields come from a closed request mapping.
+	},
+	"internal/api/v2/org_admin.go": {
+		"updateOrgSetting": {count: 1, tableMarker: "UPDATE organizations SET settings["}, // key is checked against allowedOrgSettingKeys.
+	},
+	"internal/gc/store_cassandra.go": {
+		"ListFailedItems":       {count: 2, tableMarker: "FROM gc_failed_items"},  // optional LIMIT only.
+		"PendingItemExists":     {count: 1, tableMarker: "FROM gc_pending_items"}, // optional clustering-key restriction.
+		"acquireHardDeleteLock": {count: 2},                                       // fixed lock tables, enforced by the invocation inventory below.
+		"renewHardDeleteLock":   {count: 1},
+		"releaseHardDeleteLock": {count: 1},
+	},
 }
 
 func blockMappingCallName(expr ast.Expr) string {
@@ -98,7 +134,7 @@ func blockMappingResolveAlias(expr ast.Expr, locals map[string]ast.Expr, seen ma
 	}
 }
 
-func blockMappingLocalStrings(body ast.Node, parameters *ast.FieldList, arguments []ast.Expr, outer map[string]ast.Expr, source *blockMappingSourceStrings) map[string]ast.Expr {
+func blockMappingLocalStrings(body ast.Node, parameters *ast.FieldList, arguments []ast.Expr, outer map[string]ast.Expr, source *blockMappingSourceStrings, activeFunctions map[string]bool, depth int) map[string]ast.Expr {
 	locals := make(map[string]ast.Expr, len(outer)+8)
 	for name, expr := range outer {
 		locals[name] = expr
@@ -108,12 +144,21 @@ func blockMappingLocalStrings(body ast.Node, parameters *ast.FieldList, argument
 		for _, field := range parameters.List {
 			for _, name := range field.Names {
 				if argumentIndex < len(arguments) {
-					resolved := source.resolve(arguments[argumentIndex], outer, map[string]bool{}, map[string]bool{}, 0)
+					resolved := source.resolve(arguments[argumentIndex], outer, map[string]bool{}, activeFunctions, depth+1)
 					if resolved.constant {
 						locals[name.Name] = &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(resolved.text)}
+					} else if resolved.text != "" {
+						dynamic := &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(resolved.text)}
+						locals[name.Name] = dynamic
+						if source.dynamicValues == nil {
+							source.dynamicValues = map[ast.Expr]bool{}
+						}
+						source.dynamicValues[dynamic] = true
 					} else {
 						locals[name.Name] = nil
 					}
+				} else {
+					locals[name.Name] = nil
 				}
 				argumentIndex++
 			}
@@ -158,7 +203,7 @@ func (source *blockMappingSourceStrings) resolve(expr ast.Expr, locals map[strin
 			return blockMappingResolvedString{}
 		}
 		text, err := strconv.Unquote(value.Value)
-		return blockMappingResolvedString{text: text, constant: err == nil}
+		return blockMappingResolvedString{text: text, constant: err == nil && !source.dynamicValues[value]}
 	case *ast.Ident:
 		if seenLocals[value.Name] {
 			return blockMappingResolvedString{}
@@ -232,7 +277,7 @@ func (source *blockMappingSourceStrings) resolve(expr ast.Expr, locals map[strin
 			active[current] = running
 		}
 		active[name] = true
-		functionLocals := blockMappingLocalStrings(function.Body, function.Type.Params, value.Args, locals, source)
+		functionLocals := blockMappingLocalStrings(function.Body, function.Type.Params, value.Args, locals, source, active, depth)
 		var result blockMappingResolvedString
 		found := false
 		ast.Inspect(function.Body, func(node ast.Node) bool {
@@ -252,12 +297,200 @@ func (source *blockMappingSourceStrings) resolve(expr ast.Expr, locals map[strin
 
 func (source *blockMappingSourceStrings) queryLocals(function *ast.FuncDecl, functionLiteral *ast.FuncLit) map[string]ast.Expr {
 	if function != nil {
-		return blockMappingLocalStrings(function.Body, function.Type.Params, nil, source.globals, source)
+		return blockMappingLocalStrings(function.Body, function.Type.Params, nil, source.globals, source, nil, 0)
 	}
 	if functionLiteral != nil {
-		return blockMappingLocalStrings(functionLiteral.Body, functionLiteral.Type.Params, nil, source.globals, source)
+		return blockMappingLocalStrings(functionLiteral.Body, functionLiteral.Type.Params, nil, source.globals, source, nil, 0)
 	}
 	return source.globals
+}
+
+// queryLocalsAt resolves assignments that precede a particular Query call.
+// Assignments in a control-flow region are invalidated conservatively because
+// walking both branches in source order cannot prove which value reaches the
+// call site.
+func (source *blockMappingSourceStrings) queryLocalsAt(function *ast.FuncDecl, functionLiteral *ast.FuncLit, arguments []ast.Expr, outer map[string]ast.Expr, at token.Pos) map[string]ast.Expr {
+	var body ast.Node
+	var parameters *ast.FieldList
+	if function != nil {
+		body, parameters = function.Body, function.Type.Params
+	} else if functionLiteral != nil {
+		body, parameters = functionLiteral.Body, functionLiteral.Type.Params
+	}
+	locals := blockMappingLocalStrings(nil, parameters, arguments, outer, source, nil, 0)
+	if body == nil {
+		return locals
+	}
+	ast.Inspect(body, func(node ast.Node) bool {
+		if node == nil || node.Pos() >= at {
+			return true
+		}
+		switch value := node.(type) {
+		case *ast.AssignStmt:
+			for index, left := range value.Lhs {
+				name, ok := left.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				if index < len(value.Rhs) {
+					locals[name.Name] = value.Rhs[index]
+				} else {
+					locals[name.Name] = nil
+				}
+			}
+		case *ast.ValueSpec:
+			for index, name := range value.Names {
+				if index < len(value.Values) {
+					locals[name.Name] = value.Values[index]
+				}
+			}
+		}
+		return true
+	})
+	ast.Inspect(body, func(node ast.Node) bool {
+		if node == nil || node.Pos() >= at {
+			return true
+		}
+		switch value := node.(type) {
+		case *ast.IfStmt:
+			blockMappingInvalidateControlAssignments(value, at, locals)
+		case *ast.ForStmt:
+			blockMappingInvalidateControlAssignments(value, at, locals)
+		case *ast.RangeStmt:
+			blockMappingInvalidateControlAssignments(value, at, locals)
+		case *ast.SwitchStmt:
+			blockMappingInvalidateControlAssignments(value, at, locals)
+		case *ast.TypeSwitchStmt:
+			blockMappingInvalidateControlAssignments(value, at, locals)
+		case *ast.SelectStmt:
+			blockMappingInvalidateControlAssignments(value, at, locals)
+		}
+		return true
+	})
+	return locals
+}
+
+func blockMappingInvalidateControlAssignments(control ast.Node, at token.Pos, locals map[string]ast.Expr) {
+	ast.Inspect(control, func(node ast.Node) bool {
+		if node == nil || node.Pos() >= at {
+			return true
+		}
+		switch value := node.(type) {
+		case *ast.AssignStmt:
+			for _, left := range value.Lhs {
+				if name, ok := left.(*ast.Ident); ok {
+					locals[name.Name] = nil
+				}
+			}
+		case *ast.ValueSpec:
+			for _, name := range value.Names {
+				locals[name.Name] = nil
+			}
+		}
+		return true
+	})
+}
+
+func blockMappingQueryChainContains(expr ast.Expr, query *ast.CallExpr) bool {
+	switch value := expr.(type) {
+	case *ast.CallExpr:
+		if value == query {
+			return true
+		}
+		if selector, ok := value.Fun.(*ast.SelectorExpr); ok {
+			return blockMappingQueryChainContains(selector.X, query)
+		}
+	case *ast.SelectorExpr:
+		return blockMappingQueryChainContains(value.X, query)
+	case *ast.ParenExpr:
+		return blockMappingQueryChainContains(value.X, query)
+	}
+	return false
+}
+
+func blockMappingQueryConsistencyNames(body ast.Node, query *ast.CallExpr) []string {
+	var consistencies []string
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) != 1 {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "Consistency" || !blockMappingQueryChainContains(selector.X, query) {
+			return true
+		}
+		switch value := call.Args[0].(type) {
+		case *ast.Ident:
+			consistencies = append(consistencies, value.Name)
+		case *ast.SelectorExpr:
+			if pkg, ok := value.X.(*ast.Ident); ok {
+				consistencies = append(consistencies, pkg.Name+"."+value.Sel.Name)
+			}
+		}
+		return true
+	})
+	return consistencies
+}
+
+func blockMappingHasDirectQuery(body ast.Node) bool {
+	found := false
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if ok && blockMappingCallName(call.Fun) == "Query" {
+			found = true
+			return false
+		}
+		return !found
+	})
+	return found
+}
+
+func blockMappingMigrationQueryAllowlisted(relPath, owner string, argument ast.Expr) bool {
+	// Migration statements come from the checked-in migration inventory and are
+	// deliberately executed as parsed statements rather than inline CQL.
+	identifier, ok := argument.(*ast.Ident)
+	return ok && relPath == "internal/db/migrator.go" && owner == "apply" && identifier.Name == "stmt"
+}
+
+func blockMappingPotentialDynamicQuery(statement string, argument ast.Expr) bool {
+	lower := strings.ToLower(statement)
+	if strings.Contains(lower, "block_id_") || (strings.Contains(lower, "blockid") && strings.Contains(lower, "mapping")) {
+		return true
+	}
+	trimmed := strings.TrimSpace(strings.ToUpper(statement))
+	if strings.HasSuffix(trimmed, " FROM") || strings.HasSuffix(trimmed, " INTO") || strings.HasSuffix(trimmed, " UPDATE") || strings.Contains(trimmed, " FROM WHERE") || strings.Contains(trimmed, " FROM ORDER BY") || strings.Contains(trimmed, " FROM LIMIT") || strings.Contains(trimmed, " INTO VALUES") || strings.Contains(trimmed, " UPDATE WHERE") {
+		return true
+	}
+	potential := false
+	ast.Inspect(argument, func(node ast.Node) bool {
+		if identifier, ok := node.(*ast.Ident); ok {
+			name := strings.ToLower(identifier.Name)
+			if strings.Contains(name, "blockmapping") || strings.Contains(name, "block_mapping") || strings.Contains(name, "blockidmapping") {
+				potential = true
+			}
+		}
+		return true
+	})
+	return potential
+}
+
+func blockMappingParentMap(root ast.Node) map[ast.Node]ast.Node {
+	parents := make(map[ast.Node]ast.Node)
+	var stack []ast.Node
+	ast.Inspect(root, func(node ast.Node) bool {
+		if node == nil {
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			return true
+		}
+		if len(stack) > 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+	return parents
 }
 
 func blockMappingAuthorityParse(t *testing.T, path string) *ast.File {
@@ -364,7 +597,9 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 			t.Fatalf("relative path %s: %v", path, err)
 		}
 		relPath = filepath.ToSlash(relPath)
-		ast.Inspect(blockMappingAuthorityParse(t, path), func(node ast.Node) bool {
+		parsed := blockMappingAuthorityParse(t, path)
+		parents := blockMappingParentMap(parsed)
+		ast.Inspect(parsed, func(node ast.Node) bool {
 			var name string
 			switch value := node.(type) {
 			case *ast.Ident:
@@ -376,6 +611,15 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 			}
 			if allowed, tracked := blockMappingAuthorityAcquisitionSymbols[name]; tracked && !allowed[relPath] {
 				violations = append(violations, relPath+": references "+name)
+			}
+			if name == "freezeBlockMappingProjection" {
+				if _, declarationName := parents[node].(*ast.FuncDecl); declarationName {
+					return true
+				}
+				if call, directCall := parents[node].(*ast.CallExpr); directCall && call.Fun == node {
+					return true
+				}
+				violations = append(violations, relPath+": freezeBlockMappingProjection may not be taken as a function value or aliased")
 			}
 			return true
 		})
@@ -505,17 +749,19 @@ func TestBlockMappingProjectionReadsPinLocalQuorum(t *testing.T) {
 		foundReader = true
 		ast.Inspect(function.Body, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
-			if !ok || len(call.Args) != 1 {
+			if !ok || blockMappingCallName(call.Fun) != "Query" || len(call.Args) == 0 {
 				return true
 			}
-			selector, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || selector.Sel.Name != "Consistency" {
+			literal, ok := call.Args[0].(*ast.BasicLit)
+			if !ok {
 				return true
 			}
-			argument, ok := call.Args[0].(*ast.Ident)
-			if ok && argument.Name == "BlockMappingProjectionReadConsistency" {
-				pinsConsistency = true
+			query, ok := constantIdentityAuthorityString(literal)
+			if !ok || !blockMappingSelectPattern.MatchString(strings.Join(strings.Fields(query), " ")) {
+				return true
 			}
+			consistencies := blockMappingQueryConsistencyNames(function.Body, call)
+			pinsConsistency = len(consistencies) == 1 && consistencies[0] == "BlockMappingProjectionReadConsistency"
 			return true
 		})
 	}
@@ -580,13 +826,17 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 	const primitivePath = "internal/db/block_mapping_authority.go"
 	const gcReaderMarker = "PCD1B3-PRE-GC-SESSION-CONSISTENCY-EXCEPTION"
 	type readerContract struct {
-		path        string
-		consistency string
-		preGC       bool
+		path               string
+		consistency        string
+		sessionConsistency bool
+		preGC              bool
 	}
 	readers := map[string]readerContract{
 		"GetBlockIDMappingContext": {
 			path: "internal/db/block_references.go", consistency: "BlockMappingProjectionReadConsistency",
+		},
+		"getBlockIDMappingForWriteCheck": {
+			path: "internal/db/block_references.go", sessionConsistency: true,
 		},
 		"readBlockMappingProjection": {
 			path: primitivePath, consistency: "gocql.EachQuorum",
@@ -613,13 +863,23 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 		packageRoot := filepath.Dir(path)
 		source := packages[packageRoot]
 		if source == nil {
-			source = &blockMappingSourceStrings{functions: map[string]*ast.FuncDecl{}, globals: map[string]ast.Expr{}}
+			source = &blockMappingSourceStrings{
+				functions:     map[string]*ast.FuncDecl{},
+				functionPaths: map[string]string{},
+				globals:       map[string]ast.Expr{},
+				dynamicValues: map[ast.Expr]bool{},
+			}
 			packages[packageRoot] = source
+		}
+		relFunctionPath, err := filepath.Rel(repoRoot, path)
+		if err != nil {
+			t.Fatalf("relative path %s: %v", path, err)
 		}
 		for _, declaration := range parsed.Decls {
 			switch value := declaration.(type) {
 			case *ast.FuncDecl:
 				source.functions[value.Name.Name] = value
+				source.functionPaths[value.Name.Name] = filepath.ToSlash(relFunctionPath)
 			case *ast.GenDecl:
 				for _, spec := range value.Specs {
 					valueSpec, ok := spec.(*ast.ValueSpec)
@@ -636,6 +896,11 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 		}
 	}
 	readerCounts := map[string]int{}
+	readerCallsites := map[string]map[string]bool{}
+	insertCallsites := map[string]bool{}
+	freezeCallsites := map[string]bool{}
+	dynamicQueryCallsites := map[string]bool{}
+	dynamicQueryCounts := map[string]int{}
 	checkStandaloneCQL := func(relPath, owner, statement string) {
 		normalized := strings.Join(strings.Fields(statement), " ")
 		if !blockMappingTableMentionPattern.MatchString(normalized) || !blockMappingCQLKeywordPattern.MatchString(normalized) {
@@ -666,34 +931,21 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 			violations = append(violations, relPath+": unrecognized/dynamic block_id_mappings CQL mutation in "+owner)
 		}
 	}
-	checkReader := func(relPath, owner string, body ast.Node, statement string) {
+	checkReader := func(relPath, owner string, query *ast.CallExpr, body ast.Node, statement string) {
 		contract, allowed := readers[owner]
 		if !allowed || contract.path != relPath {
 			violations = append(violations, relPath+": unclassified production block_id_mappings SELECT in "+owner)
 			return
 		}
-		readerCounts[owner]++
-		var consistencies []string
-		ast.Inspect(body, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok || len(call.Args) != 1 {
-				return true
-			}
-			selector, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || selector.Sel.Name != "Consistency" {
-				return true
-			}
-			argument := call.Args[0]
-			switch value := argument.(type) {
-			case *ast.Ident:
-				consistencies = append(consistencies, value.Name)
-			case *ast.SelectorExpr:
-				if pkg, ok := value.X.(*ast.Ident); ok {
-					consistencies = append(consistencies, pkg.Name+"."+value.Sel.Name)
-				}
-			}
-			return true
-		})
+		querySite := relPath + ":" + strconv.Itoa(int(query.Pos()))
+		if readerCallsites[owner] == nil {
+			readerCallsites[owner] = map[string]bool{}
+		}
+		if !readerCallsites[owner][querySite] {
+			readerCallsites[owner][querySite] = true
+			readerCounts[owner]++
+		}
+		consistencies := blockMappingQueryConsistencyNames(body, query)
 		if contract.preGC {
 			if len(consistencies) != 0 {
 				violations = append(violations, relPath+":"+owner+" PRE-GC exception unexpectedly changed its consistency contract")
@@ -703,43 +955,76 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 			}
 			return
 		}
+		if contract.sessionConsistency {
+			if len(consistencies) != 0 {
+				violations = append(violations, relPath+":"+owner+" writer pre-check must inherit session consistency, found "+strings.Join(consistencies, ","))
+			}
+			return
+		}
 		if len(consistencies) != 1 || consistencies[0] != contract.consistency {
 			violations = append(violations, relPath+":"+owner+" block mapping SELECT consistency="+strings.Join(consistencies, ",")+", want "+contract.consistency)
 		}
 	}
-	checkQuery := func(source *blockMappingSourceStrings, node ast.Node, owner, relPath string, body ast.Node, locals map[string]ast.Expr) {
+
+	var checkQuery func(source *blockMappingSourceStrings, node ast.Node, owner, relPath string, body ast.Node, function *ast.FuncDecl, functionLiteral *ast.FuncLit, arguments []ast.Expr, outer map[string]ast.Expr, active map[string]bool)
+	checkQuery = func(source *blockMappingSourceStrings, node ast.Node, owner, relPath string, body ast.Node, function *ast.FuncDecl, functionLiteral *ast.FuncLit, arguments []ast.Expr, outer map[string]ast.Expr, active map[string]bool) {
 		ast.Inspect(node, func(child ast.Node) bool {
 			call, ok := child.(*ast.CallExpr)
-			if !ok || blockMappingCallName(call.Fun) != "Query" || len(call.Args) == 0 {
+			if !ok {
+				return true
+			}
+			callName := blockMappingCallName(call.Fun)
+			locals := source.queryLocalsAt(function, functionLiteral, arguments, outer, call.Pos())
+			if callName != "Query" {
+				var helper *ast.FuncDecl
+				if identifier, ok := call.Fun.(*ast.Ident); ok {
+					helper = source.functions[identifier.Name]
+				}
+				if helper != nil && helper.Body != nil && blockMappingHasDirectQuery(helper.Body) && !active[callName] {
+					nestedActive := make(map[string]bool, len(active)+1)
+					for name, inUse := range active {
+						nestedActive[name] = inUse
+					}
+					nestedActive[callName] = true
+					helperPath := source.functionPaths[callName]
+					if helperPath == "" {
+						helperPath = relPath
+					}
+					checkQuery(source, helper.Body, callName, helperPath, helper.Body, helper, nil, call.Args, locals, nestedActive)
+				}
+				return true
+			}
+			if len(call.Args) == 0 {
 				return true
 			}
 			resolved := source.resolve(call.Args[0], locals, map[string]bool{}, map[string]bool{}, 0)
 			normalized := strings.Join(strings.Fields(resolved.text), " ")
-			lower := strings.ToLower(normalized)
-			potentialMapping := strings.Contains(lower, "block_id_") || (strings.Contains(lower, "blockid") && strings.Contains(lower, "mapping"))
-			ast.Inspect(call.Args[0], func(argumentNode ast.Node) bool {
-				if identifier, ok := argumentNode.(*ast.Ident); ok {
-					name := strings.ToLower(identifier.Name)
-					if strings.Contains(name, "blockmapping") || strings.Contains(name, "block_mapping") || strings.Contains(name, "blockidmapping") {
-						potentialMapping = true
-					}
+			if !resolved.constant {
+				if blockMappingMigrationQueryAllowlisted(relPath, owner, call.Args[0]) {
+					return true
 				}
-				return true
-			})
-			if !blockMappingTableMentionPattern.MatchString(normalized) {
-				if potentialMapping {
+				if blockMappingPotentialDynamicQuery(normalized, call.Args[0]) {
 					violations = append(violations, relPath+": unresolved/dynamic block_id_mappings Query argument in "+owner)
+					return true
 				}
+				if _, allowed := blockMappingDynamicQueryAllowlist[relPath][owner]; allowed {
+					querySite := relPath + ":" + strconv.Itoa(int(call.Pos()))
+					if !dynamicQueryCallsites[querySite] {
+						dynamicQueryCallsites[querySite] = true
+						dynamicQueryCounts[relPath+"::"+owner]++
+					}
+					return true
+				}
+				violations = append(violations, relPath+": unresolved/dynamic Query argument in "+owner+"; classify or allowlist this call site")
 				return true
 			}
-			if !resolved.constant {
-				violations = append(violations, relPath+": unresolved/dynamic block_id_mappings Query argument in "+owner)
+			if !blockMappingTableMentionPattern.MatchString(normalized) {
 				return true
 			}
 			upper := strings.ToUpper(normalized)
 			switch {
 			case blockMappingSelectPattern.MatchString(normalized):
-				checkReader(relPath, owner, body, normalized)
+				checkReader(relPath, owner, call, body, normalized)
 			case strings.HasPrefix(upper, "DELETE FROM BLOCK_ID_MAPPINGS"):
 				violations = append(violations, relPath+": production DELETE from block_id_mappings is prohibited by R11a")
 			case strings.HasPrefix(upper, "INSERT INTO BLOCK_ID_MAPPINGS"):
@@ -749,13 +1034,21 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 				if relPath != "internal/db/block_references.go" || owner != ordinaryWriter || !blockMappingInsertPattern.MatchString(normalized) {
 					violations = append(violations, relPath+": unauthorized or malformed ordinary block_id_mappings INSERT in "+owner)
 				} else {
-					insertCount++
+					querySite := relPath + ":" + strconv.Itoa(int(call.Pos()))
+					if !insertCallsites[querySite] {
+						insertCallsites[querySite] = true
+						insertCount++
+					}
 				}
 			case strings.HasPrefix(upper, "UPDATE BLOCK_ID_MAPPINGS"):
 				if relPath != primitivePath || owner != freezeWriter || !blockMappingFreezePattern.MatchString(normalized) {
 					violations = append(violations, relPath+": only freezeBlockMappingProjection may use explicit-timestamp block_id_mappings UPDATE")
 				} else {
-					freezeCount++
+					querySite := relPath + ":" + strconv.Itoa(int(call.Pos()))
+					if !freezeCallsites[querySite] {
+						freezeCallsites[querySite] = true
+						freezeCount++
+					}
 				}
 			default:
 				if blockMappingCQLKeywordPattern.MatchString(normalized) || strings.TrimSpace(normalized) == "block_id_mappings" {
@@ -778,7 +1071,7 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 		for _, declaration := range parsed.Decls {
 			switch value := declaration.(type) {
 			case *ast.FuncDecl:
-				checkQuery(source, value.Body, value.Name.Name, relPath, value.Body, source.queryLocals(value, nil))
+				checkQuery(source, value.Body, value.Name.Name, relPath, value.Body, value, nil, nil, source.globals, map[string]bool{value.Name.Name: true})
 			case *ast.GenDecl:
 				for _, spec := range value.Specs {
 					if valueSpec, ok := spec.(*ast.ValueSpec); ok {
@@ -788,11 +1081,11 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 								owner = valueSpec.Names[index].Name
 							}
 							if functionLiteral, ok := expression.(*ast.FuncLit); ok {
-								checkQuery(source, functionLiteral.Body, owner, relPath, functionLiteral.Body, source.queryLocals(nil, functionLiteral))
+								checkQuery(source, functionLiteral.Body, owner, relPath, functionLiteral.Body, nil, functionLiteral, nil, source.globals, map[string]bool{})
 							} else {
 								resolved := source.resolve(expression, source.globals, map[string]bool{}, map[string]bool{}, 0)
 								checkStandaloneCQL(relPath, owner, resolved.text)
-								checkQuery(source, expression, owner, relPath, expression, source.globals)
+								checkQuery(source, expression, owner, relPath, expression, nil, nil, nil, source.globals, map[string]bool{})
 							}
 						}
 					}
@@ -803,6 +1096,101 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 	for owner, contract := range readers {
 		if readerCounts[owner] != 1 {
 			violations = append(violations, contract.path+":"+owner+" SELECT inventory count="+strconv.Itoa(readerCounts[owner])+", want 1")
+		}
+	}
+	for relPath, owners := range blockMappingDynamicQueryAllowlist {
+		parsed := blockMappingAuthorityParse(t, filepath.Join(repoRoot, filepath.FromSlash(relPath)))
+		functions := map[string]*ast.FuncDecl{}
+		for _, declaration := range parsed.Decls {
+			if function, ok := declaration.(*ast.FuncDecl); ok {
+				functions[function.Name.Name] = function
+			}
+		}
+		for owner, contract := range owners {
+			key := relPath + "::" + owner
+			if actual := dynamicQueryCounts[key]; actual != contract.count {
+				violations = append(violations, relPath+":"+owner+" dynamic Query inventory count="+strconv.Itoa(actual)+", want "+strconv.Itoa(contract.count))
+			}
+			if contract.tableMarker != "" {
+				function := functions[owner]
+				foundMarker := false
+				if function != nil {
+					ast.Inspect(function.Body, func(node ast.Node) bool {
+						literal, ok := node.(*ast.BasicLit)
+						if !ok {
+							return true
+						}
+						text, ok := constantIdentityAuthorityString(literal)
+						if ok && strings.Contains(text, contract.tableMarker) {
+							foundMarker = true
+							return false
+						}
+						return true
+					})
+				}
+				if !foundMarker {
+					violations = append(violations, relPath+":"+owner+" dynamic Query lost fixed table marker "+contract.tableMarker)
+				}
+			}
+			delete(dynamicQueryCounts, key)
+		}
+	}
+	for key, count := range dynamicQueryCounts {
+		violations = append(violations, key+" dynamic Query inventory count="+strconv.Itoa(count)+" is not classified")
+	}
+	lockSourcePath := filepath.Join(repoRoot, "internal", "gc", "store_cassandra.go")
+	lockSource := blockMappingAuthorityParse(t, lockSourcePath)
+	lockCalls := map[string]map[string]int{
+		"acquireHardDeleteLock": {},
+		"renewHardDeleteLock":   {},
+		"releaseHardDeleteLock": {},
+	}
+	ast.Inspect(lockSource, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name, tracked := lockCalls[blockMappingCallName(call.Fun)]
+		if !tracked {
+			return true
+		}
+		if len(call.Args) < 3 {
+			violations = append(violations, "internal/gc/store_cassandra.go: hard-delete lock helper has no literal table identity")
+			return true
+		}
+		table, tableOK := call.Args[1].(*ast.BasicLit)
+		column, columnOK := call.Args[2].(*ast.BasicLit)
+		if !tableOK || !columnOK {
+			violations = append(violations, "internal/gc/store_cassandra.go: hard-delete lock table and key column must be literals")
+			return true
+		}
+		tableName, tableErr := strconv.Unquote(table.Value)
+		columnName, columnErr := strconv.Unquote(column.Value)
+		if tableErr != nil || columnErr != nil {
+			violations = append(violations, "internal/gc/store_cassandra.go: invalid hard-delete lock table identity literal")
+			return true
+		}
+		identity := tableName + "/" + columnName
+		allowed := map[string]bool{
+			"gc_library_hard_delete_locks/library_id": true,
+			"gc_user_hard_delete_locks/user_id":       true,
+			"gc_org_hard_delete_locks/org_id":         true,
+		}
+		if !allowed[identity] {
+			violations = append(violations, "internal/gc/store_cassandra.go: unclassified hard-delete lock table identity "+identity)
+		}
+		name[identity]++
+		return true
+	})
+	for name, identities := range lockCalls {
+		for _, identity := range []string{
+			"gc_library_hard_delete_locks/library_id",
+			"gc_user_hard_delete_locks/user_id",
+			"gc_org_hard_delete_locks/org_id",
+		} {
+			if actual := identities[identity]; actual != 1 {
+				violations = append(violations, "internal/gc/store_cassandra.go:"+name+" "+identity+" call count="+strconv.Itoa(actual)+", want 1")
+			}
 		}
 	}
 	gcSource, err := os.ReadFile(filepath.Join(repoRoot, "internal", "gc", "store_cassandra.go"))

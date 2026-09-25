@@ -1124,19 +1124,26 @@ cold-path promotion the certifier uses for SHA-1-only dependencies (see
 All commands run in Docker:
 
 ```bash
-# Unit, AST and migration contracts
-docker compose --profile test run --rm --build --entrypoint go gotest test ./internal/db -run 'Mapping|Continuity|Certif|Migration027'
+# Private Docker project for the PC-D1B.3 checks below
+PROJECT="sesamefs-pcd1b3-validation-$(date -u +%Y%m%d-%H%M%S)-$$"
 
-# Real Cassandra + MinIO (the normal stack must be running and migrated)
-docker compose --profile test run --rm --build \
+# Unit, AST and migration contracts
+docker compose -p "$PROJECT" --profile test run --rm --build --entrypoint go gotest test ./internal/db -run 'Mapping|Continuity|Certif|Migration027'
+
+# Real Cassandra + MinIO in the same private project
+SESAMEFS_HOST_PORT=0 CASSANDRA_HOST_PORT=0 MINIO_API_HOST_PORT=0 MINIO_CONSOLE_HOST_PORT=0 FRONTEND_HOST_PORT=0 ONLYOFFICE_HOST_PORT=0 \
+docker compose -p "$PROJECT" --profile test run --rm --build \
   -e SESAMEFS_REQUIRE_X1_NONOVERLAP_CHARACTERIZATION=0 \
   -e SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE=0 \
   go-integration-test go test -tags integration -count=1 ./internal/integration/ \
   -run '^TestBlockMappingAuthorityCertifierRealCassandra$|^TestUploadMappingWritersIssueNoAuthorityPaxosRealCassandra$'
 
-# Directed mutations (17 unit legs, plus T1 on the running stack) and isolated 3-DC evidence
+# Directed mutations (31 source legs plus real-Cassandra T1) and isolated 3-DC evidence
 bash scripts/pc-d1b3-mapping-authority-mutation-validation.sh --with-integration
 bash scripts/pc-d1b3-mapping-authority-multidc-validation.sh
+
+# Remove only the private project created for the commands above
+docker compose -p "$PROJECT" down --volumes --remove-orphans
 ```
 
 The two X1/BorrowedFS variables are set to `0` only for this focused `-run`.

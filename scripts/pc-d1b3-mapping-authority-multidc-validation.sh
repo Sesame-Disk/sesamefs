@@ -5,13 +5,14 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-PROJECT=sesamefs-pcd1b3-cassandra
-PREFIX=sesamefs-pcd1b3-cassandra
-RUNNER=sesamefs-pcd1b3-integration-runner
-BACKEND=sesamefs-pcd1b3-backend
-MINIO=sesamefs-pcd1b3-minio
-IMAGE=sesamefs-pcd1b3-gotest
-BACKEND_IMAGE=sesamefs-pcd1b3-backend-image
+RUN_SUFFIX="$(date -u +%Y%m%d-%H%M%S)-$$"
+PROJECT="sesamefs-pcd1b3-cassandra-$RUN_SUFFIX"
+PREFIX="$PROJECT"
+RUNNER="$PREFIX-integration-runner"
+BACKEND="$PREFIX-backend"
+MINIO="$PREFIX-minio"
+IMAGE="$PROJECT-gotest"
+BACKEND_IMAGE="$PROJECT-backend-image"
 KEEP=0
 EU_STOPPED=0
 ASIA_STOPPED=0
@@ -58,6 +59,7 @@ cleanup() {
     fi
     if [ "$KEEP" -eq 0 ]; then
         CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX" "${THREE_DC[@]}" down -v >/dev/null 2>&1 || true
+        docker image rm "$IMAGE" "$BACKEND_IMAGE" >/dev/null 2>&1 || true
     else
         echo "PC-D1B.3 3-DC fixture left running (--keep)"
     fi
@@ -146,6 +148,25 @@ wait_each_quorum_ready() {
     fail "EACH_QUORUM reads from dc-$node did not become reliable after gossip stabilized"
 }
 
+wait_global_serial_ready() {
+    local cql status
+    # A healthy ring and EACH_QUORUM reads do not prove that Cassandra's global
+    # Paxos/SERIAL path has recovered after two DCs restart. Probe it with a
+    # deliberately unusable authority row in this disposable keyspace before
+    # asserting the real library can certify again. Unsupported evidence makes
+    # the probe row non-consumable if test code ever inspects it.
+    cql="CONSISTENCY LOCAL_QUORUM; SERIAL CONSISTENCY SERIAL; INSERT INTO sesamefs.block_mapping_authority_claims (org_id, representation_id, external_id, internal_id, contract_version, evidence, created_at) VALUES (00000000-0000-4000-8000-000000000001, 'plain:v1', '0000000000000000000000000000000000000000', '0000000000000000000000000000000000000000000000000000000000000000', 'PC-D1B.3 recovery probe', 'unsupported_recovery_readiness_probe', toTimestamp(now())) IF NOT EXISTS;"
+    for _ in $(seq 1 120); do
+        status="$(docker exec "$PREFIX-na" cqlsh -e "$cql" 2>&1 || true)"
+        if printf '%s\n' "$status" | grep -Eq '^[[:space:]]*(True|False)[[:space:]]*$'; then
+            return 0
+        fi
+        sleep 5
+    done
+    printf '%s\n' "$status" | tail -20 >&2
+    fail "global SERIAL/Paxos did not become available after all DCs recovered"
+}
+
 step "Start the isolated Cassandra 3-DC fixture"
 CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX" "${THREE_DC[@]}" up -d
 for node in na eu asia; do wait_healthy "$node"; done
@@ -227,6 +248,7 @@ restore_remote_dcs() {
         docker exec "$PREFIX-$node" nodetool enablehandoff >/dev/null
         wait_each_quorum_ready "$node"
     done
+    wait_global_serial_ready
 }
 
 step "Run MAPPING-3DC-1/1b/2/4/4b/5 and the real-Cassandra mapping/certifier edge tests under LOCAL_SERIAL client sessions"

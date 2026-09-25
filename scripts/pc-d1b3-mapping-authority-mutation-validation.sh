@@ -11,32 +11,46 @@ PRIMITIVE=internal/db/block_mapping_authority.go
 CERTIFIER=internal/db/library_continuity_certifier.go
 WRITERS=internal/db/block_references.go
 BACKUP_SUFFIX=".pcd1b3bak.$$"
-MUTATED=""
+MUTATED=()
+STACK_PROJECT="sesamefs-pcd1b3-mutation-stack-$$"
+STACK_STARTED=0
 
 green() { echo "RED as required: $*"; }
 fail() { echo "FAILED: $*" >&2; restore; exit 1; }
 
 restore() {
-    if [ -n "$MUTATED" ] && [ -f "$MUTATED$BACKUP_SUFFIX" ]; then
-        mv -f "$MUTATED$BACKUP_SUFFIX" "$MUTATED"
-    fi
-    MUTATED=""
+	for target in "${MUTATED[@]}"; do
+		if [ -f "$target$BACKUP_SUFFIX" ]; then
+			mv -f "$target$BACKUP_SUFFIX" "$target"
+		fi
+	done
+	MUTATED=()
 }
 
 cleanup() {
-    restore
-    docker rm -f "$RUNNER" >/dev/null 2>&1 || true
+	restore
+	if [ "$STACK_STARTED" -eq 1 ]; then
+		docker compose -p "$STACK_PROJECT" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
+	fi
+	docker rm -f "$RUNNER" >/dev/null 2>&1 || true
 }
 
 trap cleanup EXIT INT TERM
 
+mutate_many() {
+	restore
+	while [ "$#" -gt 0 ]; do
+		local target="$1" expression="$2"
+		cp "$target" "$target$BACKUP_SUFFIX"
+		MUTATED+=("$target")
+		perl -0pi -e "$expression" "$target"
+		cmp -s "$target" "$target$BACKUP_SUFFIX" && fail "mutation of $target did not apply"
+		shift 2
+	done
+}
+
 mutate() {
-    local target="$1" expression="$2"
-    restore
-    cp "$target" "$target$BACKUP_SUFFIX"
-    MUTATED="$target"
-    perl -0pi -e "$expression" "$target"
-    cmp -s "$target" "$target$BACKUP_SUFFIX" && fail "mutation of $target did not apply"
+	mutate_many "$@"
 }
 
 expect_red() {
@@ -212,18 +226,55 @@ d2_dynamic_mapping_delete() {
 # R3: every mapping SELECT must be in the reader inventory, even if it has no
 # pinned consistency floor.
 r3_unclassified_mapping_select() {
-    mutate "$WRITERS" 's/\z/\nfunc pcd1b3UnclassifiedMappingReaderMutation(session *gocql.Session) { session.Query("SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?", "org", "plain:v1", "sha1").Scan(new(string)) }\n/'
-    expect_red "R3 unclassified mapping SELECT" "unclassified production block_id_mappings SELECT" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3UnclassifiedMappingReaderMutation(session *gocql.Session) { session.Query("SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?", "org", "plain:v1", "sha1").Scan(new(string)) }\n/'
+	expect_red "R3 unclassified mapping SELECT" "unclassified production block_id_mappings SELECT" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
 }
 
-# T1 (behavioral, real Cassandra + MinIO, requires the running Compose stack):
+# T5: the Query call must resolve q at that point in statement order, before a
+# later harmless assignment overwrites the local's final value.
+t5_query_before_harmless_reassignment() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3QueryBeforeHarmlessReassignmentMutation(session *gocql.Session) { q := "DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?"; session.Query(q, "org", "plain:v1", "sha1").Exec(); q = "SELECT now() FROM system.local" }\n/'
+	expect_red "T5 dangerous Query followed by harmless reassignment" "production DELETE from block_id_mappings is prohibited by R11a" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T6: a known mapping CQL argument must flow into a same-package generic helper
+# that performs the Query.
+t6_mapping_cql_through_generic_helper() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3GenericCQLHelperMutation(session *gocql.Session, q string) { session.Query(q).Exec() }\nfunc pcd1b3GenericCQLHelperCallerMutation(session *gocql.Session) { pcd1b3GenericCQLHelperMutation(session, "DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?") }\n/'
+	expect_red "T6 mapping CQL passed through a generic helper argument" "production DELETE from block_id_mappings is prohibited by R11a" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T7: runtime table identity leaves an unresolved Query argument and must fail
+# closed even though no full block_id_mappings token can be reconstructed.
+t7_runtime_mapping_table_identity() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3RuntimeTableIdentityMutation(session *gocql.Session, table string) { q := "SELECT internal_id FROM " + table + " WHERE org_id = ?"; session.Query(q, "org") }\n/'
+	expect_red "T7 unresolved runtime table identity" "unresolved/dynamic block_id_mappings Query argument" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# R4: LOCAL_QUORUM on an unrelated query must not satisfy the mapping reader's
+# query-chain consistency contract.
+r4_unrelated_query_has_local_quorum() {
+	mutate "$WRITERS" 's/Consistency\(BlockMappingProjectionReadConsistency\)\.//; s/(func \(db \*DB\) GetBlockIDMappingContext\([^\n]*\) \{\n)/$1\t_ = db.Session().Query("SELECT x FROM something_else").Consistency(BlockMappingProjectionReadConsistency)\n/'
+	expect_red "R4 unrelated query supplies LOCAL_QUORUM" "block mapping SELECT consistency=, want BlockMappingProjectionReadConsistency" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# A2: a function-value alias in the allowed primitive file cannot be called
+# from elsewhere to bypass provenance and claim acquisition.
+a2_aliased_freeze_caller() {
+	mutate_many "$PRIMITIVE" 's/\z/\nvar pcd1b3RawFreezeAliasMutation = freezeBlockMappingProjection\n/' "$WRITERS" 's/\z/\nfunc pcd1b3ExternalAliasedFreezeCallerMutation(ctx context.Context, session *gocql.Session, identity blockMappingIdentity, authority string) { _, _ = pcd1b3RawFreezeAliasMutation(ctx, session, identity, authority) }\n/'
+	expect_red "A2 alias of projection-freeze primitive" "freezeBlockMappingProjection may not be taken as a function value or aliased" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# T1 (behavioral, real Cassandra + MinIO, uses a private Compose project):
 # replace the dominant-timestamp freeze with an ordinary rewrite. An ordinary
 # write between the final recheck and the witness CAS then reaches readers
 # after the witness, which the real reproducer must catch.
 t1_freeze_without_dominant_timestamp() {
-    mutate "$PRIMITIVE" 's/UPDATE block_id_mappings USING TIMESTAMP \? SET internal_id = \?/UPDATE block_id_mappings SET internal_id = ?/; s/`, BlockMappingProjectionFrozenTimestamp, authority, /`, authority, /; s/row\.writeTime == BlockMappingProjectionFrozenTimestamp/row.writeTime > 0/g'
-    local out status
-    out="$(docker compose --profile test run --rm --build \
+	mutate "$PRIMITIVE" 's/UPDATE block_id_mappings USING TIMESTAMP \? SET internal_id = \?/UPDATE block_id_mappings SET internal_id = ?/; s/`, BlockMappingProjectionFrozenTimestamp, authority, /`, authority, /; s/row\.writeTime == BlockMappingProjectionFrozenTimestamp/row.writeTime > 0/g'
+	local out status
+	STACK_STARTED=1
+	out="$(SESAMEFS_HOST_PORT=0 CASSANDRA_HOST_PORT=0 MINIO_API_HOST_PORT=0 MINIO_CONSOLE_HOST_PORT=0 FRONTEND_HOST_PORT=0 ONLYOFFICE_HOST_PORT=0 \
+		docker compose -p "$STACK_PROJECT" --profile test run --rm --build \
         -e SESAMEFS_REQUIRE_X1_NONOVERLAP_CHARACTERIZATION=0 \
         -e SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE=0 \
         go-integration-test go test -tags integration -count=1 ./internal/integration/ \
@@ -266,6 +317,11 @@ ALL_MUTATIONS=(
     t4_unresolved_mapping_query_argument
     d2_dynamic_mapping_delete
     r3_unclassified_mapping_select
+    t5_query_before_harmless_reassignment
+    t6_mapping_cql_through_generic_helper
+    t7_runtime_mapping_table_identity
+    r4_unrelated_query_has_local_quorum
+    a2_aliased_freeze_caller
 )
 
 WITH_INTEGRATION=0
