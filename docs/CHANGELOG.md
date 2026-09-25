@@ -6,6 +6,20 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-24 - PR #232 stable-absence and in-flight writer contracts
+
+Fourth cross-audit correction. CW-M33 distinguishes EACH_QUORUM cross-DC
+visibility from settlement of a pre-existing global-SERIAL HEAD Paxos proposal.
+The executable model makes the EACH_QUORUM-only mutation RED and requires a
+settlement/barrier before the absence proof; the exact paused pre-commit CAS race
+on Cassandra 5.0.9 remains an explicit NO-MERGE evidence gate. CW-M34 freezes
+the lifetime property for already-admitted timestamped writes without choosing
+the runtime mechanism. The model covers drain+revalidation and recovery above
+the destructive floor; a 3-DC Cassandra test gates the write in client transport,
+commits the later tombstone, resumes the old timestamped request, and checks
+successful-but-hidden settlement. No productive runtime or schema change;
+`GC_ENABLED=false` remains mandatory.
+
 ## 2026-09-23 - PR #232 cross-audit timestamp proofs
 
 Cross-audit correction to the PC-D1B.4 fence decision and its characterization;

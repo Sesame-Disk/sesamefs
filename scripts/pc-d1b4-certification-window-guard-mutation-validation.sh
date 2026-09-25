@@ -180,6 +180,16 @@ expect_red "G17 writer bypasses clock-health admission" "CW-M32: commit material
 mutate internal/gc/pcd1b4_queue_item_token_characterization_test.go 's/blockCandidate := \[\]byte\{\}/blockCandidate := encodePCD1B4LengthDelimitedV1([]byte{}, []byte{}, encodePCD1B4TimestampMillis(time.Time{}))/'
 expect_red "G18 non-block candidate encoding drift" "CW-M30 destruction-token vector" '^TestPCD1B4DestructionTokenV1KnownVector$' ./internal/gc
 
+# G19/CW-M33: EACH_QUORUM absence without settling a pre-existing HEAD Paxos
+# proposal must allow the modeled proof/resurrection counterexample.
+mutate internal/db/pcd1b4_inflight_authority_model_test.go 's/settlesPreexistingPaxos: true/settlesPreexistingPaxos: false/'
+expect_red "G19 absence proof omits Paxos settlement" "CW-M33 selected contract returned with an unresolved old proposal" '^TestPCD1B4ModelStableCanonicalAbsenceRequiresPaxosSettlement$'
+
+# G20/CW-M34: removing the selected active-writer drain lets a successful old
+# timestamp settle behind the destructive tombstone.
+mutate internal/db/pcd1b4_inflight_authority_model_test.go 's/drainInFlight:         true/drainInFlight:         false/'
+expect_red "G20 admitted writer is not drained" "CW-M34 safe policy violated" '^TestPCD1B4ModelInFlightMaterializationNeedsBarrierOrRecovery$'
+
 if [ "$WITH_CASSANDRA" -eq 1 ]; then
     # C1: a witness CAS without the deleted_at predicate changes R1 on real Cassandra.
     mutate internal/db/library_continuity.go 's/(func CommitLibraryContinuityWitnessContext.*?IF head_commit_id = \?.*?)\n\t\tAND deleted_at = null/$1/s'

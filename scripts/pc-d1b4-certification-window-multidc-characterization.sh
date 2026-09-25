@@ -194,7 +194,7 @@ NETWORK="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{
 
 step "Build the branch-local test image and start the runner"
 docker build -f Dockerfile.gotest -t "$IMAGE" .
-docker run -d --name "$RUNNER" --network "$NETWORK" -v "$PWD":/build -w /build "$IMAGE" sleep 3600 >/dev/null
+docker run -d --name "$RUNNER" --network "$NETWORK" -e GC_ENABLED=false -v "$PWD":/build -w /build "$IMAGE" sleep 3600 >/dev/null
 
 step "Apply this branch's migrations to the isolated keyspace"
 docker exec "$RUNNER" env \
@@ -284,6 +284,9 @@ run_phase m27-retry TestPCD1B4UnknownReaffirmationRetry3DC
 step "m27-verify: the stale tombstone leaves the certified row present in every DC"
 run_phase m27-verify TestPCD1B4UnknownReaffirmationRetry3DC
 
+step "m34-inflight: an admitted, timestamped materialization resumes after an EACH_QUORUM GC tombstone"
+run_phase m34-inflight TestPCD1B4InFlightMaterialization3DC
+
 step "Disable hinted handoff, then leave only dc-eu running"
 for node in na eu asia; do docker exec "$PREFIX-$node" nodetool disablehandoff >/dev/null; done
 stop_nodes na asia
@@ -314,4 +317,4 @@ for node in na eu asia; do
     docker exec "$PREFIX-$node" nodetool enablehandoff >/dev/null
 done
 
-echo "PC-D1B.4 3-DC characterization passed: R12, CW-M23 EACH_QUORUM visibility, CW-M27 post-UNKNOWN local-only retry, CW-M31 local-absent/remote-present global-EACH_QUORUM proof, and G16 (EACH_QUORUM-to-LOCAL_QUORUM mutation RED). CW-M29/M32 clock safety and CW-M30 UUIDv5 vectors are model-characterized; runtime enforcement remains PC-D1B.5."
+echo "PC-D1B.4 3-DC characterization passed: R12, CW-M23 EACH_QUORUM visibility, CW-M27 post-UNKNOWN local-only retry, CW-M31 local-absent/remote-present global-EACH_QUORUM proof, CW-M34 admitted in-flight materialization hidden by a later tombstone, and G16 (EACH_QUORUM-to-LOCAL_QUORUM mutation RED). CW-M29/M32 clock safety and CW-M30 UUIDv5 vectors are model-characterized; runtime enforcement remains PC-D1B.5. CW-M33's exact pre-commit Paxos pause remains an explicit NO-MERGE evidence gate."
