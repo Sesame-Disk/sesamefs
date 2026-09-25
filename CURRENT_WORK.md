@@ -57,19 +57,26 @@ lifecycle statements and destroyer call sites), real-Cassandra
 characterization `internal/integration/pcd1b4_certification_window_characterization_test.go`
 (R1-R11; R3b/R4/R5/R10/R10b/R11b UNSAFE today; CW-M11/M26/M28 evidence) and
 isolated 3-DC `scripts/pc-d1b4-certification-window-multidc-characterization.sh`
-(R12, CW-M23/M27/M31, CW-M33 accepted-Paxos pause + G21 barrier-removal RED,
+(R12, CW-M23/M27/M31, CW-M33 accepted-Paxos and post-barrier issuance races
+with G21/G22 RED via
 `internal/integration/pcd1b4multidc/stable_absence_paxos_race_test.go`, CW-M34
 via `internal/integration/pcd1b4multidc/inflight_materialization_test.go`, and
 G16 local-proof mutation);
 `scripts/pc-d1b4-certification-window-guard-mutation-validation.sh` proves the
 guards bite (G1-G15/G17-G20 plus C1 on real Cassandra); G16 is the isolated-3DC
-global-to-local absence mutation. The destroyer inventory also
+global-to-local absence mutation; G22 removes the SERIAL-present proof veto in
+the 3-DC runner. The destroyer inventory also
 rejects aliases of destroyer primitives and raw `block_references` deletes.
 Cross-audit rounds 2–4 close CW-M29's clock premise, CW-M31 cross-DC visibility,
 CW-M33 stable absence, and CW-M34 in-flight writer lifetime. The isolated
-Cassandra 5.0.9 test image pauses an accepted HEAD proposal after H0 is observed
-and before commit; the SERIAL barrier settles it before EACH_QUORUM absence.
-G21 removes the barrier and turns RED with proof followed by resurrected HEAD.
+Cassandra 5.0.9 image first proves settlement of a pre-existing accepted HEAD
+proposal; G21 removes the barrier and turns RED. It also covers the issuance
+window: SERIAL observes H0, then a new accepted CAS begins, hard delete and
+EACH_QUORUM absence follow, and the stored SERIAL-present result vetoes proof;
+G22 removing that veto turns RED. The test builder pins Cassandra binary
+digest, source commit and SHA-256 for both patched sources; the stock Cassandra
+and SesameFS runtime are unchanged. §14/§16 now account for SERIAL plus
+EACH_QUORUM proof cost and CW-M34 lifetime-tracking/recovery costs.
 CW-M34 separately confirms a healthy timestamped write can return success while
 hidden under a later tombstone; G20 removes the selected writer drain and turns
 RED. Both are decision/characterization contracts only. The decision is now

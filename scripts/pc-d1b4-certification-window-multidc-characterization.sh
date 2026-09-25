@@ -221,7 +221,15 @@ if [ "$ONLY_CW_M33" -eq 1 ]; then
     step "cw-m33-only: accepted HEAD Paxos proposal must be settled before global absence proof"
     run_phase m33-barrier TestPCD1B4StableAbsencePaxosRace3DC
     expect_red_phase m33-no-barrier TestPCD1B4StableAbsencePaxosRace3DC "CW-M33: EACH_QUORUM-only proof coexisted with a resurrected HEAD"
-    echo "CW-M33 isolated 5.0.9 Paxos latch characterization passed (barrier GREEN; missing-barrier mutation RED)."
+    run_phase m33-serial-presence TestPCD1B4SerialProofReadPresenceRace3DC
+    ABSENCE_TARGET=internal/integration/pcd1b4multidc/stable_absence_paxos_race_test.go
+    ABSENCE_BACKUP="$ABSENCE_TARGET.pcd1b4bak.$$"
+    cp "$ABSENCE_TARGET" "$ABSENCE_BACKUP"
+    perl -0pi -e 's/(func pcd1b4RequireSerialAbsenceForProof\(\) bool \{ )return true( \})/$1return false$2/' "$ABSENCE_TARGET"
+    cmp -s "$ABSENCE_TARGET" "$ABSENCE_BACKUP" && fail "CW-M33 SERIAL-absence mutation did not apply"
+    expect_red_phase m33-serial-presence-mutation TestPCD1B4SerialProofReadPresenceMutation3DC "CW-M33: proof minted from EACH_QUORUM absence despite SERIAL read observing H0"
+    restore_absence_mutation
+    echo "CW-M33 isolated 5.0.9 Paxos latch characterization passed (pre-existing proposal barrier GREEN; G21 no-barrier RED; post-barrier SERIAL-present proof refusal GREEN; G22 SERIAL-presence mutation RED)."
     exit 0
 fi
 
@@ -309,6 +317,18 @@ run_phase m33-barrier TestPCD1B4StableAbsencePaxosRace3DC
 step "G21/CW-M33: omit Paxos settlement; EACH_QUORUM absence then old CAS resume must turn RED"
 expect_red_phase m33-no-barrier TestPCD1B4StableAbsencePaxosRace3DC "CW-M33: EACH_QUORUM-only proof coexisted with a resurrected HEAD"
 
+step "m33-serial-presence: a SERIAL read of H0 before a new accepted CAS must prohibit later absence proof"
+run_phase m33-serial-presence TestPCD1B4SerialProofReadPresenceRace3DC
+
+step "G22/CW-M33: omit the SERIAL-result absence predicate and require RED"
+ABSENCE_TARGET=internal/integration/pcd1b4multidc/stable_absence_paxos_race_test.go
+ABSENCE_BACKUP="$ABSENCE_TARGET.pcd1b4bak.$$"
+cp "$ABSENCE_TARGET" "$ABSENCE_BACKUP"
+perl -0pi -e 's/(func pcd1b4RequireSerialAbsenceForProof\(\) bool \{ )return true( \})/$1return false$2/' "$ABSENCE_TARGET"
+cmp -s "$ABSENCE_TARGET" "$ABSENCE_BACKUP" && fail "CW-M33 SERIAL-absence mutation did not apply"
+expect_red_phase m33-serial-presence-mutation TestPCD1B4SerialProofReadPresenceMutation3DC "CW-M33: proof minted from EACH_QUORUM absence despite SERIAL read observing H0"
+restore_absence_mutation
+
 step "m34-inflight: an admitted, timestamped materialization resumes after an EACH_QUORUM GC tombstone"
 run_phase m34-inflight TestPCD1B4InFlightMaterialization3DC
 
@@ -342,4 +362,4 @@ for node in na eu asia; do
     docker exec "$PREFIX-$node" nodetool enablehandoff >/dev/null
 done
 
-echo "PC-D1B.4 3-DC characterization passed: R12, CW-M23 EACH_QUORUM visibility, CW-M27 post-UNKNOWN local-only retry, CW-M31 local-absent/remote-present global-EACH_QUORUM proof, CW-M33 real accepted-Paxos pause with SERIAL settlement and G21 barrier-removal mutation RED, CW-M34 admitted in-flight materialization hidden by a later tombstone, and G16 (EACH_QUORUM-to-LOCAL_QUORUM mutation RED). CW-M29/M32 clock safety and CW-M30 UUIDv5 vectors are model-characterized; runtime enforcement remains PC-D1B.5."
+echo "PC-D1B.4 3-DC characterization passed: R12, CW-M23 EACH_QUORUM visibility, CW-M27 post-UNKNOWN local-only retry, CW-M31 local-absent/remote-present global-EACH_QUORUM proof, CW-M33 pre-existing and post-barrier accepted-Paxos races with G21/G22 mutations RED, CW-M34 admitted in-flight materialization hidden by a later tombstone, and G16 (EACH_QUORUM-to-LOCAL_QUORUM mutation RED). CW-M29/M32 clock safety and CW-M30 UUIDv5 vectors are model-characterized; runtime enforcement remains PC-D1B.5."

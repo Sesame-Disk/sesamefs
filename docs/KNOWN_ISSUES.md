@@ -6291,7 +6291,7 @@ retirement mechanism, and it is not a merge precondition for PR #228 or #229.
 
 ### ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01: A witness can be born over, or survive, the destruction of the state it certifies
 
-**Status**: 🟢 Decision CLOSED / MERGEABLE 2026-09-24 (CW-M33 accepted-Paxos barrier race + G21 RED, CW-M34 in-flight materialization contract/evidence); PC-D1B.5 runtime OPEN and mandatory before destructive GC activation and before the first productive consumer
+**Status**: 🟢 Decision CLOSED / MERGEABLE 2026-09-24 (CW-M33 accepted-Paxos barrier and post-barrier proof-issuance races + G21/G22 RED, CW-M34 in-flight materialization contract/evidence); PC-D1B.5 runtime OPEN and mandatory before destructive GC activation and before the first productive consumer
 **Severity**: High (P1) — certified-baseline correctness; dormant today (no production caller of the certifier or the witness, `GC_ENABLED=false`)
 **Affected**: `CertifyLibraryBaseline` witness settlement, `CommitLibraryContinuityWitness*`, `AdvanceLibraryCertifiedFrontier`, the identity-gateway source deletes and the GC `fs:` reference removal
 **Registered**: 2026-09-23, PC-D1B.4
@@ -6341,7 +6341,14 @@ pauses the H0→H1 proposal after acceptance and before commit, then hard-delete
 EACH_QUORUM absence check, so no proof is minted. G21 removes the SERIAL barrier
 and turns RED when H1 resurrects after an EACH_QUORUM-only proof. The test image
 is isolated to this Docker fixture; the stock Cassandra image and production
-runtime are unchanged.
+runtime are unchanged. The post-barrier issuance race is also covered: SERIAL
+observes H0, a new H0→H1 proposal starts and pauses, hard delete lands, and the
+subsequent EACH_QUORUM read sees absence; the saved SERIAL-present result still
+refuses the capability. G22 removes that SERIAL-result predicate and turns RED
+with proof followed by the resumed H1. Reproducibility pins binary digest
+`d35e159439b302146f964919904f84fd3c2cebf347272b8cb8c4368c1cf200e5`, upstream
+source commit `b5f2a54210d541339c2e7c17a794195cac0e67c2`, and SHA-256 checksums
+for both patched Java files in `scripts/cassandra-cw-m33/cassandra-source.sha256`.
 
 CW-M32 assigns CW-M29 admission to every timestamp authority, not only GC:
 commit/fs_object/permanent-reference writers and Cassandra coordinators must
@@ -6379,13 +6386,16 @@ cross-DC visibility are closed. CW-M34's model and G20 mutation demonstrate
 that a one-shot health check is insufficient; real 3-DC Cassandra confirms a
 timestamped materialization can return success while hidden under a later
 tombstone. Its lifetime barrier/recovery remains PC-D1B.5 runtime work.
+The performance contract now counts the SERIAL absence-proof read plus the
+EACH_QUORUM recheck, and distinguishes normal local lifetime tracking from
+exceptional drain/revalidation or recovery I/O.
 Therefore the PC-D1B.4 decision is CLOSED / MERGEABLE; PC-D1B.5 remains
 mandatory before activation/consumer. Evidence includes the two-clock, stable-
 absence and in-flight models, block/commit/fs_object UUIDv5 vectors,
 real-Cassandra absent-row/whole-row-W/future-tombstone and CW-M34
 characterizations, isolated 3-DC post-UNKNOWN, local-absent/remote-present,
-CW-M33 accepted-Paxos barrier/G21 mutation and CW-M34 tests, plus
-lifecycle/destroyer/alias/clock/vector/in-flight guards (G1-G20, G21, G16 and
+CW-M33 accepted-Paxos, post-barrier issuance/G21/G22 mutations and CW-M34 tests,
+plus lifecycle/destroyer/alias/clock/vector/in-flight guards (G1-G20, G21, G22, G16 and
 C1 RED).
 
 #### Remaining

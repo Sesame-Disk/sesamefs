@@ -9,18 +9,20 @@ Session-by-session development history for SesameFS.
 ## 2026-09-24 - PR #232 stable-absence and in-flight writer contracts
 
 Fourth cross-audit correction. CW-M33 distinguishes EACH_QUORUM cross-DC
-visibility from settlement of a pre-existing global-SERIAL HEAD Paxos proposal.
-cross-DC visibility from Paxos settlement. A test-only Cassandra 5.0.9 latch
-pauses an accepted HEAD proposal after H0 is observed and before commit. The
-global-SERIAL barrier settles H1 before the EACH_QUORUM absence read; G21 removes
-the barrier and turns RED with proof followed by HEAD resurrection. CW-M34
-freezes the lifetime property for already-admitted timestamped writes without
-choosing the runtime mechanism. The model covers drain+revalidation and recovery
-above the destructive floor; a 3-DC Cassandra test commits a later tombstone
-while the old write is paused in transport, then confirms successful-but-hidden
-settlement. The decision is CLOSED / MERGEABLE; PC-D1B.5 remains the runtime
-follow-up before destructive GC activation or a productive consumer. No
-productive runtime or schema change; `GC_ENABLED=false` remains mandatory.
+visibility from stable global-SERIAL HEAD Paxos absence. A test-only Cassandra
+5.0.9 latch pauses an accepted HEAD proposal after H0 is observed and before
+commit; the SERIAL barrier settles H1 before the EACH_QUORUM absence read. G21
+removes that barrier; G22 removes the SERIAL-present proof veto. Both turn RED
+with proof followed by HEAD resurrection. The test image pins the exact source
+commit and SHA-256 for both patched files. CW-M34 freezes the lifetime property
+for already-admitted timestamped writes without choosing the runtime mechanism.
+The model covers drain+revalidation and recovery above the destructive floor; a
+3-DC Cassandra test commits a later tombstone while the old write is paused in
+transport, then confirms successful-but-hidden settlement. §14/§16 now account
+for SERIAL + EACH_QUORUM absence proof reads and lifetime tracking/recovery costs.
+The decision is CLOSED / MERGEABLE; PC-D1B.5 remains the runtime follow-up before
+destructive GC activation or a productive consumer. No productive runtime or
+schema change; `GC_ENABLED=false` remains mandatory.
 
 ## 2026-09-23 - PR #232 cross-audit timestamp proofs
 

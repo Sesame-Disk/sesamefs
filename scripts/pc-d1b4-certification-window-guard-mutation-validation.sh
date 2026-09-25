@@ -190,6 +190,11 @@ expect_red "G19 absence proof omits Paxos settlement" "CW-M33 selected contract 
 mutate internal/db/pcd1b4_inflight_authority_model_test.go 's/drainInFlight:         true/drainInFlight:         false/'
 expect_red "G20 admitted writer is not drained" "CW-M34 safe policy violated" '^TestPCD1B4ModelInFlightMaterializationNeedsBarrierOrRecovery$'
 
+# G22/CW-M33: allowing EACH_QUORUM absence to override a SERIAL read that saw
+# H0 admits the post-barrier HEAD-CAS issuance race.
+mutate internal/db/pcd1b4_inflight_authority_model_test.go 's/requireSerialAbsence: true/requireSerialAbsence: false/'
+expect_red "G22 proof ignores present SERIAL observation" "CW-M33: stable absence proof minted after SERIAL proof-read observed H0" '^TestPCD1B4ModelSerialProofReadMustObserveAbsence$'
+
 if [ "$WITH_CASSANDRA" -eq 1 ]; then
     # C1: a witness CAS without the deleted_at predicate changes R1 on real Cassandra.
     mutate internal/db/library_continuity.go 's/(func CommitLibraryContinuityWitnessContext.*?IF head_commit_id = \?.*?)\n\t\tAND deleted_at = null/$1/s'

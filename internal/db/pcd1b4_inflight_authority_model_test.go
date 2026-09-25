@@ -69,6 +69,35 @@ func TestPCD1B4ModelStableCanonicalAbsenceRequiresPaxosSettlement(t *testing.T) 
 	}
 }
 
+// CW-M33's second race is after the SERIAL barrier: that read observes H0,
+// then a new HEAD CAS starts and pauses before commit; a plain hard delete
+// makes the later EACH_QUORUM read absent. Absence from the later ordinary
+// read cannot override the SERIAL leg's present observation.
+type cwM33ProofPolicy struct {
+	requireSerialAbsence bool
+}
+
+var cwM33StableProofPolicy = cwM33ProofPolicy{requireSerialAbsence: true}
+
+func cwM33MayMintGlobalAbsenceProof(policy cwM33ProofPolicy, serialReadAbsent, eachQuorumReadAbsent bool) bool {
+	return eachQuorumReadAbsent && (!policy.requireSerialAbsence || serialReadAbsent)
+}
+
+func TestPCD1B4ModelSerialProofReadMustObserveAbsence(t *testing.T) {
+	serialSawH0 := true
+	eachQuorumSawAbsentAfterDelete := true
+	if cwM33MayMintGlobalAbsenceProof(cwM33StableProofPolicy, !serialSawH0, eachQuorumSawAbsentAfterDelete) {
+		t.Fatal("CW-M33: stable absence proof minted after SERIAL proof-read observed H0")
+	}
+
+	// Load-bearing mutation: the later EACH_QUORUM miss is incorrectly treated
+	// as sufficient even though a post-barrier HEAD CAS may now be in flight.
+	noSerialAbsencePredicate := cwM33ProofPolicy{}
+	if !cwM33MayMintGlobalAbsenceProof(noSerialAbsencePredicate, !serialSawH0, eachQuorumSawAbsentAfterDelete) {
+		t.Fatal("CW-M33 mutation setup: EACH_QUORUM-only path must mint the unsafe proof")
+	}
+}
+
 // CW-M34 freezes only the ordering property, not its runtime mechanism. A
 // destroyer may either drain admitted writers and then revalidate liveness, or
 // recover a late successful write above its destructive floor. Releasing an
