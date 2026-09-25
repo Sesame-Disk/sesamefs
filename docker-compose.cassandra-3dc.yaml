@@ -68,7 +68,7 @@ x-cassandra-node: &cassandra-node
   # Pinned rather than floating. This fixture produces the closure evidence for a
   # data-loss blocker, so the engine version must be reproducible; `cassandra:5.0`
   # is a moving alias. Override deliberately, not by accident.
-  image: cassandra:${CASSANDRA_3DC_IMAGE_TAG:-5.0.9}
+  image: ${CASSANDRA_3DC_IMAGE:-cassandra:${CASSANDRA_3DC_IMAGE_TAG:-5.0.9}}
   environment: &cassandra-env
     CASSANDRA_CLUSTER_NAME: ${CASSANDRA_CLUSTER_NAME:-sesamefs-3dc}
     CASSANDRA_RACK: rack1
@@ -115,6 +115,7 @@ services:
       CASSANDRA_DC: dc-na
     volumes:
       - cassandra_na_data:/var/lib/cassandra
+      - cassandra_cw_m33_latch:/tmp/cw-m33
 
   cassandra-eu:
     <<: *cassandra-node
@@ -126,6 +127,7 @@ services:
       CASSANDRA_DC: dc-eu
     volumes:
       - cassandra_eu_data:/var/lib/cassandra
+      - cassandra_cw_m33_latch:/tmp/cw-m33
     depends_on:
       cassandra-na:
         condition: service_healthy
@@ -140,6 +142,7 @@ services:
       CASSANDRA_DC: dc-asia
     volumes:
       - cassandra_asia_data:/var/lib/cassandra
+      - cassandra_cw_m33_latch:/tmp/cw-m33
     depends_on:
       cassandra-eu:
         condition: service_healthy
@@ -199,3 +202,4 @@ volumes:
   cassandra_na_data:
   cassandra_eu_data:
   cassandra_asia_data:
+  cassandra_cw_m33_latch:

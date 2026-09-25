@@ -842,11 +842,18 @@ by this matrix.
    can be certified; promotion is not a prerequisite for #228 to fail closed.
 6. Specify the certification-window fence before destructive GC activation
    and before the first productive consumer, and re-scope it to PR #228 if a
-   non-GC reachable delete is demonstrated.
+   non-GC reachable delete is demonstrated. **Specified by PC-D1B.4**
+   ([PC-D1B-CERTIFICATION-WINDOW-FENCE.md](PC-D1B-CERTIFICATION-WINDOW-FENCE.md)):
+   a per-library destruction epoch plus pending destruction intents predicated
+   by the witness CAS; runtime in PC-D1B.5. No non-GC reachable delete was
+   found.
 7. Answer the stored-witness questions — <code>D</code> composition,
    <code>A</code> semantics, and the cost of new <code>IF</code> predicates on
    the landed PC-D1A primitives — before any consumer relies on a witness
-   across identity deletion.
+   across identity deletion. **Answered by PC-D1B.4:** no stored
+   <code>D</code> or <code>R</code>; <code>A</code> is predicated, not stored,
+   because every epoch change clears the witness; one extra <code>IF</code>
+   column on the witness CAS and the frontier advance.
 8. Add the first productive consumer only after writer/deleter wiring and its
    no-bypass fence are complete, the certifier is fail-closed, the certification
    window is fenced, and every mapping-dependent identity it expects to certify

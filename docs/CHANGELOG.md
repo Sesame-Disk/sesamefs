@@ -6,6 +6,69 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-24 - PR #232 stable-absence and in-flight writer contracts
+
+Fourth cross-audit correction. CW-M33 distinguishes EACH_QUORUM cross-DC
+visibility from stable global-SERIAL HEAD Paxos absence. A test-only Cassandra
+5.0.9 latch pauses an accepted HEAD proposal after H0 is observed and before
+commit; the SERIAL barrier settles H1 before the EACH_QUORUM absence read. G21
+removes that barrier; G22 removes the SERIAL-present proof veto. Both turn RED
+with proof followed by HEAD resurrection. The test image pins the exact source
+commit and SHA-256 for both patched files. CW-M34 freezes the lifetime property
+for already-admitted timestamped writes without choosing the runtime mechanism.
+The model covers drain+revalidation and recovery above the destructive floor; a
+3-DC Cassandra test commits a later tombstone while the old write is paused in
+transport, then confirms successful-but-hidden settlement. §14/§16 now account
+for SERIAL + EACH_QUORUM absence proof reads and lifetime tracking/recovery costs.
+The decision is CLOSED / MERGEABLE; PC-D1B.5 remains the runtime follow-up before
+destructive GC activation or a productive consumer. The independent hard-delete
+lease non-fencing race is registered PRE-GC and does not block #232. No
+productive runtime or schema change; `GC_ENABLED=false` remains mandatory.
+
+## 2026-09-23 - PR #232 cross-audit timestamp proofs
+
+Cross-audit correction to the PC-D1B.4 fence decision and its characterization;
+still no productive runtime or schema changes. When S is non-null, every
+covered row now requires `EACH_QUORUM` reaffirmation on every certification
+attempt, even after an ambiguous attempt left a higher local `WRITETIME`;
+CW-M27 adds model and isolated 3-DC evidence. Destruction now postpones rather
+than minting a timestamp ahead of wall clock; CW-M28 characterizes how a future
+row tombstone can hide a normal successful writer. Whole-row progress W covers
+all live regular cells, intent CAS conditions combine observed E/P/S with the
+canonical `created_at` sentinel, and queue tokens use persisted durable
+`identity_at` without widening producer scope. Removed residual batch
+amortization / once-only reaffirmation wording. `GC_ENABLED=false` remains
+mandatory.
+
+## 2026-09-24 - PR #232 cross-node clock and UUIDv5 contract
+
+Second cross-audit correction for PC-D1B.4. CW-M29 now freezes an enforceable
+fleet-wide pairwise clock-skew lease over every Cassandra/client timestamp
+source, the `safe_now = gc_local_now - Δ - 1us` frontier, monotonic/health
+requirements, and fail-closed retry when no safe timestamp interval exists.
+CW-M30 freezes the RFC URL namespace UUID, exact length-delimited UUIDv5
+encoding, millisecond timestamp normalization, and a fixed durable-QueueItem
+token vector. CW-M29 and M30 are now closed as decision-contract findings;
+CW-M27, same-clock CW-M28 and the P2 merge-sequence contradiction were already
+closed. The PC-D1B.4 decision is mergeable. PC-D1B.5 remains an OPEN runtime
+follow-up, not a merge prerequisite for this decision PR, but is mandatory
+before GC activation or the productive consumer.
+No productive runtime or schema change; `GC_ENABLED=false` remains mandatory.
+
+## 2026-09-24 - PR #232 canonical-absence and writer-clock authority
+
+Third cross-audit correction for PC-D1B.4. CW-M31 makes local
+`CanonicalLibraryExists == false` non-authoritative for a fence bypass; only an
+explicit canonical-row `EACH_QUORUM` absence read mints `GlobalCanonicalAbsenceProof`.
+Its isolated 3-DC test creates dc-na-absent / dc-eu-present and the mutation
+weakening the proof read to LOCAL_QUORUM turns RED. CW-M32 extends CW-M29's
+clock-health lease to commit/fs_object/permanent-reference writers and
+Cassandra timestamp coordinators, with local admission and no new Cassandra
+round trip/Paxos. CW-M30 evidence now includes fixed block, commit and fs_object
+UUIDv5 vectors. Decision remains mergeable; PC-D1B.5 is the runtime follow-up,
+required before GC activation or a productive consumer. No productive runtime
+or schema change; `GC_ENABLED=false` remains mandatory.
+
 ## 2026-09-19 - Publish-repair dead-row cadence and tracking scope
 
 Ninth review of #225, documentation only.

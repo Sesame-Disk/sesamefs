@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-22 (PR #228 certifier identity-authority closure)
+**Last Updated**: 2026-09-24 (PC-D1B.4 cross-audit decision closure)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -12,6 +12,15 @@ status. If the two disagree, this file is right about status and the audit doc
 is right about why.
 
 ---
+
+### PC-D1B.4 boundary (2026-09-23)
+
+PC-D1B.4 decides the certification-window lifecycle fence and characterizes
+the current races on real Cassandra and an isolated 3-DC fixture
+([PC-D1B-CERTIFICATION-WINDOW-FENCE.md](PC-D1B-CERTIFICATION-WINDOW-FENCE.md),
+`ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01`). Decision only: the runtime fence
+is PC-D1B.5; no productive consumer, PC-2, Phase 5 fix or mapping-authority
+work is included. `GC_ENABLED=false` remains mandatory.
 
 ### PC-D1B.1 boundary (2026-09-22)
 
@@ -6212,6 +6221,9 @@ Five sub-gaps belong to the same finding:
   all, and both v2 FS-helper discards are guarded against the winning HEAD. So
   this is mandatory PRE-GC and before the first productive consumer, and it
   re-scopes to a certifier blocker if a non-GC reachable delete is shown.
+  PC-D1B.4 selects the mechanism (per-library destruction epoch plus pending
+  destruction intents, predicated by the witness CAS) and characterizes the
+  race: `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01`.
 
 #### Scope / disposition
 
@@ -6277,6 +6289,242 @@ retirement mechanism, and it is not a merge precondition for PR #228 or #229.
 - `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`
 - [PC-D1B metadata identity authority decision](PC-D1B-METADATA-IDENTITY-AUTHORITY.md)
 
+### ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01: A witness can be born over, or survive, the destruction of the state it certifies
+
+**Status**: 🟢 Decision CLOSED / MERGEABLE 2026-09-24 (CW-M33 accepted-Paxos barrier and post-barrier proof-issuance races + G21/G22 RED, CW-M34 in-flight materialization contract/evidence); PC-D1B.5 runtime OPEN and mandatory before destructive GC activation and before the first productive consumer
+**Severity**: High (P1) — certified-baseline correctness; dormant today (no production caller of the certifier or the witness, `GC_ENABLED=false`)
+**Affected**: `CertifyLibraryBaseline` witness settlement, `CommitLibraryContinuityWitness*`, `AdvanceLibraryCertifiedFrontier`, the identity-gateway source deletes and the GC `fs:` reference removal
+**Registered**: 2026-09-23, PC-D1B.4
+
+#### Problem
+
+The witness CAS predicates only `head_commit_id` and `deleted_at` on the
+canonical `libraries` row. Deleting the HEAD commit, a reachable fs_object or a
+permanent `fs:` reference after the certifier's final revalidation still lets
+the witness settle (R4, R5; also through a trash round trip, R3b, and through
+UNKNOWN settlement, R11b), and a destruction after settlement leaves the
+witness valid (R10b), including across restore (R10). Semantic replacement at
+the same key is already impossible (immutable identity claims, R6/R7).
+Library soft-delete/restore/hard delete do not change what the witness
+asserts. With `GC_ENABLED=false` no production path destroys HEAD-reachable
+state; the gateway primitives and GC Phase 5/6 can.
+
+#### Decision (PC-D1B.4)
+
+A per-library destruction fence on the canonical row, in the global SERIAL HEAD
+domain, remains the selected architecture: E destruction epoch, P token-to-owner
+generation, S superseded high-water, generation-owned intents, and witness
+invalidation. CW-M27 closes the local-timestamp proof gap: when S0 is non-null,
+every covered row is reaffirmed with its identical verified projection through
+EACH_QUORUM on every certification attempt, regardless of local
+`WRITETIME > S0`; partial/UNKNOWN is not global proof, so retry repeats
+EACH_QUORUM. CW-M28 closes a future tombstone relative to the same clock. CW-M29
+closes the cross-node variant: a fast GC clock cannot issue a tombstone ahead of
+a slow writer's clock just because it is legal under the GC node's local wall
+clock. The contract requires a fleet-wide `ClockSafetyLease` with a
+finite maximum pairwise skew Δ, fresh monotonic health for every timestamp
+source, `safe_now = gc_local_now - Δ - 1us`, and no destructive write when the
+lease/health/safe interval is absent. The lease must cover GC workers, supported
+timestamp-sending clients, and Cassandra coordinators that assign default write
+timestamps. W for a whole-row delete remains the maximum timestamp of every
+live regular cell the tombstone must dominate, including display metadata.
+
+CW-M31 closes the cross-DC visibility part of the absent-row bypass: a local
+`CanonicalLibraryExists == false` is only a local observation and never mints a
+bypass capability. A global EACH_QUORUM absence read sees the remote row in the
+3-DC dc-na-absent / dc-eu-present test. **CW-M33 closes the separate Paxos
+stability gap:** `GlobalCanonicalAbsenceProof` must establish both global row
+absence and that no HEAD proposal begun before proof issuance can become
+effective afterward. The accepted-Paxos test-only latch on Cassandra 5.0.9
+pauses the H0→H1 proposal after acceptance and before commit, then hard-deletes
+`libraries` with `ballot-1`; a global-SERIAL read settles H1 before the following
+EACH_QUORUM absence check, so no proof is minted. G21 removes the SERIAL barrier
+and turns RED when H1 resurrects after an EACH_QUORUM-only proof. The test image
+is isolated to this Docker fixture; the stock Cassandra image and production
+runtime are unchanged. The post-barrier issuance race is also covered: SERIAL
+observes H0, a new H0→H1 proposal starts and pauses, hard delete lands, and the
+subsequent EACH_QUORUM read sees absence; the saved SERIAL-present result still
+refuses the capability. G22 removes that SERIAL-result predicate and turns RED
+with proof followed by the resumed H1. Reproducibility pins binary digest
+`d35e159439b302146f964919904f84fd3c2cebf347272b8cb8c4368c1cf200e5`, upstream
+source commit `b5f2a54210d541339c2e7c17a794195cac0e67c2`, and SHA-256 checksums
+for both patched Java files in `scripts/cassandra-cw-m33/cassandra-source.sha256`.
+
+CW-M32 assigns CW-M29 admission to every timestamp authority, not only GC:
+commit/fs_object/permanent-reference writers and Cassandra coordinators must
+not accept timestamped writes without current clock-health authority. **CW-M34
+adds the separate operation-lifetime gap:** a healthy lease at admission does
+not protect a timestamped write already capable of settling after `g`. Before
+GC commits `g`, no admitted covered write at `w <= g` may remain able to settle
+later without recovery. Freeze the property, not the implementation: drain
+permits through definite settlement then revalidate liveness, or use a proven
+equivalent; alternatively recover/re-materialize above the destructive floor
+and verify visibility. UNKNOWN/timeouts retain protection while a write can
+still land. The model covers drain+revalidation and recovery; a pinned Cassandra
+5.0.9 3-DC transport-gated request returns success while remaining hidden under
+the later tombstone. This is a characterized current hazard, not runtime
+protection.
+
+The intent LWT compares observed E/P/S and the non-null immutable canonical
+`created_at` sentinel; canonical absence is NOT_APPLIED and must not create a
+partial row. Tokens derive from persisted durable queue `identity_at`; enqueue
+already persists its effective value and requeue preserves it. UUIDv5 now has
+an exact namespace UUID, byte encoding, and block/commit/fs_object known vectors
+(CW-M30). V1 has no
+batch amortization, and an ambiguous reaffirmation may be repeated. Each successful
+destroyer completes with `DELETE pending[t] IF pending[t] = g`, so a stale
+attempt cannot clear a retry's protection. Queue items holding an entry leave
+the queue (DLQ expiry, operator delete) only after abandon-by-takeover, and a
+backpressure cap bounds the pending map. Best-effort D4/D5 cleanups of commits
+proven never to be HEAD take a `ProvenUncoveredCleanupCapability` and write no
+fence state. The certifier captures the fence before its final revalidation,
+refuses a busy library, and its CAS predicates the captured epoch. Witness
+shape stays `(H, V)` and validity is unchanged, but productive witness authority
+must be read at global SERIAL. Soft-delete, restore and hard delete need no
+change. CW-M27–CW-M34 decision contracts and evidence, UUIDv5 vectors, and
+cross-DC visibility are closed. CW-M34's model and G20 mutation demonstrate
+that a one-shot health check is insufficient; real 3-DC Cassandra confirms a
+timestamped materialization can return success while hidden under a later
+tombstone. Its lifetime barrier/recovery remains PC-D1B.5 runtime work.
+The performance contract now counts the SERIAL absence-proof read plus the
+EACH_QUORUM recheck, and distinguishes normal local lifetime tracking from
+exceptional drain/revalidation or recovery I/O.
+Therefore the PC-D1B.4 decision is CLOSED / MERGEABLE; PC-D1B.5 remains
+mandatory before activation/consumer. Evidence includes the two-clock, stable-
+absence and in-flight models, block/commit/fs_object UUIDv5 vectors,
+real-Cassandra absent-row/whole-row-W/future-tombstone and CW-M34
+characterizations, isolated 3-DC post-UNKNOWN, local-absent/remote-present,
+CW-M33 accepted-Paxos, post-barrier issuance/G21/G22 mutations and CW-M34 tests,
+plus lifecycle/destroyer/alias/clock/vector/in-flight guards (G1-G20, G21, G22, G16 and
+C1 RED).
+
+#### Remaining
+
+PC-D1B.5 implements the fence and its mutation contract (CW-M1..M16,
+CW-M18..CW-M34) exactly as scoped in the decision record, wires stable global
+absence proof and writer lifetime protection/recovery, implements the CW-M29
+lease and frozen UUIDv5 tuple, and inverts the UNSAFE characterization rows.
+It must land before destructive GC activation or the first productive consumer.
+Phase 5/6 fixes, mapping authority, soft-delete serialization
+(`ISSUE-LIB-DELETED-FENCE-01`), the productive consumer and PC-2 remain
+separate.
+
+#### Related
+
+- [PC-D1B-CERTIFICATION-WINDOW-FENCE.md](PC-D1B-CERTIFICATION-WINDOW-FENCE.md)
+- `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`, `ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01`
+- `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`, `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`
+
+### ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01: After Mapping Authority, a mutable mapping row can diverge from the authority a witness rests on
+
+**Status**: 🔴 Open — registered 2026-09-23 (PC-D1B.4 cross-audit); PRE-CONSUMER
+**Severity**: High (P1) — must be closed before the first productive consumer; dormant today (no SHA-1-only file can be certified on `main`, no consumer)
+**Affected**: `block_id_mappings` writers (`WriteBlockIDMapping` is a plain upsert), ordinary block resolution readers, and certification of SHA-1-only files once #233 lands
+**Registered**: 2026-09-23, PC-D1B.4
+
+With #233 the certifier can witness a SHA-1-only file whose canonical block
+comes from immutable mapping authority A. Nothing prevents the mutable
+`(org_id, representation_id, external_id)` mapping row from later being
+upserted to B. Ordinary readers would then resolve B while the witness and the
+authority still say A, and no commit, fs_object or `fs:` reference was
+destroyed, so the PC-D1B.4 destruction fence does not see it. Before a
+productive consumer relies on a witness, either the mapping row must become
+write-once/authority-aligned for authority-bound keys or every reader of an
+authority-bound key must resolve through the authority. Mapping rows are
+org-scoped and shared across libraries, so a per-library fence cannot cover
+them. Not part of PC-D1B.5.
+
+### ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01: A continuity LWT racing a hard delete can leave a HEAD-less ghost `libraries` row
+
+**Status**: 🟡 Open — characterized 2026-09-23 (PC-D1B.4, R9g and R9i); PRE-GC. Supersedes the earlier id `ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`
+**Severity**: Low — never a valid witness (HEAD is null); GC liveness only
+**Affected**: `CommitLibraryContinuityWitnessContext` today, and the PC-D1B.5 destruction intent/completion LWTs, versus `hardDeleteLibraryRowsFn` / `CassandraStore.HardDeleteLibrary`
+**Registered**: 2026-09-23, PC-D1B.4
+
+The hard delete is a plain row delete with a client timestamp; continuity
+LWTs are Paxos writes with a ballot timestamp. If an LWT's read precedes the
+delete at the replicas and its ballot is later than the delete's timestamp,
+the merged row keeps the LWT's live cells: the witness columns for the witness
+CAS (R9g), and the epoch/pending/superseded columns for the future destruction
+intent (R9i, characterized with any LWT on the row). An `IF` on existing
+columns does not prevent it. `ContinuityWitnessValidFor` is false (HEAD is
+null), but `CanonicalLibraryExists` and restore's canonical read see a
+library: guarded cascade children postpone and the row is never reclaimed.
+Frozen by `TestPCD1B4Characterization_PostWitnessLifecycle/R9g` and `/R9i`
+(timestamp-order models on real Cassandra). Required before GC activation: a
+HEAD-less `libraries` row counts as canonically absent for every GC and
+restore decision, or is cleaned, after the GC's own authority check (a
+global-SERIAL canonical row delete is the alternative). Not a
+certification-window blocker.
+
+### ISSUE-PCD1B-STALE-TOMBSTONE-DISPLAY-METADATA-01: A superseded destruction generation's row tombstone can erase fs_object display metadata
+
+**Status**: 🟡 Open — registered 2026-09-23 (PC-D1B.4 cross-audit); PRE-GC
+**Severity**: Medium — metadata loss, not witness or identity loss
+**Affected**: PC-D1B.5 generation-fenced fs_object deletes and the display-only columns `obj_name`, `full_path`, `mtime`
+**Registered**: 2026-09-23, PC-D1B.4
+
+Under the PC-D1B.4 fence a paused, superseded destruction generation may
+still deliver its row tombstone at `ts(g)`. Certifier reaffirmation rewrites
+the identity projection above the superseded high-water mark, so the
+certified identity survives, but display-only cells written at or before
+`ts(g)` stay shadowed. Before GC activation, either the reaffirmation or the
+destroyer's verification must restore/avoid display metadata loss (for example
+column deletes limited to the identity projection plus a separate row-marker
+policy), with a characterization. Not part of PC-D1B.5.
+
+### ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01: The library hard-delete lease inherits `serial_consistency`
+
+**Status**: 🟡 Open — found 2026-09-23 (PC-D1B.4 inventory); PRE-GC multi-DC
+**Severity**: Medium — multi-DC lifecycle serialization
+**Affected**: `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock` (`internal/gc/store_cassandra.go`), used by restore, API permanent delete and GC library cascade
+**Registered**: 2026-09-23, PC-D1B.4
+
+The lease LWTs set no `SerialConsistency`, so a deployment with
+`database.serial_consistency: LOCAL_SERIAL` gives each DC its own Paxos domain:
+a restore in one DC and a cascade or permanent delete in another can both
+acquire the library lease. The canonical-row checks each performs under the
+lease are then not serialized with each other. Fix direction: pin the lease
+LWTs to global SERIAL like the HEAD domain. Independent of the certification
+fence (restore is not a witness lifecycle event), but required before GC runs
+multi-DC.
+
+### ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01: A stale lease owner can resume its final lifecycle batch
+
+**Status**: 🔴 Open — CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC. Found in the PR #232 final cross-audit (2026-09-24); not part of the PC-D1B.4 decision
+**Severity**: High (P1)
+**Scope**: CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC
+**Introduced by #232**: No
+**Blocks #232**: No — this does not create a valid HEAD/witness
+**Affected**: `DELETE /api/v2.1/repos/deleted/:repo_id[/]` (`PermanentDeleteRepo`), `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock`, `hardDeleteLibraryRowsFn`, `restoreDeletedLibrary` and their final lifecycle batches
+**Registered**: 2026-09-24, PR #232 final cross-audit
+
+The current authenticated API route is registered independently of GC worker
+configuration. `PermanentDeleteRepo` calls
+`permanentlyDeleteTrashedLibraryCandidate()`, which synchronously reaches
+`hardDeleteLibraryRowsFn()` to delete the canonical library rows. Thus
+`GC_ENABLED=false` does **not** protect this permanent-delete/restore lifecycle
+from the stale-owner race; asynchronous file-data reclamation is separate.
+
+The renewable lease detects and permits takeover after a stale heartbeat, but
+the final restore/permanent-delete batch is not fenced by the generation that
+currently owns the lease. A holder can renew, pause past the stale interval,
+lose ownership to a competing restore/delete, then resume and apply its old
+unconditional batch. For example: permanent delete pauses; restore takes over
+and restores the library; the old delete resumes and removes the restored row.
+The inverse stale-restore schedule can recreate partial canonical cells after
+hard delete.
+
+This is distinct from `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`: using global
+SERIAL for the lease LWTs orders acquisition but does not fence a previously
+authorized holder's later batch. Treat this as a current-runtime lifecycle/API
+follow-up, and close it before destructive GC activation as well. Introduce a
+generation/token carried to the final mutation and require that mutation to
+prove current ownership, or another equivalent fencing protocol. Characterize
+both stale-delete-after-restore and stale-restore-after-delete with the old
+owner paused after renewal and resumed only after takeover. Keep it out of
+PC-D1B.4; `GC_ENABLED=false` is not protection from this API path.
+
 ### ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01: Revert/restore paths publish borrowed block dependencies with no pin, `pub:`, repair, or fence
 
 **Status**: 🔴 Open — characterized by the PC-0 audit (2026-09-10); reclassified, not fixed in the characterization PR
@@ -6299,6 +6547,11 @@ RestoreTrashItem / RevertFile
     ↓
 new HEAD:          depends on FS1 → P1… again
 ```
+
+GC Phase 6 is the other side of the same race: its keep set is computed at
+scan time and its fs_object items carry no library guard and no execute-time
+reachability recheck, so a HEAD that re-references an fs_id outside the keep
+set between scan and execution loses it (PC-D1B.4 inventory, finding F3).
 
 That is a positive block-dependency delta (PC-0's own
 `LogicalPositiveBlockDelta` definition) with `BORROWED` provenance: the only

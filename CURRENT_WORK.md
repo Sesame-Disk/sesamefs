@@ -1,5 +1,101 @@
 # Current Work - SesameFS
 
+**PC-D1B.4 certification-window lifecycle fence — cross-audit round 4, final Paxos race characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
+Decision record: [docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md](docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md),
+`ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01`. Only the destruction of
+witness-covered state (HEAD commit, reachable fs_object, permanent `fs:`
+reference) can falsify a witness; claims already forbid semantic replacement,
+HEAD movement is already fenced, and soft-delete/restore/hard delete do not
+change the certified dependency set. Selected fence (for PC-D1B.5): a
+per-library `continuity_destruction_epoch timeuuid` +
+`continuity_destruction_pending map<uuid, timeuuid>` (token -> owning
+generation) + `continuity_destruction_superseded` on the canonical row, written
+only by global-SERIAL LWTs. GC destroyers (D1-D3) take an intent per durable
+QueueItem (fresh generation as epoch, `pending[t] = g`, witness cleared,
+superseded high-water raised on takeover), issue every destructive write
+`USING TIMESTAMP ts(g)`, and complete `IF pending[t] = g` after acknowledged
+writes. When captured S is non-null, the certifier must reaffirm every covered
+row on every attempt through a gateway-only `VerifiedReaffirmationCapability`
+(full identity projection, `EACH_QUORUM`, fail closed), regardless of local
+`WRITETIME`; UNKNOWN requires a global retry. The 3-DC harness proves both
+that LOCAL_QUORUM loses the row outside its DC (CW-M23) and that a local-only
+post-UNKNOWN state with a high timestamp must be globally reaffirmed on retry
+(CW-M27; the model covers the partial/UNKNOWN transition). CW-M28 forbids
+same-clock future tombstones. CW-M29 now makes cross-node time an explicit
+premise: a fleet-wide lease bounds skew across every application/Cassandra
+timestamp source, `safe_now = gc_local_now - Δ - 1us`, and unknown, stale or
+regressed clock health blocks destructive writes while retaining P for retry.
+Whole-row W covers every live regular cell, including display and reference
+metadata. Real Cassandra characterizes partial-row survival and same-clock
+future-tombstone poisoning (CW-M26/M28). Durable token derivation now freezes
+the RFC URL namespace UUID, exact field encodings and block/commit/fs_object
+CW-M30 vectors; enqueue persists effective `identity_at` and requeue preserves
+it, with no producer stamping change. CW-M31 requires global `EACH_QUORUM` absence
+proof for any E/P/S bypass; a local `CanonicalLibraryExists` miss never mints
+authority. CW-M32 applies the clock-health lease to supported writers and
+Cassandra timestamp coordinators, not only GC.
+DLQ/expiry/operator paths abandon-by-takeover before an item leaves the queue;
+the pending map has a backpressure cap.
+Best-effort D4/D5 cleanups of commits proven never to be HEAD take a
+`ProvenUncoveredCleanupCapability` and write no fence state. The certifier
+captures the fence before its final revalidation, refuses a busy library and
+predicates the captured epoch in the witness CAS. Witness stays `(H, V)`;
+validity unchanged; productive witness authority is read only at global
+SERIAL (frozen in the PC-D1 contract); no hot-path Paxos, no fan-out (all
+covered state is library-scoped), no per-identity state.
+Evidence: `internal/db/pcd1b4_certification_window_model_test.go` (exhaustive
+interleavings: main and four weaker fences have counterexamples, the selected
+fence has none, including the same-token stale-completion retry, paused
+generations issuing late deletes, CW-M27 local-timestamp skip, CW-M28
+same-clock future-tombstone poisoning, CW-M29 independent-clock skew, CW-M31
+global-absence proof requirements, CW-M32 writer-side clock admission, and
+CW-M33/CW-M34 in-flight authority models),
+`internal/db/pcd1b4_inflight_authority_model_test.go` (stable-absence and
+drain/recovery contracts),
+`internal/db/pcd1b4_lifecycle_mutation_inventory_test.go` (source-derived
+lifecycle statements and destroyer call sites), real-Cassandra
+characterization `internal/integration/pcd1b4_certification_window_characterization_test.go`
+(R1-R11; R3b/R4/R5/R10/R10b/R11b UNSAFE today; CW-M11/M26/M28 evidence) and
+isolated 3-DC `scripts/pc-d1b4-certification-window-multidc-characterization.sh`
+(R12, CW-M23/M27/M31, CW-M33 accepted-Paxos and post-barrier issuance races
+with G21/G22 RED via
+`internal/integration/pcd1b4multidc/stable_absence_paxos_race_test.go`, CW-M34
+via `internal/integration/pcd1b4multidc/inflight_materialization_test.go`, and
+G16 local-proof mutation);
+`scripts/pc-d1b4-certification-window-guard-mutation-validation.sh` proves the
+guards bite (G1-G15/G17-G20 plus C1 on real Cassandra); G16 is the isolated-3DC
+global-to-local absence mutation; G22 removes the SERIAL-present proof veto in
+the 3-DC runner. The destroyer inventory also
+rejects aliases of destroyer primitives and raw `block_references` deletes.
+Cross-audit rounds 2–4 close CW-M29's clock premise, CW-M31 cross-DC visibility,
+CW-M33 stable absence, and CW-M34 in-flight writer lifetime. The isolated
+Cassandra 5.0.9 image first proves settlement of a pre-existing accepted HEAD
+proposal; G21 removes the barrier and turns RED. It also covers the issuance
+window: SERIAL observes H0, then a new accepted CAS begins, hard delete and
+EACH_QUORUM absence follow, and the stored SERIAL-present result vetoes proof;
+G22 removing that veto turns RED. The test builder pins Cassandra binary
+digest, source commit and SHA-256 for both patched sources; the stock Cassandra
+and SesameFS runtime are unchanged. §14/§16 now account for SERIAL plus
+EACH_QUORUM proof cost and CW-M34 lifetime-tracking/recovery costs.
+CW-M34 separately confirms a healthy timestamped write can return success while
+hidden under a later tombstone; G20 removes the selected writer drain and turns
+RED. Both are decision/characterization contracts only. The decision is now
+CLOSED / MERGEABLE; PC-D1B.5 implements runtime protection before GC activation
+or a productive consumer. No productive runtime, schema, certifier, writer, GC,
+mapping-authority, consumer or PC-2 change.
+Registered PRE-CONSUMER `ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01` (mutable
+mapping rows vs Mapping Authority after #233). The runtime migration is the
+next available number (`028` if #233 lands first).
+Side findings registered: `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` (was
+`ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`; now also covers the intent LWT),
+`ISSUE-PCD1B-STALE-TOMBSTONE-DISPLAY-METADATA-01`,
+`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` (PRE-GC multi-DC),
+`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (P1, CURRENT-RUNTIME / FOLLOW-UP;
+also required PRE-GC; pre-existing, not a #232 blocker), and Phase 6 execute-time
+TOCTOU under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`.
+`GC_ENABLED=false` keeps the GC worker disabled; it does not gate the synchronous
+`PermanentDeleteRepo` API hard delete or protect the restore lifecycle race.
+
 **Historical merged PR #230 — PC-D1B identity-authority primitive (2026-09-21, `feat/pcd1b-metadata-identity-authority-primitive`):**
 PR #230 lands the commits/fs_objects identity-authority primitive authority-only,
 as decided in PR #229. Migration 026 adds `identity_authority_claims` under the
@@ -346,7 +442,7 @@ Status after PC-1 / PC-D1 / HEAD SERIAL domain:
 PC-0: CLOSED / characterization complete (#211)
 H1:   CLOSED (#214)
 PC-1: CLOSED (2026-09-11)
-PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation and the fail-closed PC-D1B.1 certifier gate landed; mapping promotion, lifecycle fencing, and first productive consumer remain required before PC-2 (historical backfill is a greenfield non-goal)
+PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation and the fail-closed PC-D1B.1 certifier gate landed; mapping promotion, the lifecycle fence runtime (decided by PC-D1B.4), and first productive consumer remain required before PC-2 (historical backfill is a greenfield non-goal)
 ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01: CLOSED (2026-09-14) — global SERIAL prerequisite satisfied
 PC-2: NOT STARTED
 W2:   OPEN
@@ -358,8 +454,9 @@ Next PC-D1B stages, in order:
    (M18-M19) for SHA-1-only identities that need coverage. Until then, the
    certifier returns `identity_unproven` without a witness for mapping-dependent
    SHA-1-only identities.
-2. Specify the certification-window fence before destructive GC and before the
-   first productive consumer. This remains a pre-GC/pre-consumer requirement.
+2. Implement the certification-window fence decided by PC-D1B.4 (PC-D1B.5,
+   docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md §18) before destructive GC and
+   before the first productive consumer.
 3. Add a productive consumer only after the lifecycle fence and required mapping
    coverage are complete. Then PC-2 (migrate CreateFileFromBlocks / shared Once
    preserving stage < repair < final exact-P revalidation < HEAD); H4 (GC Phase 5)
