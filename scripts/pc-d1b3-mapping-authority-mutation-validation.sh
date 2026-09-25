@@ -182,6 +182,40 @@ del1_productive_mapping_delete() {
     expect_red "DEL1 production mapping DELETE" "production DELETE from block_id_mappings is prohibited by R11a" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
 }
 
+# H3: a production caller bypasses provenance/claim promotion by invoking the
+# projection-freeze primitive directly.
+a1_external_freeze_caller() {
+    mutate "$WRITERS" 's/\z/\nfunc pcd1b3ExternalFreezeCallerMutation(ctx context.Context, session *gocql.Session, identity blockMappingIdentity, authority string) { _, _ = freezeBlockMappingProjection(ctx, session, identity, authority) }\n/'
+    expect_red "A1 external projection-freeze caller" "references freezeBlockMappingProjection" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# T3: a dominant-timestamp UPDATE is assembled by a helper from local,
+# concatenated strings and then passed through a Query variable.
+t3_dynamic_timestamp_mapping_update() {
+    mutate "$WRITERS" 's/\z/\nfunc pcd1b3DynamicTimestampUpdateCQLMutation() string { query := "UPDATE block_id_" + "mappings USING TIMESTAMP ? SET internal_id = ? WHERE org_id = ? AND representation_id = ? AND external_id = ?"; return query }\nfunc pcd1b3DynamicTimestampUpdateMutation(session *gocql.Session) { query := pcd1b3DynamicTimestampUpdateCQLMutation(); session.Query(query, BlockMappingProjectionFrozenTimestamp, "id", "org", "plain:v1", "sha1") }\n/'
+    expect_red "T3 dynamically assembled dominant-timestamp UPDATE" "only freezeBlockMappingProjection may use explicit-timestamp block_id_mappings UPDATE" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T4: an unresolved runtime table suffix must not make a dynamic Query escape
+# the mapping mutation inventory.
+t4_unresolved_mapping_query_argument() {
+    mutate "$WRITERS" 's/\z/\nfunc pcd1b3UnknownMappingUpdateCQLMutation(table string) string { return "UPDATE block_id_" + table + " USING TIMESTAMP ? SET internal_id = ? WHERE org_id = ? AND representation_id = ? AND external_id = ?" }\nfunc pcd1b3UnknownMappingUpdateMutation(session *gocql.Session, table string) { query := pcd1b3UnknownMappingUpdateCQLMutation(table); session.Query(query, BlockMappingProjectionFrozenTimestamp, "id", "org", "plain:v1", "sha1") }\n/'
+    expect_red "T4 unresolved dynamic mapping Query argument" "unresolved/dynamic block_id_mappings Query argument" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# D2: strings.Join assembles a production DELETE across literals.
+d2_dynamic_mapping_delete() {
+    mutate "$WRITERS" 's/\z/\nfunc pcd1b3DynamicDeleteCQLMutation() string { return strings.Join([]string{"DELETE FROM block_id_", "mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?"}, "") }\nfunc pcd1b3DynamicDeleteMutation(session *gocql.Session) { query := pcd1b3DynamicDeleteCQLMutation(); session.Query(query, "org", "plain:v1", "sha1") }\n/'
+    expect_red "D2 dynamically assembled mapping DELETE" "production DELETE from block_id_mappings is prohibited by R11a" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# R3: every mapping SELECT must be in the reader inventory, even if it has no
+# pinned consistency floor.
+r3_unclassified_mapping_select() {
+    mutate "$WRITERS" 's/\z/\nfunc pcd1b3UnclassifiedMappingReaderMutation(session *gocql.Session) { session.Query("SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?", "org", "plain:v1", "sha1").Scan(new(string)) }\n/'
+    expect_red "R3 unclassified mapping SELECT" "unclassified production block_id_mappings SELECT" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
 # T1 (behavioral, real Cassandra + MinIO, requires the running Compose stack):
 # replace the dominant-timestamp freeze with an ordinary rewrite. An ordinary
 # write between the final recheck and the witness CAS then reaches readers
@@ -227,6 +261,11 @@ ALL_MUTATIONS=(
     m21_no_ambiguous_serial_retry
     t2_ordinary_writer_supersedes_freeze
     del1_productive_mapping_delete
+    a1_external_freeze_caller
+    t3_dynamic_timestamp_mapping_update
+    t4_unresolved_mapping_query_argument
+    d2_dynamic_mapping_delete
+    r3_unclassified_mapping_select
 )
 
 WITH_INTEGRATION=0

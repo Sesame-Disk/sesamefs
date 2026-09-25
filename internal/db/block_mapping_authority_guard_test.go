@@ -31,9 +31,13 @@ var (
 	blockMappingFreezePattern          = regexp.MustCompile(`(?is)^UPDATE\s+block_id_mappings\s+USING\s+TIMESTAMP\s+\?\s+SET\s+internal_id\s*=\s*\?\s+WHERE\s+org_id\s*=\s*\?\s+AND\s+representation_id\s*=\s*\?\s+AND\s+external_id\s*=\s*\?$`)
 )
 
-// Symbols that acquire or write mapping authority. Only the primitive, the
-// certifier and the integration-only hook file may reference them.
+// Symbols that acquire or write mapping authority with explicit source-file
+// allowlists. The freeze primitive stays confined to its defining file;
+// acquisition primitives and integration hooks are listed separately below.
 var blockMappingAuthorityAcquisitionSymbols = map[string]map[string]bool{
+	"freezeBlockMappingProjection": {
+		"internal/db/block_mapping_authority.go": true,
+	},
 	"claimBlockMappingAuthority": {
 		"internal/db/block_mapping_authority.go":             true,
 		"internal/db/block_mapping_authority_integration.go": true,
@@ -46,6 +50,214 @@ var blockMappingAuthorityAcquisitionSymbols = map[string]map[string]bool{
 		"internal/db/block_mapping_authority.go":      true,
 		"internal/db/library_continuity_certifier.go": true,
 	},
+}
+
+type blockMappingResolvedString struct {
+	text     string
+	constant bool
+}
+
+// blockMappingSourceStrings follows string values used as Query arguments,
+// including local bindings, constant concatenation, strings.Join and local
+// helper returns. It deliberately does not try to execute Go code: unknown
+// pieces keep the known fragments so a split table name still taints the
+// statement and fails closed.
+type blockMappingSourceStrings struct {
+	functions map[string]*ast.FuncDecl
+	globals   map[string]ast.Expr
+}
+
+func blockMappingCallName(expr ast.Expr) string {
+	switch value := expr.(type) {
+	case *ast.Ident:
+		return value.Name
+	case *ast.SelectorExpr:
+		return value.Sel.Name
+	}
+	return ""
+}
+
+func blockMappingResolveAlias(expr ast.Expr, locals map[string]ast.Expr, seen map[string]bool) ast.Expr {
+	for {
+		switch value := expr.(type) {
+		case *ast.ParenExpr:
+			expr = value.X
+		case *ast.Ident:
+			if seen[value.Name] {
+				return expr
+			}
+			next, ok := locals[value.Name]
+			if !ok || next == nil {
+				return expr
+			}
+			seen[value.Name] = true
+			expr = next
+		default:
+			return expr
+		}
+	}
+}
+
+func blockMappingLocalStrings(body ast.Node, parameters *ast.FieldList, arguments []ast.Expr, outer map[string]ast.Expr, source *blockMappingSourceStrings) map[string]ast.Expr {
+	locals := make(map[string]ast.Expr, len(outer)+8)
+	for name, expr := range outer {
+		locals[name] = expr
+	}
+	if parameters != nil {
+		argumentIndex := 0
+		for _, field := range parameters.List {
+			for _, name := range field.Names {
+				if argumentIndex < len(arguments) {
+					resolved := source.resolve(arguments[argumentIndex], outer, map[string]bool{}, map[string]bool{}, 0)
+					if resolved.constant {
+						locals[name.Name] = &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(resolved.text)}
+					} else {
+						locals[name.Name] = nil
+					}
+				}
+				argumentIndex++
+			}
+		}
+	}
+	if body == nil {
+		return locals
+	}
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.AssignStmt:
+			for index, left := range value.Lhs {
+				name, ok := left.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				if index < len(value.Rhs) {
+					locals[name.Name] = value.Rhs[index]
+				} else {
+					locals[name.Name] = nil
+				}
+			}
+		case *ast.ValueSpec:
+			for index, name := range value.Names {
+				if index < len(value.Values) {
+					locals[name.Name] = value.Values[index]
+				}
+			}
+		}
+		return true
+	})
+	return locals
+}
+
+func (source *blockMappingSourceStrings) resolve(expr ast.Expr, locals map[string]ast.Expr, seenLocals, activeFunctions map[string]bool, depth int) blockMappingResolvedString {
+	if expr == nil || depth > 24 {
+		return blockMappingResolvedString{}
+	}
+	switch value := expr.(type) {
+	case *ast.BasicLit:
+		if value.Kind != token.STRING {
+			return blockMappingResolvedString{}
+		}
+		text, err := strconv.Unquote(value.Value)
+		return blockMappingResolvedString{text: text, constant: err == nil}
+	case *ast.Ident:
+		if seenLocals[value.Name] {
+			return blockMappingResolvedString{}
+		}
+		if next, ok := locals[value.Name]; ok {
+			if next == nil {
+				return blockMappingResolvedString{}
+			}
+			seen := make(map[string]bool, len(seenLocals)+1)
+			for name, active := range seenLocals {
+				seen[name] = active
+			}
+			seen[value.Name] = true
+			return source.resolve(next, locals, seen, activeFunctions, depth+1)
+		}
+		if next, ok := source.globals[value.Name]; ok {
+			return source.resolve(next, source.globals, seenLocals, activeFunctions, depth+1)
+		}
+	case *ast.ParenExpr:
+		return source.resolve(value.X, locals, seenLocals, activeFunctions, depth+1)
+	case *ast.BinaryExpr:
+		if value.Op != token.ADD {
+			return blockMappingResolvedString{}
+		}
+		left := source.resolve(value.X, locals, seenLocals, activeFunctions, depth+1)
+		right := source.resolve(value.Y, locals, seenLocals, activeFunctions, depth+1)
+		return blockMappingResolvedString{text: left.text + right.text, constant: left.constant && right.constant}
+	case *ast.CompositeLit:
+		var combined blockMappingResolvedString
+		combined.constant = true
+		for _, element := range value.Elts {
+			resolved := source.resolve(element, locals, seenLocals, activeFunctions, depth+1)
+			combined.text += resolved.text
+			combined.constant = combined.constant && resolved.constant
+		}
+		return combined
+	case *ast.CallExpr:
+		name := blockMappingCallName(value.Fun)
+		if name == "Join" && len(value.Args) == 2 {
+			separator := source.resolve(value.Args[1], locals, seenLocals, activeFunctions, depth+1)
+			itemsExpr := blockMappingResolveAlias(value.Args[0], locals, map[string]bool{})
+			items, ok := itemsExpr.(*ast.CompositeLit)
+			if !ok {
+				return blockMappingResolvedString{text: separator.text, constant: false}
+			}
+			combined := blockMappingResolvedString{constant: separator.constant}
+			for index, element := range items.Elts {
+				if index > 0 {
+					combined.text += separator.text
+				}
+				resolved := source.resolve(element, locals, seenLocals, activeFunctions, depth+1)
+				combined.text += resolved.text
+				combined.constant = combined.constant && resolved.constant
+			}
+			return combined
+		}
+		if name == "Sprintf" && len(value.Args) > 0 {
+			format := source.resolve(value.Args[0], locals, seenLocals, activeFunctions, depth+1)
+			if len(value.Args) == 1 {
+				return format
+			}
+			format.constant = false
+			return format
+		}
+		function := source.functions[name]
+		if function == nil || function.Body == nil || activeFunctions[name] {
+			return blockMappingResolvedString{}
+		}
+		active := make(map[string]bool, len(activeFunctions)+1)
+		for current, running := range activeFunctions {
+			active[current] = running
+		}
+		active[name] = true
+		functionLocals := blockMappingLocalStrings(function.Body, function.Type.Params, value.Args, locals, source)
+		var result blockMappingResolvedString
+		found := false
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			if returned, ok := node.(*ast.ReturnStmt); ok && len(returned.Results) > 0 {
+				result = source.resolve(returned.Results[0], functionLocals, map[string]bool{}, active, depth+1)
+				found = true
+				return false
+			}
+			return true
+		})
+		if found {
+			return result
+		}
+	}
+	return blockMappingResolvedString{}
+}
+
+func (source *blockMappingSourceStrings) queryLocals(function *ast.FuncDecl, functionLiteral *ast.FuncLit) map[string]ast.Expr {
+	if function != nil {
+		return blockMappingLocalStrings(function.Body, function.Type.Params, nil, source.globals, source)
+	}
+	if functionLiteral != nil {
+		return blockMappingLocalStrings(functionLiteral.Body, functionLiteral.Type.Params, nil, source.globals, source)
+	}
+	return source.globals
 }
 
 func blockMappingAuthorityParse(t *testing.T, path string) *ast.File {
@@ -357,73 +569,216 @@ func TestBlockMappingAuthoritySerialReadRetriesOnlyAmbiguousCAS(t *testing.T) {
 	})
 }
 
-// TestBlockMappingMutationsAreRepositoryWideInventoried scans production Go
-// literals for every block_id_mappings mutation. The plain upload INSERT is
-// the only ordinary write and may not set a timestamp; the authority freeze
-// is the only explicit-timestamp mutation. Deletes remain prohibited by R11a.
+// TestBlockMappingMutationsAreRepositoryWideInventoried resolves production
+// Query arguments through constant concatenation, strings.Join, local
+// bindings, and same-package helper returns. It inventories every mapping
+// mutation and every SELECT reader, including the explicitly pre-GC exception.
 func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 	repoRoot := r3RepositoryRoot(t)
 	const ordinaryWriter = "insertBlockIDMappingForWriteCheckFn"
 	const freezeWriter = "freezeBlockMappingProjection"
 	const primitivePath = "internal/db/block_mapping_authority.go"
+	const gcReaderMarker = "PCD1B3-PRE-GC-SESSION-CONSISTENCY-EXCEPTION"
+	type readerContract struct {
+		path        string
+		consistency string
+		preGC       bool
+	}
+	readers := map[string]readerContract{
+		"GetBlockIDMappingContext": {
+			path: "internal/db/block_references.go", consistency: "BlockMappingProjectionReadConsistency",
+		},
+		"readBlockMappingProjection": {
+			path: primitivePath, consistency: "gocql.EachQuorum",
+		},
+		"lookupBlockMapping": {
+			path: "internal/gc/store_cassandra.go", preGC: true,
+		},
+	}
 	var violations []string
 	insertCount, freezeCount := 0, 0
 	productionFiles := identityAuthorityProductionGoFiles(t, repoRoot)
 	if len(productionFiles) == 0 {
 		t.Fatal("scanned no production Go sources; mapping mutation inventory would pass vacuously")
 	}
-
+	type parsedProductionFile struct {
+		path string
+		file *ast.File
+	}
+	parsedFiles := make([]parsedProductionFile, 0, len(productionFiles))
+	packages := map[string]*blockMappingSourceStrings{}
 	for _, path := range productionFiles {
+		parsed := blockMappingAuthorityParse(t, path)
+		parsedFiles = append(parsedFiles, parsedProductionFile{path: path, file: parsed})
+		packageRoot := filepath.Dir(path)
+		source := packages[packageRoot]
+		if source == nil {
+			source = &blockMappingSourceStrings{functions: map[string]*ast.FuncDecl{}, globals: map[string]ast.Expr{}}
+			packages[packageRoot] = source
+		}
+		for _, declaration := range parsed.Decls {
+			switch value := declaration.(type) {
+			case *ast.FuncDecl:
+				source.functions[value.Name.Name] = value
+			case *ast.GenDecl:
+				for _, spec := range value.Specs {
+					valueSpec, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for index, name := range valueSpec.Names {
+						if index < len(valueSpec.Values) {
+							source.globals[name.Name] = valueSpec.Values[index]
+						}
+					}
+				}
+			}
+		}
+	}
+	readerCounts := map[string]int{}
+	checkStandaloneCQL := func(relPath, owner, statement string) {
+		normalized := strings.Join(strings.Fields(statement), " ")
+		if !blockMappingTableMentionPattern.MatchString(normalized) || !blockMappingCQLKeywordPattern.MatchString(normalized) {
+			return
+		}
+		upper := strings.ToUpper(normalized)
+		switch {
+		case blockMappingSelectPattern.MatchString(normalized):
+			violations = append(violations, relPath+": unclassified production block_id_mappings SELECT in "+owner)
+		case strings.HasPrefix(upper, "DELETE FROM BLOCK_ID_MAPPINGS"):
+			violations = append(violations, relPath+": production DELETE from block_id_mappings is prohibited by R11a")
+		case strings.HasPrefix(upper, "INSERT INTO BLOCK_ID_MAPPINGS"):
+			if strings.Contains(upper, "USING TIMESTAMP") {
+				violations = append(violations, relPath+": ordinary block_id_mappings INSERT must not specify USING TIMESTAMP")
+			}
+			if relPath != "internal/db/block_references.go" || owner != ordinaryWriter || !blockMappingInsertPattern.MatchString(normalized) {
+				violations = append(violations, relPath+": unauthorized or malformed ordinary block_id_mappings INSERT in "+owner)
+			} else {
+				insertCount++
+			}
+		case strings.HasPrefix(upper, "UPDATE BLOCK_ID_MAPPINGS"):
+			if relPath != primitivePath || owner != freezeWriter || !blockMappingFreezePattern.MatchString(normalized) {
+				violations = append(violations, relPath+": only freezeBlockMappingProjection may use explicit-timestamp block_id_mappings UPDATE")
+			} else {
+				freezeCount++
+			}
+		default:
+			violations = append(violations, relPath+": unrecognized/dynamic block_id_mappings CQL mutation in "+owner)
+		}
+	}
+	checkReader := func(relPath, owner string, body ast.Node, statement string) {
+		contract, allowed := readers[owner]
+		if !allowed || contract.path != relPath {
+			violations = append(violations, relPath+": unclassified production block_id_mappings SELECT in "+owner)
+			return
+		}
+		readerCounts[owner]++
+		var consistencies []string
+		ast.Inspect(body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) != 1 {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "Consistency" {
+				return true
+			}
+			argument := call.Args[0]
+			switch value := argument.(type) {
+			case *ast.Ident:
+				consistencies = append(consistencies, value.Name)
+			case *ast.SelectorExpr:
+				if pkg, ok := value.X.(*ast.Ident); ok {
+					consistencies = append(consistencies, pkg.Name+"."+value.Sel.Name)
+				}
+			}
+			return true
+		})
+		if contract.preGC {
+			if len(consistencies) != 0 {
+				violations = append(violations, relPath+":"+owner+" PRE-GC exception unexpectedly changed its consistency contract")
+			}
+			if !strings.Contains(statement, "SELECT internal_id FROM block_id_mappings") {
+				violations = append(violations, relPath+":"+owner+" PRE-GC query shape changed without reclassification")
+			}
+			return
+		}
+		if len(consistencies) != 1 || consistencies[0] != contract.consistency {
+			violations = append(violations, relPath+":"+owner+" block mapping SELECT consistency="+strings.Join(consistencies, ",")+", want "+contract.consistency)
+		}
+	}
+	checkQuery := func(source *blockMappingSourceStrings, node ast.Node, owner, relPath string, body ast.Node, locals map[string]ast.Expr) {
+		ast.Inspect(node, func(child ast.Node) bool {
+			call, ok := child.(*ast.CallExpr)
+			if !ok || blockMappingCallName(call.Fun) != "Query" || len(call.Args) == 0 {
+				return true
+			}
+			resolved := source.resolve(call.Args[0], locals, map[string]bool{}, map[string]bool{}, 0)
+			normalized := strings.Join(strings.Fields(resolved.text), " ")
+			lower := strings.ToLower(normalized)
+			potentialMapping := strings.Contains(lower, "block_id_") || (strings.Contains(lower, "blockid") && strings.Contains(lower, "mapping"))
+			ast.Inspect(call.Args[0], func(argumentNode ast.Node) bool {
+				if identifier, ok := argumentNode.(*ast.Ident); ok {
+					name := strings.ToLower(identifier.Name)
+					if strings.Contains(name, "blockmapping") || strings.Contains(name, "block_mapping") || strings.Contains(name, "blockidmapping") {
+						potentialMapping = true
+					}
+				}
+				return true
+			})
+			if !blockMappingTableMentionPattern.MatchString(normalized) {
+				if potentialMapping {
+					violations = append(violations, relPath+": unresolved/dynamic block_id_mappings Query argument in "+owner)
+				}
+				return true
+			}
+			if !resolved.constant {
+				violations = append(violations, relPath+": unresolved/dynamic block_id_mappings Query argument in "+owner)
+				return true
+			}
+			upper := strings.ToUpper(normalized)
+			switch {
+			case blockMappingSelectPattern.MatchString(normalized):
+				checkReader(relPath, owner, body, normalized)
+			case strings.HasPrefix(upper, "DELETE FROM BLOCK_ID_MAPPINGS"):
+				violations = append(violations, relPath+": production DELETE from block_id_mappings is prohibited by R11a")
+			case strings.HasPrefix(upper, "INSERT INTO BLOCK_ID_MAPPINGS"):
+				if strings.Contains(upper, "USING TIMESTAMP") {
+					violations = append(violations, relPath+": ordinary block_id_mappings INSERT must not specify USING TIMESTAMP")
+				}
+				if relPath != "internal/db/block_references.go" || owner != ordinaryWriter || !blockMappingInsertPattern.MatchString(normalized) {
+					violations = append(violations, relPath+": unauthorized or malformed ordinary block_id_mappings INSERT in "+owner)
+				} else {
+					insertCount++
+				}
+			case strings.HasPrefix(upper, "UPDATE BLOCK_ID_MAPPINGS"):
+				if relPath != primitivePath || owner != freezeWriter || !blockMappingFreezePattern.MatchString(normalized) {
+					violations = append(violations, relPath+": only freezeBlockMappingProjection may use explicit-timestamp block_id_mappings UPDATE")
+				} else {
+					freezeCount++
+				}
+			default:
+				if blockMappingCQLKeywordPattern.MatchString(normalized) || strings.TrimSpace(normalized) == "block_id_mappings" {
+					violations = append(violations, relPath+": unrecognized/dynamic block_id_mappings CQL mutation in "+owner)
+				}
+			}
+			return true
+		})
+	}
+
+	for _, parsedSource := range parsedFiles {
+		path := parsedSource.path
 		relPath, err := filepath.Rel(repoRoot, path)
 		if err != nil {
 			t.Fatalf("relative path %s: %v", path, err)
 		}
 		relPath = filepath.ToSlash(relPath)
-		parsed := blockMappingAuthorityParse(t, path)
-		inspect := func(node ast.Node, owner string) {
-			ast.Inspect(node, func(child ast.Node) bool {
-				value, ok := child.(*ast.BasicLit)
-				if !ok || value.Kind != token.STRING {
-					return true
-				}
-				statement, err := strconv.Unquote(value.Value)
-				if err != nil || !blockMappingTableMentionPattern.MatchString(statement) {
-					return true
-				}
-				normalized := strings.Join(strings.Fields(statement), " ")
-				upper := strings.ToUpper(normalized)
-				switch {
-				case blockMappingSelectPattern.MatchString(normalized):
-					return true
-				case strings.HasPrefix(upper, "DELETE FROM BLOCK_ID_MAPPINGS"):
-					violations = append(violations, relPath+": production DELETE from block_id_mappings is prohibited by R11a")
-				case strings.HasPrefix(upper, "INSERT INTO BLOCK_ID_MAPPINGS"):
-					if strings.Contains(upper, "USING TIMESTAMP") {
-						violations = append(violations, relPath+": ordinary block_id_mappings INSERT must not specify USING TIMESTAMP")
-					}
-					if relPath != "internal/db/block_references.go" || owner != ordinaryWriter || !blockMappingInsertPattern.MatchString(normalized) {
-						violations = append(violations, relPath+": unauthorized or malformed ordinary block_id_mappings INSERT in "+owner)
-					} else {
-						insertCount++
-					}
-				case strings.HasPrefix(upper, "UPDATE BLOCK_ID_MAPPINGS"):
-					if relPath != primitivePath || owner != freezeWriter || !blockMappingFreezePattern.MatchString(normalized) {
-						violations = append(violations, relPath+": only freezeBlockMappingProjection may use explicit-timestamp block_id_mappings UPDATE")
-					} else {
-						freezeCount++
-					}
-				default:
-					if blockMappingCQLKeywordPattern.MatchString(normalized) || strings.TrimSpace(normalized) == "block_id_mappings" {
-						violations = append(violations, relPath+": unrecognized/dynamic block_id_mappings CQL mutation in "+owner)
-					}
-				}
-				return true
-			})
-		}
+		parsed := parsedSource.file
+		source := packages[filepath.Dir(path)]
 		for _, declaration := range parsed.Decls {
 			switch value := declaration.(type) {
 			case *ast.FuncDecl:
-				inspect(value.Body, value.Name.Name)
+				checkQuery(source, value.Body, value.Name.Name, relPath, value.Body, source.queryLocals(value, nil))
 			case *ast.GenDecl:
 				for _, spec := range value.Specs {
 					if valueSpec, ok := spec.(*ast.ValueSpec); ok {
@@ -432,14 +787,37 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 							if index < len(valueSpec.Names) {
 								owner = valueSpec.Names[index].Name
 							}
-							inspect(expression, owner)
+							if functionLiteral, ok := expression.(*ast.FuncLit); ok {
+								checkQuery(source, functionLiteral.Body, owner, relPath, functionLiteral.Body, source.queryLocals(nil, functionLiteral))
+							} else {
+								resolved := source.resolve(expression, source.globals, map[string]bool{}, map[string]bool{}, 0)
+								checkStandaloneCQL(relPath, owner, resolved.text)
+								checkQuery(source, expression, owner, relPath, expression, source.globals)
+							}
 						}
-					} else {
-						inspect(spec, "")
 					}
 				}
 			}
 		}
+	}
+	for owner, contract := range readers {
+		if readerCounts[owner] != 1 {
+			violations = append(violations, contract.path+":"+owner+" SELECT inventory count="+strconv.Itoa(readerCounts[owner])+", want 1")
+		}
+	}
+	gcSource, err := os.ReadFile(filepath.Join(repoRoot, "internal", "gc", "store_cassandra.go"))
+	if err != nil {
+		t.Fatalf("read pre-GC reader exception: %v", err)
+	}
+	if !strings.Contains(string(gcSource), gcReaderMarker) {
+		violations = append(violations, "GC mapping reader is missing its explicit PRE-GC session-consistency exception marker")
+	}
+	gcContract, err := os.ReadFile(filepath.Join(repoRoot, "docs", "PC-D1B-METADATA-IDENTITY-AUTHORITY.md"))
+	if err != nil {
+		t.Fatalf("read GC activation contract: %v", err)
+	}
+	if !strings.Contains(string(gcContract), "GC_ENABLED=false") {
+		violations = append(violations, "PRE-GC mapping reader exception no longer documents GC_ENABLED=false")
 	}
 	if insertCount != 1 {
 		violations = append(violations, "ordinary block_id_mappings INSERT inventory count="+strconv.Itoa(insertCount)+", want 1")
