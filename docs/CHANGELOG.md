@@ -10,15 +10,17 @@ Session-by-session development history for SesameFS.
 
 Fourth cross-audit correction. CW-M33 distinguishes EACH_QUORUM cross-DC
 visibility from settlement of a pre-existing global-SERIAL HEAD Paxos proposal.
-The executable model makes the EACH_QUORUM-only mutation RED and requires a
-settlement/barrier before the absence proof; the exact paused pre-commit CAS race
-on Cassandra 5.0.9 remains an explicit NO-MERGE evidence gate. CW-M34 freezes
-the lifetime property for already-admitted timestamped writes without choosing
-the runtime mechanism. The model covers drain+revalidation and recovery above
-the destructive floor; a 3-DC Cassandra test gates the write in client transport,
-commits the later tombstone, resumes the old timestamped request, and checks
-successful-but-hidden settlement. No productive runtime or schema change;
-`GC_ENABLED=false` remains mandatory.
+cross-DC visibility from Paxos settlement. A test-only Cassandra 5.0.9 latch
+pauses an accepted HEAD proposal after H0 is observed and before commit. The
+global-SERIAL barrier settles H1 before the EACH_QUORUM absence read; G21 removes
+the barrier and turns RED with proof followed by HEAD resurrection. CW-M34
+freezes the lifetime property for already-admitted timestamped writes without
+choosing the runtime mechanism. The model covers drain+revalidation and recovery
+above the destructive floor; a 3-DC Cassandra test commits a later tombstone
+while the old write is paused in transport, then confirms successful-but-hidden
+settlement. The decision is CLOSED / MERGEABLE; PC-D1B.5 remains the runtime
+follow-up before destructive GC activation or a productive consumer. No
+productive runtime or schema change; `GC_ENABLED=false` remains mandatory.
 
 ## 2026-09-23 - PR #232 cross-audit timestamp proofs
 

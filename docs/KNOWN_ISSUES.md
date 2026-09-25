@@ -6291,7 +6291,7 @@ retirement mechanism, and it is not a merge precondition for PR #228 or #229.
 
 ### ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01: A witness can be born over, or survive, the destruction of the state it certifies
 
-**Status**: 🔴 NO MERGE — CW-M33's exact pre-commit HEAD Paxos race remains uncharacterized on Cassandra 5.0.9; CW-M34 contract/model/3-DC hazard characterization added 2026-09-24. PC-D1B.5 runtime OPEN and mandatory before destructive GC activation and before the first productive consumer
+**Status**: 🟢 Decision CLOSED / MERGEABLE 2026-09-24 (CW-M33 accepted-Paxos barrier race + G21 RED, CW-M34 in-flight materialization contract/evidence); PC-D1B.5 runtime OPEN and mandatory before destructive GC activation and before the first productive consumer
 **Severity**: High (P1) — certified-baseline correctness; dormant today (no production caller of the certifier or the witness, `GC_ENABLED=false`)
 **Affected**: `CertifyLibraryBaseline` witness settlement, `CommitLibraryContinuityWitness*`, `AdvanceLibraryCertifiedFrontier`, the identity-gateway source deletes and the GC `fs:` reference removal
 **Registered**: 2026-09-23, PC-D1B.4
@@ -6332,15 +6332,16 @@ live regular cell the tombstone must dominate, including display metadata.
 CW-M31 closes the cross-DC visibility part of the absent-row bypass: a local
 `CanonicalLibraryExists == false` is only a local observation and never mints a
 bypass capability. A global EACH_QUORUM absence read sees the remote row in the
-3-DC dc-na-absent / dc-eu-present test. **CW-M33 is distinct and still OPEN:**
-EACH_QUORUM ordinary-read visibility does not settle global-SERIAL HEAD Paxos.
-`GlobalCanonicalAbsenceProof` must establish both global row absence and that
-no HEAD proposal begun before proof issuance can become effective afterward.
-Conceptually, a global-SERIAL Paxos settlement/barrier precedes EACH_QUORUM
-absence; the exact Cassandra 5.0.9 sequence must not be frozen before the
-paused-H0-CAS → hard-delete → proof → resume race is characterized. The model's
-EACH_QUORUM-only mutation turns RED, but it is not that real race, so PR #232 is
-NO MERGE until this evidence exists.
+3-DC dc-na-absent / dc-eu-present test. **CW-M33 closes the separate Paxos
+stability gap:** `GlobalCanonicalAbsenceProof` must establish both global row
+absence and that no HEAD proposal begun before proof issuance can become
+effective afterward. The accepted-Paxos test-only latch on Cassandra 5.0.9
+pauses the H0→H1 proposal after acceptance and before commit, then hard-deletes
+`libraries` with `ballot-1`; a global-SERIAL read settles H1 before the following
+EACH_QUORUM absence check, so no proof is minted. G21 removes the SERIAL barrier
+and turns RED when H1 resurrects after an EACH_QUORUM-only proof. The test image
+is isolated to this Docker fixture; the stock Cassandra image and production
+runtime are unchanged.
 
 CW-M32 assigns CW-M29 admission to every timestamp authority, not only GC:
 commit/fs_object/permanent-reference writers and Cassandra coordinators must
@@ -6373,19 +6374,19 @@ fence state. The certifier captures the fence before its final revalidation,
 refuses a busy library, and its CAS predicates the captured epoch. Witness
 shape stays `(H, V)` and validity is unchanged, but productive witness authority
 must be read at global SERIAL. Soft-delete, restore and hard delete need no
-change. CW-M29–CW-M32, UUIDv5 vectors and cross-DC visibility remain closed.
-CW-M33 stable absence is not closed until its exact pre-commit Cassandra race
-proves that the barrier and EACH_QUORUM read exclude a later-effective HEAD.
-CW-M34 freezes in-flight materialization ordering; its model, G20 mutation and
-real Cassandra 3-DC success-but-hidden characterization are separate from
-CW-M32 admission. Therefore PR #232 remains NO MERGE. PC-D1B.5 implements the
-contracts and remains mandatory before activation/consumer. Evidence includes
-two-clock/writer-gate and in-flight models, block/commit/fs_object UUIDv5
-vectors, real-Cassandra absent-row/whole-row-W/future-tombstone and CW-M34
-characterizations, isolated 3-DC post-UNKNOWN and local-absent/remote-present
-absence-proof tests, and lifecycle/destroyer/alias/clock/vector/in-flight
-guards (G1-G20, isolated 3-DC G16, and C1 RED). The paused pre-commit CW-M33
-race is the outstanding evidence gate.
+change. CW-M27–CW-M34 decision contracts and evidence, UUIDv5 vectors, and
+cross-DC visibility are closed. CW-M34's model and G20 mutation demonstrate
+that a one-shot health check is insufficient; real 3-DC Cassandra confirms a
+timestamped materialization can return success while hidden under a later
+tombstone. Its lifetime barrier/recovery remains PC-D1B.5 runtime work.
+Therefore the PC-D1B.4 decision is CLOSED / MERGEABLE; PC-D1B.5 remains
+mandatory before activation/consumer. Evidence includes the two-clock, stable-
+absence and in-flight models, block/commit/fs_object UUIDv5 vectors,
+real-Cassandra absent-row/whole-row-W/future-tombstone and CW-M34
+characterizations, isolated 3-DC post-UNKNOWN, local-absent/remote-present,
+CW-M33 accepted-Paxos barrier/G21 mutation and CW-M34 tests, plus
+lifecycle/destroyer/alias/clock/vector/in-flight guards (G1-G20, G21, G16 and
+C1 RED).
 
 #### Remaining
 

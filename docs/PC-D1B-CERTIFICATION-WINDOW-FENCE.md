@@ -1,13 +1,13 @@
 # PC-D1B.4 — Certification-window lifecycle fence: decision and characterization
 
-**Status:** architecture decision + executable characterization. **NO MERGE
-(2026-09-24)** until CW-M33's exact in-flight HEAD Paxos race is characterized
-on Cassandra 5.0.9 and stable absence is demonstrated. CW-M34 is frozen as an
-in-flight writer ordering property with model and real-Cassandra 3-DC evidence;
-it does not implement runtime permits or recovery. PC-D1B.5 remains the runtime
-follow-up, required before destructive GC activation or a productive consumer.
-No productive runtime, schema, certifier, writer, GC, mapping-authority or
-consumer change.
+**Status:** architecture decision + executable characterization. **Decision
+CLOSED / MERGEABLE (2026-09-24)** after CW-M33's accepted-Paxos pause/barrier
+race passed on Cassandra 5.0.9, including the barrier-removal mutation turning
+RED. CW-M34's in-flight writer ordering property also has model, mutation and
+real-Cassandra 3-DC evidence. Neither finding adds production runtime permits or
+recovery; PC-D1B.5 remains mandatory before destructive GC activation or a
+productive consumer. No productive runtime, schema, certifier, writer, GC,
+mapping-authority or consumer change.
 **Base:** `main@62a2c0e0` (PR #228 merged). **Runtime follow-up:** PC-D1B.5.
 **Tracking:** `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01`.
 `GC_ENABLED=false` remains mandatory. File:line references are to
@@ -68,8 +68,12 @@ ProvenUncoveredCleanup capability instead and write no fence state. A
 canonical-absence bypass uses `GlobalCanonicalAbsenceProof` only after a
 global-SERIAL HEAD Paxos settlement/barrier and a subsequent `EACH_QUORUM`
 canonical absence read; a local `CanonicalLibraryExists == false` never
-authorizes destruction. The exact Cassandra 5.0.9 sequence remains a NO-MERGE
-characterization gate (CW-M33).
+authorizes destruction. Cassandra 5.0.9 characterization freezes the order as
+a global-SERIAL read that settles an accepted proposal, followed by the global
+`EACH_QUORUM` absence check. The isolated fixture pauses an accepted HEAD
+proposal after `StorageProxy.doPaxos` accepts it and before commit; the hard
+delete uses `ballot-1` so Cassandra's LWW reconciliation can expose the late
+proposal. G21 removes the SERIAL settlement and turns RED.
 
 Productive witness authority: read only at global SERIAL (or inside an LWT of
 the same domain). A LOCAL_QUORUM witness observation never authorizes work.
@@ -769,7 +773,8 @@ its certified content; every CERTIFIED result is backed by the stored witness.
 | `TestPCD1B4ModelCrossNodeClockSkewCannotPoisonWriter` | fast-GC/slow-writer clocks cannot mint a future tombstone; absent, stale or regressed clock health fails closed (CW-M29) |
 | `TestPCD1B4ModelClockLeaseGatesEveryWriterAuthority` | commit/fs_object/permanent-reference materializers and Cassandra coordinators refuse timestamps after health expires (CW-M32) |
 | `TestPCD1B4ModelCanonicalAbsenceRequiresGlobalRead` | local absence with a remote-present row cannot mint `GlobalCanonicalAbsenceProof` (CW-M31) |
-| `TestPCD1B4ModelStableCanonicalAbsenceRequiresPaxosSettlement` | EACH_QUORUM absence alone permits a paused old HEAD CAS to resurrect the row; the model requires settlement before the absence read (CW-M33). Exact real-Cassandra pre-commit pause remains open evidence |
+| `TestPCD1B4ModelStableCanonicalAbsenceRequiresPaxosSettlement` | EACH_QUORUM absence alone permits a paused old HEAD CAS to resurrect the row; the model requires settlement before the absence read (CW-M33) |
+| `TestPCD1B4StableAbsencePaxosRace3DC` | Cassandra 5.0.9 latch pauses an accepted HEAD proposal before commit; SERIAL settlement makes the following absence proof refuse, while G21's EACH_QUORUM-only mutation resurrects H1 after proof (CW-M33) |
 | `TestPCD1B4ModelInFlightMaterializationNeedsBarrierOrRecovery` | a healthy, timestamped writer paused in flight must be drained/revalidated or recovered above `g`; UNKNOWN cannot release active protection (CW-M34) |
 | `TestPCD1B4DestructionTokenV1KnownVector` | exact UUIDv5 namespace/encoding maps fixed block, commit and fs_object durable QueueItems to their tokens; retry-only fields do not change the token (CW-M30) |
 
@@ -813,7 +818,7 @@ already proven meaningful by §11; PC-D1B.5 must reproduce it against real code.
 | CW-M30 | change UUIDv5 namespace, domain tag, field order, length encoding, millisecond precision, or block/non-block candidate encoding | one of the frozen block/commit/fs_object QueueItem vectors changes | three exact known vectors |
 | CW-M31 | mint `GlobalCanonicalAbsenceProof` from a local `CanonicalLibraryExists == false` instead of an explicit EACH_QUORUM absence read | 3-DC: dc-na sees absent while dc-eu retains the library; local proof would authorize a fence-bypass destroy | model + isolated 3-DC |
 | CW-M32 | a materializer/reference writer or Cassandra timestamp coordinator bypasses its expired/unknown `ClockSafetyLease` | a successful client/coordinator write with a regressed clock can remain hidden by the earlier GC tombstone | writer-authority model |
-| CW-M33 | omit HEAD Paxos settlement/stability and use EACH_QUORUM absence alone | paused old HEAD CAS observes H0; hard delete; absence proof; old CAS resumes and resurrects HEAD | model RED; exact paused pre-commit CAS race on Cassandra 5.0.9 REQUIRED before merge |
+| CW-M33 | omit HEAD Paxos settlement/stability and use EACH_QUORUM absence alone | paused old HEAD CAS observes H0; hard delete at `ballot-1`; absence proof; old CAS resumes and resurrects HEAD | model + isolated Cassandra 5.0.9 3-DC; G21 barrier-removal mutation RED |
 | CW-M34 | release an admitted writer permit before definite settlement, or remove post-delete recovery/revalidation | valid-lease write at `w` settles successfully after GC tombstone `g>w` and remains invisible | model mutation RED + isolated Cassandra 5.0.9 3-DC transport-gated write |
 
 ## 13. Witness shape
@@ -899,9 +904,9 @@ docker run --rm -v "$PWD":/build -w /build <gotest-image> go test ./internal/db 
 docker run --rm -v "$PWD":/build -w /build <gotest-image> go test ./internal/gc -run PCD1B4 -v
 # single-node real-Cassandra characterization (Docker Compose test stack)
 docker compose --profile test run --rm --build go-integration-test
-# isolated 3-DC (R12, CW-M23, CW-M27 retry, CW-M31 global-absence visibility, CW-M34 in-flight materialization); owns sesamefs-pcd1b4-* resources only
+# isolated 3-DC (R12, CW-M23, CW-M27 retry, CW-M31 global-absence visibility, CW-M33 accepted-Paxos pause/G21, CW-M34 in-flight materialization); owns sesamefs-pcd1b4-* resources only
 bash scripts/pc-d1b4-certification-window-multidc-characterization.sh
-# the guards bite: G1-G15, G17-G20 source/model mutations, plus C1 on real Cassandra
+# the guards bite: G1-G15, G17-G20 source/model mutations, G21 in the 3-DC script, plus C1 on real Cassandra
 bash scripts/pc-d1b4-certification-window-guard-mutation-validation.sh [--with-cassandra]
 ```
 
@@ -923,8 +928,17 @@ absent-local/present-remote characterization to turn RED. With
 R1 characterization RED on real Cassandra (C1). Its CW-M34 leg holds a
 timestamped client request in transport, commits a later EACH_QUORUM tombstone,
 then resumes the write and confirms successful-but-hidden materialization.
-CW-M33's exact pre-commit Paxos pause is not yet demonstrated and remains an
-explicit NO-MERGE gate.
+CW-M33 pauses the accepted HEAD proposal before commit; G21 omits its SERIAL
+settlement and the resumed CAS produces proof-plus-resurrection RED on the same
+Cassandra 5.0.9 fixture.
+
+The isolated suite builds a test-only Cassandra 5.0.9 image from the pinned
+release and adds a one-shot latch at the accepted-proposal/pre-commit seam in
+both the v1 `StorageProxy.doPaxos` and v2 `Paxos.cas` paths; it does not change
+the stock image or production runtime. The hard-delete timestamp is set to one
+microsecond below the accepted ballot so Cassandra's LWW merge permits the
+late proposal to become visible without settlement. G21 omits the SERIAL
+barrier and requires proof-plus-resurrection RED on the same Cassandra race.
 
 The characterization tests assert CURRENT behavior and pass on main. PC-D1B.5
 must invert the rows marked UNSAFE in §8 (R3b, R4, R5, R10, R10b, R11b) and
@@ -932,10 +946,10 @@ keep the SAFE rows unchanged.
 
 ## 18. Next PR contract — PC-D1B.5 runtime
 
-PC-D1B.4 freezes the decision but is **not mergeable** until the CW-M33
-pre-commit Paxos race has real Cassandra 5.0.9 evidence. PC-D1B.5 implements
-the frozen contract afterward; it is required before destructive GC activation
-or a productive consumer.
+PC-D1B.4 freezes the decision and is **mergeable** after the CW-M33 accepted-
+Paxos race and G21 barrier-removal mutation passed on Cassandra 5.0.9. PC-D1B.5
+implements the frozen contract afterward; it is required before destructive GC
+activation or a productive consumer.
 
 **Scope (exact):**
 1. Next available migration (`028` if #233's `027_block_mapping_authority_claims.cql` lands first): the three fence columns.
@@ -944,8 +958,9 @@ or a productive consumer.
     predicate, tri-state outcomes); typed intent capability; mint
     `GlobalCanonicalAbsenceProof` only after a global-SERIAL HEAD Paxos
     settlement/barrier and an explicit canonical-row `EACH_QUORUM` read whose
-    absence result covers every DC. Do not freeze the exact CQL order until the
-    CW-M33 Cassandra 5.0.9 race is characterized.
+    absence result covers every DC. Cassandra 5.0.9 freezes the order as a
+    global-SERIAL read on the canonical partition, followed by the EACH_QUORUM
+    absence query; CW-M33/G21 characterize why both legs are required.
 3. Identity gateway: destructive deletes and `fs:` reference removal require
    one of the three capabilities of §10.6 as a parameter; new
    `VerifiedReaffirmationCapability` and the reaffirmation writers of §10.3.1
@@ -985,7 +1000,8 @@ or a productive consumer.
 8. Invert the UNSAFE characterization rows; extend the lifecycle inventory
    guard with the fence roles (CW-M7, CW-M9); a mutation runner covering
    CW-M1..M16 and CW-M18..M34 (CW-M17 belongs to the consumer PR); the 3-DC
-   script covers CW-M8, CW-M13, CW-M23, CW-M27, CW-M31 and CW-M34. CW-M28 must invert
+    script covers CW-M8, CW-M13, CW-M23, CW-M27, CW-M31, CW-M33 and CW-M34.
+    CW-M28 must invert
    the real-Cassandra same-clock future-tombstone poisoning characterization;
    CW-M29 must require the fleet skew lease and margin; CW-M30 must preserve
    all known UUIDv5 vectors; CW-M31 must reject local-absence authority; CW-M32
@@ -994,10 +1010,11 @@ or a productive consumer.
 
 **Acceptance criteria:** every §8 UNSAFE row inverted on real Cassandra; SAFE
 rows unchanged; CW-M1..M16 and CW-M18..CW-M34 RED for their stated reason; a
-real-Cassandra CW-M33 leg in which HEAD CAS has observed H0 and is paused before
-Paxos completion, followed by hard delete, attempted proof and CAS resume; proof
-must not coexist with a later-effective HEAD. The transport-gated CW-M34 test
-does not satisfy CW-M33. Also retain a real-Cassandra leg in which a paused
+real-Cassandra CW-M33 leg in which HEAD CAS has observed H0 and its proposal is
+accepted then paused before Paxos commit, followed by hard delete, stable proof
+attempt and CAS resume; proof must not coexist with a later-effective HEAD. G21
+must remove the SERIAL settlement and reproduce proof-plus-resurrection RED.
+Also retain a real-Cassandra leg in which a paused
 generation's late delete lands after a takeover and after certification without
 breaking the witness; isolated 3-DC green;
 full short suite, race, vet and Compose integration green; no hot-path

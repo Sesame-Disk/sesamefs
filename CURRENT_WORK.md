@@ -1,6 +1,6 @@
 # Current Work - SesameFS
 
-**PC-D1B.4 certification-window lifecycle fence — cross-audit round 4 (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
+**PC-D1B.4 certification-window lifecycle fence — cross-audit round 4, final Paxos race characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
 Decision record: [docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md](docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md),
 `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01`. Only the destruction of
 witness-covered state (HEAD commit, reachable fs_object, permanent `fs:`
@@ -57,25 +57,24 @@ lifecycle statements and destroyer call sites), real-Cassandra
 characterization `internal/integration/pcd1b4_certification_window_characterization_test.go`
 (R1-R11; R3b/R4/R5/R10/R10b/R11b UNSAFE today; CW-M11/M26/M28 evidence) and
 isolated 3-DC `scripts/pc-d1b4-certification-window-multidc-characterization.sh`
-(R12, CW-M23/M27/M31, CW-M34 via
-`internal/integration/pcd1b4multidc/inflight_materialization_test.go` and G16
-local-proof mutation);
+(R12, CW-M23/M27/M31, CW-M33 accepted-Paxos pause + G21 barrier-removal RED,
+`internal/integration/pcd1b4multidc/stable_absence_paxos_race_test.go`, CW-M34
+via `internal/integration/pcd1b4multidc/inflight_materialization_test.go`, and
+G16 local-proof mutation);
 `scripts/pc-d1b4-certification-window-guard-mutation-validation.sh` proves the
 guards bite (G1-G15/G17-G20 plus C1 on real Cassandra); G16 is the isolated-3DC
 global-to-local absence mutation. The destroyer inventory also
 rejects aliases of destroyer primitives and raw `block_references` deletes.
-Cross-audit rounds 2–3 close CW-M29's clock premise and CW-M31's cross-DC
-visibility; CW-M27/M28, CW-M30's vectors, the P2 status/sequence, and CW-M32
-writer-side admission remain closed. CW-M33 adds stable absence: a global-SERIAL
-HEAD Paxos settlement/barrier must precede EACH_QUORUM absence. The abstract
-mutation is RED, but the exact Cassandra 5.0.9 pre-commit paused-CAS race is
-unproven and is a NO-MERGE gate. CW-M34 adds the in-flight writer lifetime
-property; its model and isolated 3-DC Cassandra characterization cover a
-healthy timestamped write paused in transport, a later tombstone, and successful
-but hidden settlement. This remains a contract characterization, not runtime
-protection. PC-D1B.4 is NO MERGE until CW-M33's exact race is characterized.
-PC-D1B.5 implements runtime protection before GC activation or a productive
-consumer. No productive runtime, schema, certifier, writer, GC,
+Cross-audit rounds 2–4 close CW-M29's clock premise, CW-M31 cross-DC visibility,
+CW-M33 stable absence, and CW-M34 in-flight writer lifetime. The isolated
+Cassandra 5.0.9 test image pauses an accepted HEAD proposal after H0 is observed
+and before commit; the SERIAL barrier settles it before EACH_QUORUM absence.
+G21 removes the barrier and turns RED with proof followed by resurrected HEAD.
+CW-M34 separately confirms a healthy timestamped write can return success while
+hidden under a later tombstone; G20 removes the selected writer drain and turns
+RED. Both are decision/characterization contracts only. The decision is now
+CLOSED / MERGEABLE; PC-D1B.5 implements runtime protection before GC activation
+or a productive consumer. No productive runtime, schema, certifier, writer, GC,
 mapping-authority, consumer or PC-2 change.
 Registered PRE-CONSUMER `ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01` (mutable
 mapping rows vs Mapping Authority after #233). The runtime migration is the

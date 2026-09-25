@@ -13,7 +13,10 @@ PROJECT=sesamefs-pcd1b4-cassandra
 PREFIX=sesamefs-pcd1b4-cassandra
 RUNNER=sesamefs-pcd1b4-runner
 IMAGE=sesamefs-pcd1b4-gotest
+CASSANDRA_TEST_IMAGE=sesamefs-cassandra-cw-m33:5.0.9
+LATCH_VOLUME=""
 KEEP=0
+ONLY_CW_M33=0
 STOPPED=()
 ABSENCE_TARGET=""
 ABSENCE_BACKUP=""
@@ -22,13 +25,15 @@ export CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX"
 export CASSANDRA_NA_HOST_PORT=0
 export CASSANDRA_EU_HOST_PORT=0
 export CASSANDRA_ASIA_HOST_PORT=0
+export CASSANDRA_3DC_IMAGE_TAG=5.0.9
 THREE_DC=(docker compose -p "$PROJECT" -f docker-compose.cassandra-3dc.yaml)
 HOSTS=dc-na=cassandra-na:9042,dc-eu=cassandra-eu:9042,dc-asia=cassandra-asia:9042
 
 for arg in "$@"; do
     case "$arg" in
         --keep) KEEP=1 ;;
-        *) echo "usage: $0 [--keep]" >&2; exit 2 ;;
+        --only-cw-m33) ONLY_CW_M33=1 ;;
+        *) echo "usage: $0 [--keep] [--only-cw-m33]" >&2; exit 2 ;;
     esac
 done
 
@@ -183,6 +188,10 @@ expect_red_phase() {
     rm -f "$log"
 }
 
+step "Build the isolated test-only Cassandra 5.0.9 image with a disabled-by-default Paxos latch"
+docker build -f scripts/cassandra-cw-m33/Dockerfile -t "$CASSANDRA_TEST_IMAGE" .
+export CASSANDRA_3DC_IMAGE="$CASSANDRA_TEST_IMAGE"
+
 step "Start the isolated Cassandra 3-DC fixture"
 CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX" "${THREE_DC[@]}" up -d
 for node in na eu asia; do wait_healthy "$node"; done
@@ -191,10 +200,12 @@ for node in na eu asia; do wait_gossip_stable "$node"; done
 
 NETWORK="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$PREFIX-na")"
 [ -n "$NETWORK" ] || fail "could not resolve the isolated Cassandra network"
+LATCH_VOLUME="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/tmp/cw-m33"}}{{.Name}}{{end}}{{end}}' "$PREFIX-na")"
+[ -n "$LATCH_VOLUME" ] || fail "could not resolve the isolated CW-M33 latch volume"
 
 step "Build the branch-local test image and start the runner"
 docker build -f Dockerfile.gotest -t "$IMAGE" .
-docker run -d --name "$RUNNER" --network "$NETWORK" -e GC_ENABLED=false -v "$PWD":/build -w /build "$IMAGE" sleep 3600 >/dev/null
+docker run -d --name "$RUNNER" --network "$NETWORK" -e GC_ENABLED=false -e SESAMEFS_PCD1B4_PAXOS_LATCH_DIR=/test-latches -v "$LATCH_VOLUME":/test-latches -v "$PWD":/build -w /build "$IMAGE" sleep 3600 >/dev/null
 
 step "Apply this branch's migrations to the isolated keyspace"
 docker exec "$RUNNER" env \
@@ -205,6 +216,14 @@ docker exec "$RUNNER" env \
 for node in na eu asia; do wait_each_quorum_ready "$node"; done
 
 RUN_ID="$(docker exec "$RUNNER" sh -c 'cat /proc/sys/kernel/random/uuid')"
+
+if [ "$ONLY_CW_M33" -eq 1 ]; then
+    step "cw-m33-only: accepted HEAD Paxos proposal must be settled before global absence proof"
+    run_phase m33-barrier TestPCD1B4StableAbsencePaxosRace3DC
+    expect_red_phase m33-no-barrier TestPCD1B4StableAbsencePaxosRace3DC "CW-M33: EACH_QUORUM-only proof coexisted with a resurrected HEAD"
+    echo "CW-M33 isolated 5.0.9 Paxos latch characterization passed (barrier GREEN; missing-barrier mutation RED)."
+    exit 0
+fi
 
 step "prepare: seed a certifiable library with durable identity claims in all DCs"
 run_phase prepare
@@ -284,6 +303,12 @@ run_phase m27-retry TestPCD1B4UnknownReaffirmationRetry3DC
 step "m27-verify: the stale tombstone leaves the certified row present in every DC"
 run_phase m27-verify TestPCD1B4UnknownReaffirmationRetry3DC
 
+step "m33-barrier: pause an accepted HEAD Paxos after reading H0; SERIAL settlement must refuse absence proof"
+run_phase m33-barrier TestPCD1B4StableAbsencePaxosRace3DC
+
+step "G21/CW-M33: omit Paxos settlement; EACH_QUORUM absence then old CAS resume must turn RED"
+expect_red_phase m33-no-barrier TestPCD1B4StableAbsencePaxosRace3DC "CW-M33: EACH_QUORUM-only proof coexisted with a resurrected HEAD"
+
 step "m34-inflight: an admitted, timestamped materialization resumes after an EACH_QUORUM GC tombstone"
 run_phase m34-inflight TestPCD1B4InFlightMaterialization3DC
 
@@ -317,4 +342,4 @@ for node in na eu asia; do
     docker exec "$PREFIX-$node" nodetool enablehandoff >/dev/null
 done
 
-echo "PC-D1B.4 3-DC characterization passed: R12, CW-M23 EACH_QUORUM visibility, CW-M27 post-UNKNOWN local-only retry, CW-M31 local-absent/remote-present global-EACH_QUORUM proof, CW-M34 admitted in-flight materialization hidden by a later tombstone, and G16 (EACH_QUORUM-to-LOCAL_QUORUM mutation RED). CW-M29/M32 clock safety and CW-M30 UUIDv5 vectors are model-characterized; runtime enforcement remains PC-D1B.5. CW-M33's exact pre-commit Paxos pause remains an explicit NO-MERGE evidence gate."
+echo "PC-D1B.4 3-DC characterization passed: R12, CW-M23 EACH_QUORUM visibility, CW-M27 post-UNKNOWN local-only retry, CW-M31 local-absent/remote-present global-EACH_QUORUM proof, CW-M33 real accepted-Paxos pause with SERIAL settlement and G21 barrier-removal mutation RED, CW-M34 admitted in-flight materialization hidden by a later tombstone, and G16 (EACH_QUORUM-to-LOCAL_QUORUM mutation RED). CW-M29/M32 clock safety and CW-M30 UUIDv5 vectors are model-characterized; runtime enforcement remains PC-D1B.5."
