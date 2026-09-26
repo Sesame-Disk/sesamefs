@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-24 (PC-D1B.4 cross-audit decision closure)
+**Last Updated**: 2026-09-26 (PR #233 final cross-audit closure)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -6457,7 +6457,7 @@ safe. This issue is separate from PC-D1B.5.
 
 ### ISSUE-PCD1B-PAIRED-MAPPING-COMPATIBILITY-01: A paired SHA-1 projection can diverge for legacy readers after a witness
 
-**Status**: 🟡 Open — registered 2026-09-26; PRE-CONSUMER
+**Status**: 🟡 Open — registered 2026-09-26; CURRENT-RUNTIME / FOLLOW-UP
 **Severity**: P2 — compatibility/integrity for legacy SHA-1 readers
 **Affected**: Paired `fs_objects` with canonical SHA-256 A and logical SHA-1 E
 **Blocks #233**: No
@@ -6465,11 +6465,12 @@ safe. This issue is separate from PC-D1B.5.
 For paired files, the witness dependency is the canonical SHA-256 A from the
 claim-bound `fs_object`. The compatible mapping E→A is checked but is not
 promoted or frozen as Mapping Authority. A later ordinary write can therefore
-make a legacy SHA-1-only reader resolve E→B after the witness, while the
-canonical witness still names A and remains valid. Before the first productive
-legacy reader, decide whether paired compatibility projections need their own
-authority/freeze or whether those readers must resolve through canonical
-identity. This is a consumer-compatibility follow-up, not a #233 blocker.
+make an existing legacy SHA-1-only reader resolve E→B after the witness, while
+the canonical witness still names A and remains valid. This is a preexisting
+runtime compatibility/integrity issue; it was not introduced by PR #233 and
+does not block it. Decide separately whether paired compatibility projections
+need their own authority/freeze or whether those readers should resolve through
+canonical identity.
 
 ### ISSUE-PCD1B-MAPPING-CLAIM-PROJECTION-RECONCILIATION-01: A durable mapping claim can remain stranded from its projection
 

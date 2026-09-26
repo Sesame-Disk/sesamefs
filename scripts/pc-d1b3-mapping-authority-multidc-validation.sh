@@ -149,16 +149,24 @@ wait_each_quorum_ready() {
 }
 
 wait_global_serial_ready() {
-    local cql status
-    # A healthy ring and EACH_QUORUM reads do not prove that Cassandra's global
-    # Paxos/SERIAL path has recovered after two DCs restart. Probe it with a
+    local cql node status ready
+    # A healthy ring and EACH_QUORUM reads do not prove Cassandra's global
+    # Paxos/SERIAL path is ready after startup or DC recovery. Probe it with a
     # deliberately unusable authority row in this disposable keyspace before
-    # asserting the real library can certify again. Unsupported evidence makes
-    # the probe row non-consumable if test code ever inspects it.
-    cql="CONSISTENCY LOCAL_QUORUM; SERIAL CONSISTENCY SERIAL; INSERT INTO sesamefs.block_mapping_authority_claims (org_id, representation_id, external_id, internal_id, contract_version, evidence, created_at) VALUES (00000000-0000-4000-8000-000000000001, 'plain:v1', '0000000000000000000000000000000000000000', '0000000000000000000000000000000000000000000000000000000000000000', 'PC-D1B.3 recovery probe', 'unsupported_recovery_readiness_probe', toTimestamp(now())) IF NOT EXISTS;"
+    # running mapping-authority assertions. Unsupported evidence makes the
+    # probe row non-consumable if test code ever inspects it.
+    cql="CONSISTENCY LOCAL_QUORUM; SERIAL CONSISTENCY SERIAL; INSERT INTO sesamefs.block_mapping_authority_claims (org_id, representation_id, external_id, internal_id, contract_version, evidence, created_at) VALUES (00000000-0000-4000-8000-000000000001, 'plain:v1', '0000000000000000000000000000000000000000', '0000000000000000000000000000000000000000000000000000000000000000', 'PC-D1B.3 recovery probe', 'unsupported_recovery_readiness_probe', toTimestamp(now())) IF NOT EXISTS; CONSISTENCY SERIAL; SELECT internal_id FROM sesamefs.block_mapping_authority_claims WHERE org_id = 00000000-0000-4000-8000-000000000001 AND representation_id = 'plain:v1' AND external_id = '0000000000000000000000000000000000000000';"
     for _ in $(seq 1 120); do
-        status="$(docker exec "$PREFIX-na" cqlsh -e "$cql" 2>&1 || true)"
-        if printf '%s\n' "$status" | grep -Eq '^[[:space:]]*(True|False)[[:space:]]*$'; then
+        ready=1
+        for node in na eu asia; do
+            status="$(docker exec "$PREFIX-$node" cqlsh -e "$cql" 2>&1 || true)"
+            if ! printf '%s\n' "$status" | grep -Eq '^[[:space:]]*(True|False)([[:space:]]*\||[[:space:]]*$)' ||
+                ! printf '%s\n' "$status" | grep -Eq '^[[:space:]]+0000000000000000000000000000000000000000000000000000000000000000[[:space:]]*$'; then
+                ready=0
+                break
+            fi
+        done
+        if [ "$ready" -eq 1 ]; then
             return 0
         fi
         sleep 5
@@ -194,6 +202,9 @@ docker exec "$RUNNER" env \
     CASSANDRA_REPLICATION_DCS=dc-na:1,dc-eu:1,dc-asia:1 \
     go run ./cmd/sesamefs migrate
 for node in na eu asia; do wait_each_quorum_ready "$node"; done
+
+step "Wait for global SERIAL readiness before running Mapping Authority evidence"
+wait_global_serial_ready
 
 step "Start the isolated SesameFS backend with GC disabled"
 docker run -d --name "$BACKEND" --network "$NETWORK" \

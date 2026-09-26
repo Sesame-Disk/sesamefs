@@ -423,6 +423,59 @@ t1_freeze_without_dominant_timestamp() {
     green "T1 fence-less freeze lets a pre-CAS ordinary write reach readers after the witness"
 }
 
+# A6: a same-file wrapper must not make the raw durable claim available to a
+# caller that can manufacture physical-byte provenance.
+a6_same_file_raw_claim_wrapper() {
+	mutate_many "$PRIMITIVE" 's/\z/\nfunc pcd1b3RawClaimWrapperMutation(ctx context.Context, session *gocql.Session, proof blockMappingProvenance) (IdentityClaimOutcome, *BlockMappingAuthorityClaim, error) { return claimBlockMappingAuthority(ctx, session, proof) }\n/' "$WRITERS" 's/\z/\nfunc pcd1b3ForgedRawClaimCallerMutation(ctx context.Context, session *gocql.Session, identity blockMappingIdentity) { proof := blockMappingProvenance{identity: identity, internalID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", evidence: BlockMappingEvidencePhysicalBytesV1}; _, _, _ = pcd1b3RawClaimWrapperMutation(ctx, session, proof) }\n/'
+	expect_red "A6 same-file raw claim wrapper and forged provenance" "claimBlockMappingAuthority direct caller must be blockMappingPromotionPorts" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# A7/A8: promotion-port capabilities may not escape their direct protocol
+# callsite as function values.
+a7_ports_freeze_function_value() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3FreezeCapabilityValueMutation(ports blockMappingPromotionPorts, identity blockMappingIdentity) { freezeFn := ports.freeze; _, _ = freezeFn(context.Background(), identity, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") }\n/'
+	expect_red "A7 ports.freeze function value" "blockMappingPromotionPorts .freeze capability may only be used as a direct call" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+a8_ports_claim_function_value() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3ClaimCapabilityValueMutation(ports blockMappingPromotionPorts, identity blockMappingIdentity) { claimFn := ports.claim; proof := blockMappingProvenance{identity: identity, internalID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", evidence: BlockMappingEvidencePhysicalBytesV1}; _, _, _ = claimFn(context.Background(), proof) }\n/'
+	expect_red "A8 ports.claim function value" "blockMappingPromotionPorts .claim capability may only be used as a direct call" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# H7: resolve SERIAL through a local enum alias on the upload call graph.
+h7_upload_precheck_aliased_serial_consistency() {
+	mutate "$WRITERS" 's/(func \(db \*DB\) getBlockIDMappingForWriteCheck\([^\n]*\) \{\n)/$1\tpcd1b3AliasedSerialConsistencyMutation(db)\n/; s/\z/\nfunc pcd1b3AliasedSerialConsistencyMutation(db *DB) { cl := IdentityAuthorityReadConsistency; _ = db.Session().Query("SELECT now() FROM system.local").Consistency(cl).Exec() }\n/'
+	expect_red "H7 aliased SERIAL consistency in upload pre-check" "reaches a global SERIAL read through" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# H8: cover the complete driver LWT/CAS terminal family, including legacy
+# session batch methods and every supported Context form.
+h8_upload_precheck_all_cas_terminals() {
+	mutate "$WRITERS" 's/(func \(db \*DB\) getBlockIDMappingForWriteCheck\([^\n]*\) \{\n)/$1\tpcd1b3AllCASTerminalsMutation(db)\n/; s/\z/\nfunc pcd1b3AllCASTerminalsMutation(db *DB) { q := db.Session().Query("UPDATE unrelated SET state = ? IF EXISTS", "x"); _, _ = q.ScanCAS(); _, _ = q.MapScanCAS(map[string]interface{}{}); _, _ = q.ScanCASContext(context.Background()); _, _ = q.MapScanCASContext(context.Background(), map[string]interface{}{}); batch := db.Session().Batch(gocql.LoggedBatch); _, _, _ = batch.ExecCAS(); _, _, _ = batch.MapExecCAS(map[string]interface{}{}); _, _, _ = batch.ExecCASContext(context.Background()); _, _, _ = batch.MapExecCASContext(context.Background(), map[string]interface{}{}); _, _, _ = db.Session().ExecuteBatchCAS(batch); _, _, _ = db.Session().MapExecuteBatchCAS(batch, map[string]interface{}{}) }\n/'
+	expect_red "H8 upload pre-check reaches all CAS terminal variants" "reaches an LWT (" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# H9: a local function-value alias must not hide an LWT helper from the
+# transitive upload call-graph walk.
+h9_upload_precheck_lwt_function_value_alias() {
+	mutate "$WRITERS" 's/(func \(db \*DB\) getBlockIDMappingForWriteCheck\([^\n]*\) \{\n)/$1\tpcd1b3AliasedLWTUploadHelperMutation(db)\n/; s/\z/\nfunc pcd1b3AliasedLWTUploadHelperMutation(db *DB) { helper := pcd1b3LWTUploadHelperMutation; helper(db) }\nfunc pcd1b3LWTUploadHelperMutation(db *DB) { _, _ = db.Session().Query("UPDATE unrelated SET state = ? IF EXISTS", "x").ScanCAS() }\n/'
+	expect_red "H9 function-value alias to upload LWT helper" "reaches an LWT (ScanCAS)" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# T20: taking the address of a tracked Query string makes indirect writes
+# possible and must poison that value at the callsite.
+t20_pointer_alias_query_mutation() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3PointerAliasBlockMappingQueryMutation(session *gocql.Session) { blockMappingQuery := "SELECT now() FROM system.local"; pointer := &blockMappingQuery; *pointer = "DELETE FROM block_id_mappings WHERE org_id = ?"; session.Query(blockMappingQuery, "org").Exec() }\n/'
+	expect_red "T20 pointer alias mutates Query string" "unresolved/dynamic block_id_mappings Query argument in pcd1b3PointerAliasBlockMappingQueryMutation" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T21: a helper's explicit *gocql.Batch return type carries Batch.Entries
+# lineage into its caller and keeps entry statements in the closed-world scan.
+t21_helper_returned_batch_entries() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3MappingBatchFromHelperMutation(session *gocql.Session) *gocql.Batch { return session.NewBatch(gocql.LoggedBatch) }\nfunc pcd1b3HelperReturnedBatchEntriesMutation(session *gocql.Session) { batch := pcd1b3MappingBatchFromHelperMutation(session); batch.Query("SELECT now() FROM system.local"); batch.Entries[0].Stmt = "DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?"; _ = session.ExecuteBatch(batch) }\n/'
+	expect_red "T21 helper-returned Batch.Entries mapping injection" "directly accesses gocql.Batch.Entries or an unproven .Entries receiver" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
 ALL_MUTATIONS=(
     m18a_consume_without_frozen_projection
     m18d_drop_pre_witness_mapping_recheck
@@ -474,6 +527,14 @@ ALL_MUTATIONS=(
     t17_truncate_mapping_table
     t18_mutable_global_cql_value
     t19_nested_closure_cql_assignment
+    a6_same_file_raw_claim_wrapper
+    a7_ports_freeze_function_value
+    a8_ports_claim_function_value
+    h7_upload_precheck_aliased_serial_consistency
+    h8_upload_precheck_all_cas_terminals
+    h9_upload_precheck_lwt_function_value_alias
+    t20_pointer_alias_query_mutation
+    t21_helper_returned_batch_entries
 )
 
 WITH_INTEGRATION=0
@@ -538,4 +599,4 @@ if [ "$WITH_INTEGRATION" -eq 1 ]; then
     restore
     TOTAL=$((TOTAL + 1))
 fi
-echo "PC-D1B.3 M18/M19, representation, evidence, SERIAL, hot-path, batch CQL, callsite and immutability contract legs are red (${TOTAL}/${TOTAL})"
+echo "PC-D1B.3 M18/M19, representation, evidence, SERIAL, hot-path, capability, batch CQL, callsite and immutability contract legs are red (${TOTAL}/${TOTAL})"

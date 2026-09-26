@@ -42,6 +42,9 @@ var blockMappingAuthorityAcquisitionSymbols = map[string]map[string]bool{
 		"internal/db/block_mapping_authority.go":             true,
 		"internal/db/block_mapping_authority_integration.go": true,
 	},
+	"acquireBlockMappingClaim": {
+		"internal/db/block_mapping_authority.go": true,
+	},
 	"promoteBlockMappingAuthority": {
 		"internal/db/block_mapping_authority.go":             true,
 		"internal/db/block_mapping_authority_integration.go": true,
@@ -142,11 +145,12 @@ func blockMappingNestedClosureWrites(body ast.Node, locals map[string]ast.Expr, 
 // pieces keep the known fragments so a split table name still taints the
 // statement and fails closed.
 type blockMappingSourceStrings struct {
-	functions      map[string]*ast.FuncDecl
-	functionPaths  map[string]string
-	globals        map[string]ast.Expr
-	mutableGlobals map[string]bool
-	dynamicValues  map[ast.Expr]bool
+	functions               map[string]*ast.FuncDecl
+	functionPaths           map[string]string
+	batchReturningFunctions map[string]bool
+	globals                 map[string]ast.Expr
+	mutableGlobals          map[string]bool
+	dynamicValues           map[ast.Expr]bool
 }
 
 // These production CQL builders use dynamic fragments but have fixed table
@@ -456,6 +460,30 @@ func (source *blockMappingSourceStrings) queryLocalsAt(function *ast.FuncDecl, f
 		}
 		return true
 	})
+	// Once a tracked query string's address is exposed, an indirect write can
+	// change the value without assigning its identifier. The resolver has no
+	// pointer alias analysis, so poison that binding before classifying Query.
+	addressTaken := map[string]bool{}
+	ast.Inspect(body, func(node ast.Node) bool {
+		if node == nil || node.Pos() >= at {
+			return true
+		}
+		unary, ok := node.(*ast.UnaryExpr)
+		if !ok || unary.Op != token.AND {
+			return true
+		}
+		identifier, ok := unary.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if _, tracked := locals[identifier.Name]; tracked {
+			addressTaken[identifier.Name] = true
+		}
+		return true
+	})
+	for name := range addressTaken {
+		locals[name] = nil
+	}
 	ast.Inspect(body, func(node ast.Node) bool {
 		if node == nil || node.Pos() >= at {
 			return true
@@ -760,6 +788,68 @@ func blockMappingIsDBType(expression ast.Expr) bool {
 	}
 }
 
+var blockMappingCASTerminals = map[string]bool{
+	"ScanCAS": true, "MapScanCAS": true,
+	"ScanCASContext": true, "MapScanCASContext": true,
+	"ExecCAS": true, "MapExecCAS": true,
+	"ExecCASContext": true, "MapExecCASContext": true,
+	"ExecuteBatchCAS": true, "MapExecuteBatchCAS": true,
+}
+
+func blockMappingFunctionReturnsBatch(function *ast.FuncDecl) bool {
+	if function == nil || function.Type == nil || function.Type.Results == nil {
+		return false
+	}
+	for _, result := range function.Type.Results.List {
+		if blockMappingTypeIsBatch(result.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+// blockMappingSerialConsistency follows local and package const aliases and
+// distinguishes known gocql consistency constants from unknown enum values.
+// Unknown values are not safe to assume non-SERIAL on the upload path.
+func blockMappingSerialConsistency(expression ast.Expr, locals, globals map[string]ast.Expr, seen map[string]bool, depth int) (serial, resolved bool) {
+	if expression == nil || depth > 24 {
+		return false, false
+	}
+	switch value := expression.(type) {
+	case *ast.ParenExpr:
+		return blockMappingSerialConsistency(value.X, locals, globals, seen, depth+1)
+	case *ast.Ident:
+		if seen[value.Name] {
+			return false, false
+		}
+		if next, ok := locals[value.Name]; ok {
+			if next == nil {
+				return false, false
+			}
+			seen[value.Name] = true
+			return blockMappingSerialConsistency(next, locals, globals, seen, depth+1)
+		}
+		if next, ok := globals[value.Name]; ok {
+			seen[value.Name] = true
+			return blockMappingSerialConsistency(next, globals, globals, seen, depth+1)
+		}
+		if strings.EqualFold(value.Name, "serial") || strings.EqualFold(value.Name, "localserial") ||
+			strings.EqualFold(value.Name, "IdentityAuthorityReadConsistency") || strings.EqualFold(value.Name, "LibraryHeadSerialConsistency") {
+			return true, true
+		}
+	case *ast.SelectorExpr:
+		if receiver, ok := value.X.(*ast.Ident); ok && receiver.Name == "gocql" {
+			switch value.Sel.Name {
+			case "Serial", "LocalSerial":
+				return true, true
+			case "Any", "One", "Two", "Three", "Quorum", "All", "LocalQuorum", "EachQuorum", "LocalOne":
+				return false, true
+			}
+		}
+	}
+	return false, false
+}
+
 // blockMappingHotPathNoPaxosViolations follows same-package functions and DB
 // methods reachable from upload mapping writers. Queries in those helpers must
 // be statically resolved and free of conditional CQL; global SERIAL reads and
@@ -779,11 +869,12 @@ func blockMappingHotPathNoPaxosViolations(t *testing.T, repoRoot string, roots m
 	}
 	files := identityAuthorityProductionGoFiles(t, repoRoot)
 	source := &blockMappingSourceStrings{
-		functions:      map[string]*ast.FuncDecl{},
-		functionPaths:  map[string]string{},
-		globals:        map[string]ast.Expr{},
-		mutableGlobals: map[string]bool{},
-		dynamicValues:  map[ast.Expr]bool{},
+		functions:               map[string]*ast.FuncDecl{},
+		functionPaths:           map[string]string{},
+		batchReturningFunctions: map[string]bool{},
+		globals:                 map[string]ast.Expr{},
+		mutableGlobals:          map[string]bool{},
+		dynamicValues:           map[ast.Expr]bool{},
 	}
 	var dbFiles []sourceFile
 	freeFunctions := map[string]*ast.FuncDecl{}
@@ -817,6 +908,9 @@ func blockMappingHotPathNoPaxosViolations(t *testing.T, repoRoot string, roots m
 			case *ast.FuncDecl:
 				source.functions[value.Name.Name] = value
 				source.functionPaths[value.Name.Name] = relPath
+				if blockMappingFunctionReturnsBatch(value) {
+					source.batchReturningFunctions[value.Name.Name] = true
+				}
 				if isDBMethod(value) {
 					dbMethods[value.Name.Name] = value
 				} else if value.Recv == nil {
@@ -947,29 +1041,15 @@ func blockMappingHotPathNoPaxosViolations(t *testing.T, repoRoot string, roots m
 			}
 			if selector, isSelector := call.Fun.(*ast.SelectorExpr); isSelector {
 				method := selector.Sel.Name
-				if method == "SerialConsistency" || strings.HasSuffix(method, "ScanCAS") || strings.HasSuffix(method, "ExecCAS") || strings.HasSuffix(method, "CASContext") {
+				if method == "SerialConsistency" || blockMappingCASTerminals[method] {
 					violations = append(violations, "upload mapping writer "+rootName+" reaches an LWT ("+method+") through "+target.path+":"+target.name)
 				}
 				if method == "Consistency" && len(call.Args) == 1 {
-					serial := false
-					ast.Inspect(call.Args[0], func(argumentNode ast.Node) bool {
-						name := ""
-						switch value := argumentNode.(type) {
-						case *ast.Ident:
-							name = value.Name
-						case *ast.SelectorExpr:
-							name = value.Sel.Name
-						}
-						lower := strings.ToLower(name)
-						if lower == "serial" || lower == "identityauthorityreadconsistency" || lower == "libraryheadserialconsistency" {
-							serial = true
-						}
-						return true
-					})
-					resolved := source.resolve(call.Args[0], callLocals, map[string]bool{}, map[string]bool{}, 0)
-					serial = serial || strings.EqualFold(strings.TrimSpace(resolved.text), "SERIAL")
+					serial, resolved := blockMappingSerialConsistency(call.Args[0], callLocals, source.globals, map[string]bool{}, 0)
 					if serial {
 						violations = append(violations, "upload mapping writer "+rootName+" reaches a global SERIAL read through "+target.path+":"+target.name)
+					} else if !resolved {
+						violations = append(violations, "upload mapping writer "+rootName+" reaches unresolved Consistency argument through "+target.path+":"+target.name)
 					}
 				}
 			}
@@ -1002,6 +1082,58 @@ func blockMappingHotPathNoPaxosViolations(t *testing.T, repoRoot string, roots m
 							}
 						}
 					}
+				} else if alias, isLocal := callLocals[value.Name]; isLocal {
+					seenAliases := map[string]bool{value.Name: true}
+					for {
+						identifier, isIdentifier := alias.(*ast.Ident)
+						if !isIdentifier || seenAliases[identifier.Name] {
+							break
+						}
+						seenAliases[identifier.Name] = true
+						if function := freeFunctions[identifier.Name]; function != nil {
+							rel := source.functionPaths[identifier.Name]
+							next = hotTarget{name: identifier.Name, path: rel, fn: function, body: function.Body}
+							found = true
+							break
+						}
+						if literal := functionLiterals[identifier.Name]; literal != nil {
+							for _, sourceFile := range dbFiles {
+								for _, declaration := range sourceFile.file.Decls {
+									gen, ok := declaration.(*ast.GenDecl)
+									if !ok {
+										continue
+									}
+									for _, spec := range gen.Specs {
+										values, ok := spec.(*ast.ValueSpec)
+										if !ok {
+											continue
+										}
+										for index, name := range values.Names {
+											if name.Name == identifier.Name && index < len(values.Values) && values.Values[index] == literal {
+												next = hotTarget{name: identifier.Name, path: sourceFile.path, lit: literal, body: literal.Body}
+												found = true
+											}
+										}
+									}
+								}
+							}
+							break
+						}
+						nextAlias, ok := callLocals[identifier.Name]
+						if !ok || nextAlias == nil {
+							break
+						}
+						alias = nextAlias
+					}
+					if !found && alias != nil {
+						if literal, ok := alias.(*ast.FuncLit); ok {
+							next = hotTarget{name: "local-function-value", path: target.path, lit: literal, body: literal.Body}
+							found = true
+						}
+					}
+					if !found {
+						violations = append(violations, "upload mapping writer "+rootName+" reaches an unresolved function-value call through "+target.path+":"+target.name)
+					}
 				}
 			case *ast.SelectorExpr:
 				if receiver, ok := value.X.(*ast.Ident); ok && dbIdentifiers[receiver.Name] {
@@ -1019,6 +1151,9 @@ func blockMappingHotPathNoPaxosViolations(t *testing.T, repoRoot string, roots m
 						found = true
 					}
 				}
+			case *ast.FuncLit:
+				next = hotTarget{name: "inline-function-value", path: target.path, lit: value, body: value.Body}
+				found = true
 			}
 			if found {
 				visit(rootName, next, call.Args, callLocals, nestedActive, depth+1)
@@ -1033,7 +1168,7 @@ func blockMappingHotPathNoPaxosViolations(t *testing.T, repoRoot string, roots m
 	return violations
 }
 
-func blockMappingExprCreatesBatch(expression ast.Expr) bool {
+func blockMappingExprCreatesBatch(expression ast.Expr, batchReturningFunctions map[string]bool) bool {
 	if expression == nil {
 		return false
 	}
@@ -1044,6 +1179,10 @@ func blockMappingExprCreatesBatch(expression ast.Expr) bool {
 			return true
 		}
 		if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Batch" {
+			created = true
+			return false
+		}
+		if identifier, ok := call.Fun.(*ast.Ident); ok && batchReturningFunctions[identifier.Name] {
 			created = true
 			return false
 		}
@@ -1075,7 +1214,7 @@ func blockMappingTypeIsBatch(expression ast.Expr) bool {
 	return isBatch
 }
 
-func blockMappingBatchIdentifiers(body ast.Node, parameters *ast.FieldList) map[string]bool {
+func blockMappingBatchIdentifiers(body ast.Node, parameters *ast.FieldList, batchReturningFunctions map[string]bool) map[string]bool {
 	identifiers := map[string]bool{}
 	if parameters != nil {
 		for _, field := range parameters.List {
@@ -1102,7 +1241,7 @@ func blockMappingBatchIdentifiers(body ast.Node, parameters *ast.FieldList) map[
 					return
 				}
 				alias, isAlias := expression.(*ast.Ident)
-				if blockMappingExprCreatesBatch(expression) || (isAlias && identifiers[alias.Name]) {
+				if blockMappingExprCreatesBatch(expression, batchReturningFunctions) || (isAlias && identifiers[alias.Name]) {
 					identifiers[name.Name] = true
 					changed = true
 				}
@@ -1138,11 +1277,132 @@ func blockMappingBatchIdentifiers(body ast.Node, parameters *ast.FieldList) map[
 	return identifiers
 }
 
-func blockMappingUnclassifiedBatchEntries(body ast.Node, parameters *ast.FieldList) int {
+func blockMappingTypeMayBeBatch(expression ast.Expr) bool {
+	if blockMappingTypeIsBatch(expression) {
+		return true
+	}
+	mayBeBatch := false
+	ast.Inspect(expression, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.Ident:
+			if strings.Contains(strings.ToLower(value.Name), "batch") || value.Name == "any" {
+				mayBeBatch = true
+			}
+		case *ast.SelectorExpr:
+			if strings.Contains(strings.ToLower(value.Sel.Name), "batch") {
+				mayBeBatch = true
+			}
+		case *ast.InterfaceType:
+			mayBeBatch = true
+		}
+		return !mayBeBatch
+	})
+	return mayBeBatch
+}
+
+func blockMappingReceiverIsProvenNonBatch(name string, body ast.Node, parameters *ast.FieldList, source *blockMappingSourceStrings, seen map[string]bool, depth int) bool {
+	if name == "" || seen[name] || depth > 16 {
+		return false
+	}
+	seen[name] = true
+	var binding ast.Expr
+	if parameters != nil {
+		for _, field := range parameters.List {
+			for _, parameter := range field.Names {
+				if parameter.Name == name {
+					binding = field.Type
+					break
+				}
+			}
+		}
+	}
+	if body != nil {
+		ast.Inspect(body, func(node ast.Node) bool {
+			if _, nested := node.(*ast.FuncLit); nested {
+				return false
+			}
+			switch value := node.(type) {
+			case *ast.ValueSpec:
+				for index, declared := range value.Names {
+					if declared.Name != name {
+						continue
+					}
+					if value.Type != nil {
+						binding = value.Type
+					} else if index < len(value.Values) {
+						binding = value.Values[index]
+					}
+				}
+			case *ast.AssignStmt:
+				for index, left := range value.Lhs {
+					identifier, ok := left.(*ast.Ident)
+					if !ok || identifier.Name != name {
+						continue
+					}
+					if index < len(value.Rhs) {
+						binding = value.Rhs[index]
+					} else {
+						binding = nil
+					}
+				}
+			}
+			return true
+		})
+	}
+	if binding == nil {
+		return false
+	}
+	if blockMappingTypeMayBeBatch(binding) {
+		return false
+	}
+	switch value := binding.(type) {
+	case *ast.Ident:
+		return blockMappingReceiverIsProvenNonBatch(value.Name, body, parameters, source, seen, depth+1)
+	case *ast.ParenExpr:
+		return blockMappingReceiverExprIsProvenNonBatch(value.X, body, parameters, source, seen, depth+1)
+	case *ast.CompositeLit:
+		return !blockMappingTypeMayBeBatch(value.Type)
+	case *ast.CallExpr:
+		name := blockMappingCallName(value.Fun)
+		if name == "Batch" || name == "NewBatch" || source.batchReturningFunctions[name] {
+			return false
+		}
+		if function := source.functions[name]; function != nil && function.Type.Results != nil && len(function.Type.Results.List) > 0 {
+			resultType := function.Type.Results.List[0].Type
+			return !blockMappingTypeMayBeBatch(resultType)
+		}
+	case *ast.InterfaceType, *ast.FuncType:
+		return false
+	default:
+		// A concrete, explicitly declared non-batch type is sufficient to rule
+		// out gocql.Batch. Unknown/interface and batch-named aliases fail closed.
+		return !blockMappingTypeMayBeBatch(binding)
+	}
+	return false
+}
+
+func blockMappingReceiverExprIsProvenNonBatch(expression ast.Expr, body ast.Node, parameters *ast.FieldList, source *blockMappingSourceStrings, seen map[string]bool, depth int) bool {
+	if identifier, ok := expression.(*ast.Ident); ok {
+		return blockMappingReceiverIsProvenNonBatch(identifier.Name, body, parameters, source, seen, depth+1)
+	}
+	if composite, ok := expression.(*ast.CompositeLit); ok {
+		return !blockMappingTypeMayBeBatch(composite.Type)
+	}
+	if call, ok := expression.(*ast.CallExpr); ok {
+		name := blockMappingCallName(call.Fun)
+		if function := source.functions[name]; function != nil && function.Type.Results != nil && len(function.Type.Results.List) > 0 {
+			resultType := function.Type.Results.List[0].Type
+			return !blockMappingTypeMayBeBatch(resultType)
+		}
+	}
+	return false
+}
+
+func blockMappingUnclassifiedBatchEntries(body ast.Node, parameters *ast.FieldList, source *blockMappingSourceStrings) int {
 	if body == nil {
 		return 0
 	}
-	batches := blockMappingBatchIdentifiers(body, parameters)
+	batches := blockMappingBatchIdentifiers(body, parameters, source.batchReturningFunctions)
 	parents := blockMappingParentMap(body)
 	violations := 0
 	ast.Inspect(body, func(node ast.Node) bool {
@@ -1154,7 +1414,17 @@ func blockMappingUnclassifiedBatchEntries(body ast.Node, parameters *ast.FieldLi
 			return true
 		}
 		batch, ok := selector.X.(*ast.Ident)
-		if (!ok || !batches[batch.Name]) && !blockMappingExprCreatesBatch(selector.X) {
+		if (!ok || !batches[batch.Name]) && !blockMappingExprCreatesBatch(selector.X, source.batchReturningFunctions) {
+			if ok && blockMappingReceiverIsProvenNonBatch(batch.Name, body, parameters, source, map[string]bool{}, 0) {
+				return true
+			}
+			if !ok && blockMappingReceiverExprIsProvenNonBatch(selector.X, body, parameters, source, map[string]bool{}, 0) {
+				return true
+			}
+			// Unknown .Entries receivers have no proven gocql.Batch lineage.
+			// Production code currently has no non-gocql .Entries access, so fail
+			// closed instead of allowing a helper-returned batch to disappear.
+			violations++
 			return true
 		}
 		call, ok := parents[selector].(*ast.CallExpr)
@@ -1269,6 +1539,11 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 	var violations []string
 	freezeDefinitions := 0
 	freezeDirectCalls := 0
+	claimDefinitions := 0
+	claimProductionCalls := 0
+	claimIntegrationCalls := 0
+	acquireDefinitions := 0
+	acquireCalls := 0
 	promotionPortsDefinitions := 0
 	promotionPortsCalls := 0
 	promotionHelperCalls := 0
@@ -1281,6 +1556,20 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 		parsed := blockMappingAuthorityParse(t, path)
 		parents := blockMappingParentMap(parsed)
 		ast.Inspect(parsed, func(node ast.Node) bool {
+			if function, ok := node.(*ast.FuncDecl); ok {
+				switch function.Name.Name {
+				case "claimBlockMappingAuthority":
+					claimDefinitions++
+					if relPath != "internal/db/block_mapping_authority.go" {
+						violations = append(violations, relPath+": unauthorized claimBlockMappingAuthority definition")
+					}
+				case "acquireBlockMappingClaim":
+					acquireDefinitions++
+					if relPath != "internal/db/block_mapping_authority.go" {
+						violations = append(violations, relPath+": unauthorized acquireBlockMappingClaim definition")
+					}
+				}
+			}
 			if function, ok := node.(*ast.FuncDecl); ok && function.Name.Name == "freezeBlockMappingProjection" {
 				freezeDefinitions++
 				if relPath != "internal/db/block_mapping_authority.go" {
@@ -1303,6 +1592,23 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 			if call, ok := node.(*ast.CallExpr); ok {
 				owner := blockMappingEnclosingFunctionName(parents, call)
 				switch blockMappingCallName(call.Fun) {
+				case "claimBlockMappingAuthority":
+					if relPath == "internal/db/block_mapping_authority_integration.go" {
+						claimIntegrationCalls++
+						if owner != "ClaimBlockMappingAuthorityForIntegration" {
+							violations = append(violations, relPath+": integration claim caller must be ClaimBlockMappingAuthorityForIntegration, found "+owner)
+						}
+					} else {
+						claimProductionCalls++
+						if relPath != "internal/db/block_mapping_authority.go" || owner != "blockMappingPromotionPorts" {
+							violations = append(violations, relPath+": claimBlockMappingAuthority direct caller must be blockMappingPromotionPorts, found "+owner)
+						}
+					}
+				case "acquireBlockMappingClaim":
+					acquireCalls++
+					if relPath != "internal/db/block_mapping_authority.go" || owner != "promoteBlockMappingAuthority" {
+						violations = append(violations, relPath+": acquireBlockMappingClaim direct caller must be promoteBlockMappingAuthority, found "+owner)
+					}
 				case "blockMappingPromotionPorts":
 					promotionPortsCalls++
 					if relPath != "internal/db/block_mapping_authority.go" || owner != "PromoteBlockMappingAuthority" {
@@ -1316,15 +1622,6 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 					promotionHelperCalls++
 					if relPath != "internal/db/block_mapping_authority.go" || owner != "PromoteBlockMappingAuthority" {
 						violations = append(violations, relPath+": promoteBlockMappingAuthority production caller must be PromoteBlockMappingAuthority, found "+owner)
-					}
-				}
-				if selector, ok := call.Fun.(*ast.SelectorExpr); ok && (selector.Sel.Name == "freeze" || selector.Sel.Name == "claim") && strings.HasPrefix(relPath, "internal/db/") {
-					allowedOwner := "promoteBlockMappingAuthority"
-					if selector.Sel.Name == "claim" {
-						allowedOwner = "acquireBlockMappingClaim"
-					}
-					if relPath != "internal/db/block_mapping_authority.go" || owner != allowedOwner {
-						violations = append(violations, relPath+": blockMappingPromotionPorts ."+selector.Sel.Name+" capability called outside "+allowedOwner)
 					}
 				}
 			}
@@ -1349,6 +1646,27 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 				}
 				violations = append(violations, relPath+": freezeBlockMappingProjection may not be taken as a function value or aliased")
 			}
+			if name == "claimBlockMappingAuthority" || name == "acquireBlockMappingClaim" {
+				if _, declarationName := parents[node].(*ast.FuncDecl); declarationName {
+					return true
+				}
+				if call, directCall := parents[node].(*ast.CallExpr); directCall && call.Fun == node {
+					return true
+				}
+				violations = append(violations, relPath+": "+name+" may not be taken as a function value or aliased")
+			}
+			if selector, ok := node.(*ast.SelectorExpr); ok && (selector.Sel.Name == "freeze" || selector.Sel.Name == "claim") && strings.HasPrefix(relPath, "internal/db/") {
+				allowedOwner := "promoteBlockMappingAuthority"
+				if selector.Sel.Name == "claim" {
+					allowedOwner = "acquireBlockMappingClaim"
+				}
+				call, directCall := parents[node].(*ast.CallExpr)
+				directCall = directCall && call.Fun == node
+				owner := blockMappingEnclosingFunctionName(parents, node)
+				if !directCall || relPath != "internal/db/block_mapping_authority.go" || owner != allowedOwner {
+					violations = append(violations, relPath+": blockMappingPromotionPorts ."+selector.Sel.Name+" capability may only be used as a direct call within "+allowedOwner)
+				}
+			}
 			return true
 		})
 	}
@@ -1357,6 +1675,21 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 	}
 	if freezeDirectCalls != 1 {
 		violations = append(violations, "freezeBlockMappingProjection direct caller count="+strconv.Itoa(freezeDirectCalls)+", want 1 authorized call")
+	}
+	if claimDefinitions != 1 {
+		violations = append(violations, "claimBlockMappingAuthority production definition count="+strconv.Itoa(claimDefinitions)+", want 1")
+	}
+	if claimProductionCalls != 1 {
+		violations = append(violations, "claimBlockMappingAuthority production direct caller count="+strconv.Itoa(claimProductionCalls)+", want 1 authorized call")
+	}
+	if claimIntegrationCalls != 1 {
+		violations = append(violations, "claimBlockMappingAuthority integration-only direct caller count="+strconv.Itoa(claimIntegrationCalls)+", want 1")
+	}
+	if acquireDefinitions != 1 {
+		violations = append(violations, "acquireBlockMappingClaim production definition count="+strconv.Itoa(acquireDefinitions)+", want 1")
+	}
+	if acquireCalls != 1 {
+		violations = append(violations, "acquireBlockMappingClaim production direct caller count="+strconv.Itoa(acquireCalls)+", want 1 authorized call")
 	}
 	if promotionPortsDefinitions != 1 {
 		violations = append(violations, "blockMappingPromotionPorts definition count="+strconv.Itoa(promotionPortsDefinitions)+", want 1")
@@ -1384,7 +1717,7 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 		ast.Inspect(body, func(node ast.Node) bool {
 			switch value := node.(type) {
 			case *ast.SelectorExpr:
-				if value.Sel.Name == "SerialConsistency" || strings.HasSuffix(value.Sel.Name, "ScanCAS") || strings.HasSuffix(value.Sel.Name, "ExecCAS") || strings.HasSuffix(value.Sel.Name, "CASContext") {
+				if value.Sel.Name == "SerialConsistency" || blockMappingCASTerminals[value.Sel.Name] {
 					violations = append(violations, "upload mapping writer "+name+" runs an LWT ("+value.Sel.Name+")")
 				}
 			case *ast.BasicLit:
@@ -1609,11 +1942,12 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 		source := packages[packageRoot]
 		if source == nil {
 			source = &blockMappingSourceStrings{
-				functions:      map[string]*ast.FuncDecl{},
-				functionPaths:  map[string]string{},
-				globals:        map[string]ast.Expr{},
-				mutableGlobals: map[string]bool{},
-				dynamicValues:  map[ast.Expr]bool{},
+				functions:               map[string]*ast.FuncDecl{},
+				functionPaths:           map[string]string{},
+				batchReturningFunctions: map[string]bool{},
+				globals:                 map[string]ast.Expr{},
+				mutableGlobals:          map[string]bool{},
+				dynamicValues:           map[ast.Expr]bool{},
 			}
 			packages[packageRoot] = source
 		}
@@ -1626,6 +1960,9 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 			case *ast.FuncDecl:
 				source.functions[value.Name.Name] = value
 				source.functionPaths[value.Name.Name] = filepath.ToSlash(relFunctionPath)
+				if filepath.ToSlash(filepath.Dir(filepath.ToSlash(relFunctionPath))) == "internal/db" && blockMappingFunctionReturnsBatch(value) {
+					source.batchReturningFunctions[value.Name.Name] = true
+				}
 			case *ast.GenDecl:
 				if value.Tok == token.VAR {
 					for _, spec := range value.Specs {
@@ -1731,8 +2068,8 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 		} else if functionLiteral != nil {
 			parameters = functionLiteral.Type.Params
 		}
-		if entries := blockMappingUnclassifiedBatchEntries(body, parameters); entries > 0 {
-			violations = append(violations, relPath+":"+owner+" directly accesses gocql.Batch.Entries ("+strconv.Itoa(entries)+" sites); classify the batch statements")
+		if entries := blockMappingUnclassifiedBatchEntries(body, parameters, source); entries > 0 {
+			violations = append(violations, relPath+":"+owner+" directly accesses gocql.Batch.Entries or an unproven .Entries receiver ("+strconv.Itoa(entries)+" sites); classify the batch statements")
 		}
 		ast.Inspect(node, func(child ast.Node) bool {
 			if composite, ok := child.(*ast.CompositeLit); ok && blockMappingIsBatchEntryType(composite.Type) {
