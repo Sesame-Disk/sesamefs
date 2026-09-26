@@ -1,12 +1,14 @@
 # PC-D1 - Inherited dependency continuity decision
 
 **Status:** DECIDED architecture freeze; PC-D1A authority foundation
-implemented; PR #228 implements the fail-closed certifier gate. Cold-path mapping
-promotion where SHA-1-only identities need it and a productive consumer remain open. Historical backfill is a
-greenfield non-goal (2026-09-20; see the note in section 5).
+implemented; PR #228 implements the fail-closed certifier gate; PC-D1B.3
+mapping authority/cold-path promotion is implemented in PR #233 (pending merge).
+The productive consumer remains open. Historical backfill is a greenfield
+non-goal (2026-09-20; see the note in section 5).
 **PC-D1A implementation:** canonical witness schema and HEAD-fenced/global-SERIAL
 authority primitives landed 2026-09-19. PR #228 implements the read-only certifier
-gate; mapping promotion and any productive consumer remain open.
+gate; PC-D1B.3 mapping promotion is implemented in PR #233 (pending merge), and
+a productive consumer remains open.
 **Issue:** `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
 **Branch:** `docs/pc-d1-inherited-dependency-continuity`
 **Decision development baseline:** `main@2936c1179` (PC-1 merged)
@@ -477,6 +479,16 @@ The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier evidence
   `EMPTY_SHA1` file/directory entries need no fs_objects row, while an
   `EMPTY_SHA1` root with a missing or conflicting commit claim fails closed
   without a witness;
+- PC-D1B.3 Mapping Authority evidence
+  ([PC-D1B-METADATA-IDENTITY-AUTHORITY.md](./PC-D1B-METADATA-IDENTITY-AUTHORITY.md#pc-d1b3-mapping-authority-implementation-2026-09-23)).
+  A SHA-1-only dependency certifies only through a write-once global-`SERIAL`
+  mapping claim. Its value was proved from representation-bound stored bytes,
+  and its ordinary `block_id_mappings` row was frozen at a dominant write
+  timestamp so that stale ordinary writes are inert. A diverged row fails
+  closed during the walk and before the witness, and a mapping without
+  provenance stays `identity_unproven`. The evidence is M18a-g, M19a-b,
+  R1-R2, E1, S1-S2, H1-H2 and I1 mutations, the real-Cassandra behavioral leg
+  T1, and isolated 3-DC legs MAPPING-3DC-1/1b/2/3/4/4b/5;
 - a real EACH_QUORUM outage leg that stops only the fixture's `dc-asia` node,
   confirms it is `DN` from `dc-na`, and verifies liveness-read failure returns
   `UNKNOWN` without a witness before restoring the node.
@@ -507,8 +519,8 @@ The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier evidence
   `git diff --check` validation.
 
 The issue is marked **decision resolved / PC-D1A authority foundation and
-PC-D1B.1 certifier gate implemented / mapping coverage, lifecycle fence, and
-productive-consumer work open**.
+PC-D1B.1 certifier gate implemented / PC-D1B.3 mapping coverage implemented in
+PR #233 (pending merge) / lifecycle fence and productive-consumer work open**.
 W2, R31, X1, content resurrection, G4/G5, and
 `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` remain OPEN. No funnel is migrated,
 no publication runtime changes, and no GC activation is permitted.

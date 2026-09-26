@@ -1,6 +1,6 @@
 # PC-D1B Metadata Identity Authority Decision
 
-**Status as of 2026-09-22:** DECIDED; PR #231 wires the merged primitive into production writers and deleters, and PR #228 consumes those claims in the cold-path certifier. Mapping authority/promotion remains separate coverage work. This document owns
+**Status as of 2026-09-26:** DECIDED; PR #231 wires the merged primitive into production writers and deleters, PR #228 consumes those claims in the cold-path certifier, and PC-D1B.3 adds the Mapping Authority with cold-path promotion (M18/M19). The certification-window lifecycle fence and a productive consumer remain separate. This document owns
 the reasoning, the rejected alternatives and the required evidence. The
 current status of the finding lives in
 [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) and is deliberately not restated here.
@@ -32,7 +32,7 @@ without a matching claim and divergent or partial projections still fail closed.
 <code>library_continuity_certifier_*</code> files) exist on that branch only;
 a reader on the <code>main</code> baseline will not find them.
 
-**Runtime status:** PR #230 added the schema and authority primitive. PR #231 added the scoped writer/deleter wiring and no-bypass fence. PR #228 adds read-only claim consumption to the certifier; mapping promotion and GC activation remain separate.
+**Runtime status:** PR #230 added the schema and authority primitive. PR #231 added the scoped writer/deleter wiring and no-bypass fence. PR #228 adds read-only claim consumption to the certifier; PC-D1B.3 implements mapping promotion in PR #233 (pending merge). GC activation remains separate and prohibited.
 
 ## PR #228 implementation closure (2026-09-22)
 
@@ -60,6 +60,301 @@ SERIAL identity authority, partial rows, exact-P bytes, EACH_QUORUM liveness, GC
 authority, moving HEAD, and ambiguous witness settlement. These controls close the certifier correctness
 blocker. They do not add mapping authority/M18-M19, a lifecycle fence, a
 productive consumer, PC-2, historical backfill, or GC activation;
+`GC_ENABLED=false` remains mandatory.
+
+## PC-D1B.3 Mapping Authority implementation (2026-09-23)
+
+PC-D1B.3 adds the mapping-authority representation and cold-path promotion
+that the section on [Scope of mapping authority](#scope-of-mapping-authority)
+left to a separate work item. Promotion closes both halves of that section:
+semantic provenance (steps 3-4) and temporal authority (step 5). The certifier
+changes only for SHA-1-only file dependencies.
+
+**Why the mutable row is not authority.** `block_id_mappings` is written by a
+plain read-before-write `INSERT` with no LWT, and sync `PutBlock` accepts a
+client-asserted SHA-1. Two same-key writers can both read "absent", after which
+the later `INSERT` wins. A delayed or in-flight mutation, including a hint, can
+land after any read, and replica agreement proves only convergence. Production
+never deletes `block_id_mappings` rows (R11a); physical GC leaves them in place.
+
+**Representation.** Migration `027_block_mapping_authority_claims.cql` adds
+`block_mapping_authority_claims`, keyed by exactly the `block_id_mappings`
+identity `((org_id, representation_id, external_id))`, so each mapping has its
+own Paxos partition. A claim stores `internal_id`, `contract_version` (`V1`),
+`evidence` and `created_at`. It is written with `INSERT ... IF NOT EXISTS`
+under an explicit global `SERIAL` and read with a `SERIAL` read. It has no
+TTL, and no path updates or deletes it. A stored claim is usable only if it
+has contract `V1`, evidence `physical_bytes_v1` and a canonical lowercase
+SHA-256. Anything else, including empty or unknown evidence, is an unusable
+`Conflict`.
+
+Some concurrent Paxos activity can make a Cassandra `SERIAL` read report
+`RequestErrCASWriteUnknown`. Only that typed ambiguous result is retried, with
+at most two retries; every other read failure remains immediately fail-closed.
+This applies both when settling a claim and when checking the canonical block
+metadata used for provenance.
+
+**Semantic provenance.** The mutable row only nominates a candidate. Promotion
+proves it from the canonical block, which must satisfy three conditions:
+
+- the block row's `representation_id` equals the claimed representation;
+- its stored bytes hash to the candidate SHA-256;
+- the same bytes hash to the external SHA-1.
+
+This is the admissible content proof of step 3. It succeeds only where the
+SHA-1 is defined over exactly the stored bytes: plain libraries, and desktop
+sync of encrypted libraries, which hashes ciphertext. Server-side-encrypted web
+and OnlyOffice mappings hash plaintext, cannot be proved without the library
+key, and stay `identity_unproven`. The attempt stays `UNPROVEN` in each of
+these cases:
+
+- the candidate is missing or its bytes are missing;
+- the block belongs to another representation;
+- either digest does not match;
+- the mapping has only converged, with no provenance (M19).
+
+**Temporal authority.** After a claim is established or found, promotion
+freezes the ordinary projection. It rewrites the `block_id_mappings` row to
+the authority with `USING TIMESTAMP 1<<62`
+(`BlockMappingProjectionFrozenTimestamp`) at `EACH_QUORUM`, then reads it back
+at `EACH_QUORUM` together with `WRITETIME` to verify it.
+
+- Ordinary writers use wall-clock timestamps, orders of magnitude lower. Under
+  last-write-wins, every ordinary write, earlier, in flight, delayed or replayed
+  as a hint is therefore inert against the frozen cell. The repository-wide
+  mutation contract allows an explicit `USING TIMESTAMP` only on this freeze;
+  ordinary mapping writers cannot supply one. Productive `DELETE` remains
+  prohibited and inventoried under R11a. No writer has to cooperate, and no
+  Paxos is added to the upload path.
+- `EACH_QUORUM` reaches a quorum in every replica-holding datacenter; it does
+  not reach every replica. Productive mapping resolution pins
+  `LOCAL_QUORUM`, which intersects the frozen quorum in the coordinator's local
+  datacenter even when the configured session consistency is `ONE`.
+- The upload writers' pre-write conflict check is a separate reader. It leaves
+  consistency unset so it inherits the configured session value, preserving
+  the existing upload contract when that value is `ONE`. The source guard
+  inventories it separately from productive `LOCAL_QUORUM` resolution.
+- If the row already resolves elsewhere when the freeze runs, the projection
+  is `Diverged`. It is never overwritten, and the mapping stays unusable.
+- A claim is consumable only when its projection is `Frozen`.
+- The frozen row is permanent under ordinary writes by design. A future
+  mapping-retirement protocol (ISSUE-PCD1B-AUTHORITY-CLAIM-RETIREMENT-01) must
+  retire the claim and the projection together, and must write above the
+  frozen timestamp. An ordinary `DELETE` is inert against it.
+
+**Promotion outcomes.** `PromoteBlockMappingAuthority` returns `Promoted`,
+`AlreadyAuthoritative`, `Conflict`, `Unproven`, `Unavailable` or `Unknown`,
+plus the projection state.
+
+- An existing claim is returned, and frozen, without reading the mutable row.
+- A lost CAS returns `Conflict` carrying the durable winner. The freeze uses
+  the winner, never the candidate this attempt proved.
+- An ambiguous CAS is settled with a `SERIAL` read.
+
+**Cold path only.** Upload writers (`WriteBlockIDMapping`,
+`WriteVerifiedWebBlockMapping`) are unchanged: plain read-before-write with no
+LWT. AST contracts confine acquisition symbols to the primitive and certifier,
+pin productive projection reads to `LOCAL_QUORUM`, and inventory production
+mutations to `block_id_mappings`. They require exactly one ordinary timestamp-
+free INSERT, the dominant-timestamp authority freeze, and no production DELETE.
+A real-Cassandra observer records that the upload writers issue no LWT or
+mapping-authority statement.
+
+**Certifier.** For SHA-1-only files the certifier consumes only a claim whose
+projection is frozen. It then requires the named canonical block to still be
+in the library's representation. Both checks are repeated immediately before
+the witness CAS: the projection must still be frozen to the claim, and the
+block row must still exist in the same representation. Outcomes:
+
+- A `Diverged` projection, a block in another representation, or an unusable
+  claim → `identity_conflict`.
+- `Unproven` → `identity_unproven`.
+- Unavailable or ambiguous authority, projection or representation reads →
+  UNKNOWN.
+- None of these writes a witness.
+
+Paired files, `EMPTY_SHA1` and the zero-block file form are unchanged.
+
+**How this satisfies the promotion steps.**
+
+- Steps 3-4 (semantic provenance) are the byte-and-representation proof.
+- Step 7 is the write-once global-`SERIAL` claim.
+- Steps 5 and 6 are the dominant-timestamp freeze, verified at `EACH_QUORUM`.
+  This is the "re-materialize under an ordering that makes every earlier
+  mutation inert" option this document admits.
+- Steps 1, 2 and 8 (a per-key writer fence) are unnecessary. The freeze
+  neutralizes pre-fence writes whatever their delivery order, and ordinary
+  writers only ever write with wall-clock timestamps.
+
+The residual cases are handled explicitly:
+
+- A stale write that lands between the freeze's decision read and its write is
+  overwritten by the freeze.
+- One that lands before the decision read is observed, and the result fails
+  closed.
+- A crash after the claim but before the freeze leaves the claim
+  non-consumable. If the row has diverged in the meantime, it fails closed
+  until the row agrees again. It is never repaired from here.
+
+**Mutation evidence.**
+`scripts/pc-d1b3-mapping-authority-mutation-validation.sh` runs 67 directed
+source legs, each required to fail with its own diagnostic:
+
+- M18a: consume without a frozen projection.
+- M18b: a lost CAS reports its candidate.
+- M18c: ignore an existing claim.
+- M18d: drop the pre-witness recheck.
+- M18e: skip the freeze.
+- M18f: the freeze repairs a divergence.
+- M18g: the pre-witness recheck accepts an unfrozen projection.
+- M19a: promote without provenance.
+- M19b: accept a SHA-256-only match.
+- R1: promotion ignores representation.
+- R2: consumption ignores representation.
+- E1: accept unsupported evidence.
+- S1 and S2: `LOCAL_SERIAL` claim or read.
+- H1 and H2: upload-writer LWT or promotion.
+- I1: claim retirement.
+- M20: productive mapping reads weakened from `LOCAL_QUORUM` to `ONE`.
+- M21: an ambiguous-CAS error from the strong canonical-block read is no longer
+  retried during concurrent authority promotion.
+- T2/H3: an ordinary mapping INSERT gains an explicit timestamp above the
+  frozen timestamp.
+- DEL1: a production DELETE is added despite the R11a prohibition.
+- A1/A2/A3: external direct calls, aliases, and same-file wrappers cannot
+  bypass the single authorized `blockMappingPromotionPorts` freeze caller.
+- A4/A5: production callers cannot obtain promotion ports outside
+  `PromoteBlockMappingAuthority`, and the capabilities must flow directly
+  into the provenance-and-claim promotion helper.
+- A6: a same-file wrapper cannot expose the raw durable claim to manufactured
+  provenance.
+- A7/A8: promotion-port `freeze` and `claim` capabilities cannot escape as
+  function values.
+- A9: `blockMappingPromotionPorts` and `promoteBlockMappingAuthority` cannot
+  escape as function or method values even in their defining file.
+- A10: the integration claim helper remains pinned to exactly
+  `//go:build integration`.
+- T3/T4/D2: assembled or unresolved mapping CQL cannot escape inventory.
+- T5/T6/T7/T11/T12/T13/T16: call-site reassignment, generic helper arguments,
+  runtime table identity, `Session.Query` method values, and ambiguous control
+  flow (including goto-based assignment paths) cannot hide a mapping query.
+- H3/H4: the concrete upload pre-check is inventoried and rejects both CAS
+  terminals and conditional CQL.
+- H5/H6: the transitive upload hot-path fence rejects cold-path authority reads
+  and helper-hidden conditional CQL.
+- H7/H8/H9: upload helpers cannot hide SERIAL consistency through aliases,
+  omit any driver CAS terminal, or alias an LWT helper as a function value.
+- H10: same-package methods on non-`*DB` receivers are resolved and walked on
+  reachable upload paths; unresolved dispatch fails closed.
+- T8/T9/T10/T15: `Batch.Bind`, hand-built `BatchEntry`, direct `Batch.Entries`
+  writes, and `Batch.Bind` method values cannot hide a mapping statement.
+- T14: a dynamic-query allowlist's fixed table marker must reach its own Query
+  callsite through a fixed initializer and suffix-only appends.
+- T17: any unrecognized CQL mentioning `block_id_mappings`, including
+  `TRUNCATE`, fails the closed-world mutation inventory.
+- T18/T19: mutable package-global queries and nested-closure writes cannot be
+  resolved as immutable CQL.
+- T20/T21: pointer-mutated query strings and helper-returned batch entries stay
+  in the closed-world inventory.
+- T22: CQL helper methods are resolved by receiver identity; ambiguous methods
+  fail closed.
+- T23/T24: `Query.WithTimestamp` and `Batch.WithTimestamp` cannot supersede the
+  dominant mapping freeze.
+- H11/R5: protected upload paths reject `SetConsistency`, and a productive
+  mapping read cannot override `LOCAL_QUORUM` with `SetConsistency(ONE)`.
+- I2: claim-table CQL is classified at each Query/Batch execution site, even
+  when its table name is assembled from cross-file fragments; only the exact
+  runtime INSERT and SELECT are allowed.
+- R3/R4: unclassified mapping readers and consistency on an unrelated query
+  fail the reader contract.
+
+Unresolved CQL `Query` and `Batch.Bind` arguments fail closed unless they are
+one of the function-specific dynamic builders explicitly listed with an
+expected call-site count in the guard. Those allowlisted builders retain fixed
+non-mapping table identity at the exact callsite; GC hard-delete lock builders
+additionally inventory their literal table/partition-key pairs. Method-value
+aliases, `BatchEntry` statements, and direct `Batch.Entries` access fail closed.
+Migration execution is separately allowlisted to checked-in migration
+statements. **Follow-up:** migrations added after this PR that touch
+`block_id_mappings` require explicit Mapping Authority review; future migration
+CQL hardening is not part of this PR.
+
+With `--with-integration` it also runs T1 on real Cassandra and MinIO in a
+private Compose project. The final suite is 68/68 expected RED: the 67 source
+legs above plus T1. T1
+replaces the dominant-timestamp freeze with an ordinary rewrite. The reproducer
+that writes B between the final recheck and the witness CAS must then fail,
+because readers resolve B after the witness. The freeze, not the recheck, is
+what closes the race. M15a in the PC-D1B.1 runner now targets the certifier's
+nil-authority branch.
+
+M19's first clause in the table below expects `identity_conflict` when the
+mutable row converged on B while trusted evidence establishes A. The byte proof
+examines only the nominated candidate and does not search for A, so that case
+returns `identity_unproven`. It still fails closed with no claim, no liveness
+work and no witness.
+
+**Real Cassandra + MinIO evidence.**
+
+- Convergence without provenance and cross-representation bytes are not
+  promoted.
+- A provable mapping is claimed, frozen and certified.
+- These ordinary writes are all inert, and the library certifies resolving
+  only A:
+  - later writes;
+  - a late pre-fence write carrying an older timestamp;
+  - a `DELETE`;
+  - a write racing certification;
+  - a write between the final recheck and the witness CAS.
+- A claim whose projection diverged before it was frozen is `identity_conflict`
+  and is not repaired.
+- A claim with unsupported evidence is unusable.
+- A consumed claim whose block moved to another representation is refused.
+
+**3-DC evidence.** `scripts/pc-d1b3-mapping-authority-multidc-validation.sh`
+runs an isolated fixture under `LOCAL_SERIAL` client sessions:
+
+- MAPPING-3DC-1: a promotion in dc-eu is read back identically and frozen from
+  dc-na and dc-asia.
+- MAPPING-3DC-1b: concurrent same-value promotions produce at most one
+  establishment and one value.
+- MAPPING-3DC-2: 20 concurrent A/B proposals always produce exactly one
+  winner, and the loser observes it.
+- MAPPING-3DC-3: with dc-eu and dc-asia stopped, no claim can be established
+  and certification is UNKNOWN without a witness. After recovery nothing was
+  claimed and the library certifies. A `LOCAL_SERIAL` claim would have
+  applied here. Before the recovery assertion, the harness waits for a global
+  `SERIAL` probe against a deliberately unusable claim in its disposable
+  keyspace; healthy gossip and `EACH_QUORUM` alone do not prove Paxos recovery.
+- MAPPING-3DC-4: an ordinary B written after promotion is inert in every DC,
+  and the library certifies from each DC resolving A.
+- MAPPING-3DC-4b: an unfrozen claim with B in every DC fails closed from each
+  DC without repair, and certifies only after the row agrees again.
+- MAPPING-3DC-5: a mapping converged in every DC but without provenance stays
+  unproven, and no claim is written.
+
+These RF=1-per-DC scenarios establish cross-DC freeze behavior; they cannot
+distinguish `ONE` from `LOCAL_QUORUM` within a DC. The productive reader floor
+is protected by the structural contract and its `LOCAL_QUORUM` → `ONE` mutation.
+
+`CassandraStore.lookupBlockMapping()` in `internal/gc/store_cassandra.go` is a
+separate GC resolver and still inherits session consistency. It remains a
+P2/PRE-GC follow-up; before GC activation, pin it to the projection-read
+contract or provide an explicit consistency proof. `GC_ENABLED=false` remains
+mandatory. This PR does not expand into GC runtime work.
+
+The main leg also runs the real-Cassandra mapping, EMPTY_SHA1, zero-block,
+SHA-1-only and whitespace edge tests.
+
+**Not closed here.** The following are out of scope and unchanged:
+
+- aligning ordinary readers to read the authority directly (they now read a
+  frozen row);
+- the certification-window lifecycle fence (#232, per library; its runtime
+  migration must follow 027);
+- any productive witness consumer, PC-2 and G4/G5;
+- GC behavior and claim retirement.
+
 `GC_ENABLED=false` remains mandatory.
 
 This is an addendum to the inherited-continuity decision in
@@ -837,9 +1132,10 @@ by this matrix.
    <code>identity_unproven</code>; #228 must not issue a witness for it. This
    permits the certifier to land fail-closed before mapping promotion.
 5. Specify and audit the separate mapping-authority representation and
-   cold-path promotion path (M18-M19), including its operational runbook. A
-   library with SHA-1-only dependencies needs successful promotion before it
-   can be certified; promotion is not a prerequisite for #228 to fail closed.
+   cold-path promotion path (M18-M19), including its operational runbook.
+   **Implemented by PC-D1B.3 / PR #233 (pending merge).** A library with
+   SHA-1-only dependencies needs successful promotion before it can be
+   certified; promotion is not a prerequisite for #228 to fail closed.
 6. Specify the certification-window fence before destructive GC activation
    and before the first productive consumer, and re-scope it to PR #228 if a
    non-GC reachable delete is demonstrated. **Specified by PC-D1B.4**

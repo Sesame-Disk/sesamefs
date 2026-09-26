@@ -3590,6 +3590,9 @@ func (s *CassandraStore) RemoveBlockReference(orgID uuid.UUID, blockID, referrer
 // partition point read.
 const mappingResolveConcurrency = 32
 
+// PCD1B3-PRE-GC-SESSION-CONSISTENCY-EXCEPTION: this legacy resolver inherits
+// session consistency and remains outside productive mapping reads while
+// GC_ENABLED=false. Reclassify it before enabling destructive GC.
 func (s *CassandraStore) lookupBlockMapping(orgID uuid.UUID, representationID, externalID string) (string, error) {
 	var internalID string
 	err := s.db.Session().Query(`

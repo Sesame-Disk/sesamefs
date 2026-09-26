@@ -1,6 +1,42 @@
 # Current Work - SesameFS
 
-**PC-D1B.4 certification-window lifecycle fence — cross-audit round 4, final Paxos race characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
+**Active branch — PR #233, PC-D1B.3 Mapping Authority (rebased onto `origin/main@cc57cd2dc`, 2026-09-25):**
+This branch adds the write-once, byte-proven mapping authority and cold-path
+promotion. Productive mapping resolution pins `LOCAL_QUORUM`; the upload
+read-before-write check inherits the configured session consistency. The source
+guard inventories both readers and each Query/Batch.Bind CQL callsite, fails
+closed on Query/Bind method values, BatchEntry and direct Batch.Entries writes,
+and rejects ambiguous CQL control flow. Dynamic-query table markers are tied to
+the exact argument reaching the callsite. The hot-path inventory includes the
+real upload pre-check; projection freeze has exactly one caller under
+`blockMappingPromotionPorts`. The 2026-09-26 cross-audit closes all eight
+reported findings with source-guard and evidence changes: promotion factory and
+helper aliases, integration build-tag pinning, execution-site claim-table CQL,
+non-DB receiver methods, method identity, driver timestamp setters, and
+consistency setter overrides. Production Mapping Authority behavior is
+unchanged.
+
+Docker verification is complete: 67 directed source mutations plus real-
+Cassandra T1 were expected RED (68/68); `go test ./... -count=1`, `go vet
+./...`, and `go test -race -short -timeout 20m ./...` passed. The full
+`go-integration-test` Compose profile passed, including the real-Cassandra
+mapping certifier and upload-writer checks (`internal/integration`: 287.127s).
+The isolated 3-DC mapping-authority harness also passed cross-DC promotion,
+concurrent conflicts, outage/recovery, and global SERIAL readiness. The
+recovery harness probes global SERIAL readiness after restoring the DCs before
+checking certification.
+The PC-D1B.4 lifecycle decision from current `main` remains intact; its runtime
+and the separate GC resolver follow-up stay out of scope.
+Future migrations that touch `block_id_mappings` require explicit Mapping
+Authority review; migration hardening remains a follow-up outside this PR.
+The paired SHA-1 compatibility projection issue remains a pre-existing
+CURRENT-RUNTIME / FOLLOW-UP (`ISSUE-PCD1B-PAIRED-MAPPING-COMPATIBILITY-01`,
+does not block #233). Claim/projection reconciliation remains a separate
+PRE-CONSUMER follow-up (`ISSUE-PCD1B-MAPPING-CLAIM-PROJECTION-RECONCILIATION-01`,
+does not block #233).
+`GC_ENABLED=false` remains mandatory.
+
+**Merged PC-D1B.4 certification-window lifecycle fence — cross-audit round 4, final Paxos race characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
 Decision record: [docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md](docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md),
 `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01`. Only the destruction of
 witness-covered state (HEAD commit, reachable fs_object, permanent `fs:`
@@ -442,7 +478,7 @@ Status after PC-1 / PC-D1 / HEAD SERIAL domain:
 PC-0: CLOSED / characterization complete (#211)
 H1:   CLOSED (#214)
 PC-1: CLOSED (2026-09-11)
-PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation and the fail-closed PC-D1B.1 certifier gate landed; mapping promotion, the lifecycle fence runtime (decided by PC-D1B.4), and first productive consumer remain required before PC-2 (historical backfill is a greenfield non-goal)
+PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation, the fail-closed PC-D1B.1 certifier gate, and PC-D1B.3 Mapping Authority are implemented (PR #233 pending merge); the lifecycle fence runtime (PC-D1B.5) and first productive consumer remain before PC-2 (historical backfill is a greenfield non-goal)
 ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01: CLOSED (2026-09-14) — global SERIAL prerequisite satisfied
 PC-2: NOT STARTED
 W2:   OPEN
@@ -450,14 +486,10 @@ R31:  OPEN
 G4:   OPEN
 X1:   OPEN
 Next PC-D1B stages, in order:
-1. Add a separate mapping-authority representation, then cold-path promotion
-   (M18-M19) for SHA-1-only identities that need coverage. Until then, the
-   certifier returns `identity_unproven` without a witness for mapping-dependent
-   SHA-1-only identities.
-2. Implement the certification-window fence decided by PC-D1B.4 (PC-D1B.5,
+1. Implement the certification-window fence decided by PC-D1B.4 (PC-D1B.5,
    docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md §18) before destructive GC and
    before the first productive consumer.
-3. Add a productive consumer only after the lifecycle fence and required mapping
+2. Add a productive consumer only after the lifecycle fence and required mapping
    coverage are complete. Then PC-2 (migrate CreateFileFromBlocks / shared Once
    preserving stage < repair < final exact-P revalidation < HEAD); H4 (GC Phase 5)
    before any GC activation; H5 before X1. Preserve the atomic HEAD+witness CAS
