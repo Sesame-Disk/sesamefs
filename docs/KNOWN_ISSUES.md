@@ -6180,7 +6180,7 @@ GC activation. `GC_ENABLED=false` remains mandatory.
 
 #### Problem
 
-Before PR #228, baseline certification resolved `HEAD -> root_fs_id`, walked the reachable tree, and chose SHA-256 dependencies through ordinary reads; complete but divergent commit or fs_object rows could therefore be certified. PR #228 now verifies the exact commit and reachable fs_object projections against immutable identity claims and revalidates those projections before the witness. Missing, conflicting, partial, or unavailable authority cannot continue as certified. SHA-1-only mapping-dependent files remain fail-closed because mapping authority is still separate coverage work.
+Before PR #228, baseline certification resolved `HEAD -> root_fs_id`, walked the reachable tree, and chose SHA-256 dependencies through ordinary reads; complete but divergent commit or fs_object rows could therefore be certified. PR #228 now verifies the exact commit and reachable fs_object projections against immutable identity claims and revalidates those projections before the witness. Missing, conflicting, partial, or unavailable authority cannot continue as certified. Before PC-D1B.3, SHA-1-only mapping-dependent files remained fail-closed because Mapping Authority was separate coverage work; PR #233 now adds that cold-path coverage.
 
 Five sub-gaps belong to the same finding:
 

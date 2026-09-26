@@ -4,20 +4,25 @@
 This branch adds the write-once, byte-proven mapping authority and cold-path
 promotion. Productive mapping resolution pins `LOCAL_QUORUM`; the upload
 read-before-write check inherits the configured session consistency. The source
-guard inventories both readers, resolves each `Query` at its call site, follows
-known helper arguments, fails closed on unclassified dynamic queries, checks
-the counted allowlist for existing fixed-table dynamic builders, associates
-consistency with its own query chain, and rejects aliases of the freeze
-primitive. Docker verification for this audit is
-complete: all 31 directed source mutations plus real-Cassandra T1 were expected
-RED (32/32); the 3-DC mapping authority, outage and recovery harness passed;
+guard inventories both readers and each Query/Batch.Bind CQL callsite, fails
+closed on Query/Bind method values, BatchEntry and direct Batch.Entries writes,
+and rejects ambiguous CQL control flow. Dynamic-query table markers are tied to
+the exact argument reaching the callsite. The hot-path inventory includes the
+real upload pre-check; projection freeze has exactly one caller under
+`blockMappingPromotionPorts`. Docker verification for this audit is
+complete: all 43 directed source mutations plus real-Cassandra T1 were expected
+RED (44/44); the 3-DC mapping authority, outage and recovery harness passed;
 `go test ./... -count=1`, `go vet ./...`, and
 `go test -race -short -timeout 20m ./...` passed; the full
-`go-integration-test` Compose profile passed in 294.258s, including
-real-Cassandra certifier and upload-writer checks. The recovery harness probes
+`go-integration-test` Compose profile passed, including real-Cassandra
+certifier and upload-writer checks (`internal/integration`: 278.032s). The
+fresh 3-DC harness also passed cross-DC promotion, concurrent conflict,
+outage/recovery, and global SERIAL readiness checks. The recovery harness probes
 global SERIAL readiness after restoring the DCs before checking certification.
 The PC-D1B.4 lifecycle decision from current `main` remains intact; its runtime
 and the separate GC resolver follow-up stay out of scope.
+Future migrations that touch `block_id_mappings` require explicit Mapping
+Authority review; migration hardening remains a follow-up outside this PR.
 `GC_ENABLED=false` remains mandatory.
 
 **Merged PC-D1B.4 certification-window lifecycle fence — cross-audit round 4, final Paxos race characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**

@@ -29,6 +29,7 @@ var (
 	blockMappingSelectPattern          = regexp.MustCompile(`(?is)^SELECT\s+.+\s+FROM\s+block_id_mappings\b`)
 	blockMappingInsertPattern          = regexp.MustCompile(`(?is)^INSERT\s+INTO\s+block_id_mappings\s*\(org_id,\s*representation_id,\s*external_id,\s*internal_id,\s*created_at\)\s*VALUES\s*\(\?,\s*\?,\s*\?,\s*\?,\s*\?\)$`)
 	blockMappingFreezePattern          = regexp.MustCompile(`(?is)^UPDATE\s+block_id_mappings\s+USING\s+TIMESTAMP\s+\?\s+SET\s+internal_id\s*=\s*\?\s+WHERE\s+org_id\s*=\s*\?\s+AND\s+representation_id\s*=\s*\?\s+AND\s+external_id\s*=\s*\?$`)
+	blockMappingCQLConditionalPattern  = regexp.MustCompile(`(?i)\bIF\b`)
 )
 
 // Symbols that acquire or write mapping authority with explicit source-file
@@ -53,8 +54,31 @@ var blockMappingAuthorityAcquisitionSymbols = map[string]map[string]bool{
 }
 
 type blockMappingResolvedString struct {
-	text     string
-	constant bool
+	text      string
+	constant  bool
+	ambiguous bool
+}
+
+func blockMappingHasAmbiguousStringControlFlow(function *ast.FuncDecl) bool {
+	if function == nil || function.Body == nil {
+		return true
+	}
+	returns := 0
+	ambiguous := false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		if _, nestedFunction := node.(*ast.FuncLit); nestedFunction {
+			return false
+		}
+		switch node.(type) {
+		case *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt,
+			*ast.BranchStmt, *ast.LabeledStmt, *ast.GoStmt, *ast.DeferStmt:
+			ambiguous = true
+		case *ast.ReturnStmt:
+			returns++
+		}
+		return true
+	})
+	return ambiguous || returns != 1
 }
 
 // blockMappingSourceStrings follows string values used as Query arguments,
@@ -230,7 +254,7 @@ func (source *blockMappingSourceStrings) resolve(expr ast.Expr, locals map[strin
 		}
 		left := source.resolve(value.X, locals, seenLocals, activeFunctions, depth+1)
 		right := source.resolve(value.Y, locals, seenLocals, activeFunctions, depth+1)
-		return blockMappingResolvedString{text: left.text + right.text, constant: left.constant && right.constant}
+		return blockMappingResolvedString{text: left.text + right.text, constant: left.constant && right.constant, ambiguous: left.ambiguous || right.ambiguous}
 	case *ast.CompositeLit:
 		var combined blockMappingResolvedString
 		combined.constant = true
@@ -238,6 +262,7 @@ func (source *blockMappingSourceStrings) resolve(expr ast.Expr, locals map[strin
 			resolved := source.resolve(element, locals, seenLocals, activeFunctions, depth+1)
 			combined.text += resolved.text
 			combined.constant = combined.constant && resolved.constant
+			combined.ambiguous = combined.ambiguous || resolved.ambiguous
 		}
 		return combined
 	case *ast.CallExpr:
@@ -257,6 +282,7 @@ func (source *blockMappingSourceStrings) resolve(expr ast.Expr, locals map[strin
 				resolved := source.resolve(element, locals, seenLocals, activeFunctions, depth+1)
 				combined.text += resolved.text
 				combined.constant = combined.constant && resolved.constant
+				combined.ambiguous = combined.ambiguous || resolved.ambiguous
 			}
 			return combined
 		}
@@ -279,16 +305,34 @@ func (source *blockMappingSourceStrings) resolve(expr ast.Expr, locals map[strin
 		active[name] = true
 		functionLocals := blockMappingLocalStrings(function.Body, function.Type.Params, value.Args, locals, source, active, depth)
 		var result blockMappingResolvedString
+		result.constant = true
 		found := false
+		returnCount := 0
 		ast.Inspect(function.Body, func(node ast.Node) bool {
-			if returned, ok := node.(*ast.ReturnStmt); ok && len(returned.Results) > 0 {
-				result = source.resolve(returned.Results[0], functionLocals, map[string]bool{}, active, depth+1)
-				found = true
+			if _, nestedFunction := node.(*ast.FuncLit); nestedFunction {
 				return false
+			}
+			if returned, ok := node.(*ast.ReturnStmt); ok && len(returned.Results) > 0 {
+				next := source.resolve(returned.Results[0], functionLocals, map[string]bool{}, active, depth+1)
+				if returnCount == 0 {
+					result = next
+				} else {
+					result.text += next.text
+					result.constant = false
+					result.ambiguous = true
+				}
+				result.constant = result.constant && next.constant
+				result.ambiguous = result.ambiguous || next.ambiguous
+				returnCount++
+				found = true
 			}
 			return true
 		})
 		if found {
+			if blockMappingHasAmbiguousStringControlFlow(function) {
+				result.constant = false
+				result.ambiguous = true
+			}
 			return result
 		}
 	}
@@ -364,10 +408,114 @@ func (source *blockMappingSourceStrings) queryLocalsAt(function *ast.FuncDecl, f
 			blockMappingInvalidateControlAssignments(value, at, locals)
 		case *ast.SelectStmt:
 			blockMappingInvalidateControlAssignments(value, at, locals)
+		case *ast.BranchStmt, *ast.LabeledStmt, *ast.GoStmt, *ast.DeferStmt:
+			for name := range locals {
+				locals[name] = nil
+			}
 		}
 		return true
 	})
 	return locals
+}
+
+// blockMappingQueryHasFixedTableMarkerAtCall ties an allowlisted table marker
+// to the exact CQL argument reaching a Query/Batch.Bind call. For a local query
+// string, it accepts a fixed-prefix initializer followed only by += or
+// `query = query + suffix` updates before that call. Reassignment to an
+// unrelated value, a missing initializer, or a different expression fails
+// closed. This permits the repository's fixed-table pagination builders while
+// preventing an unrelated literal elsewhere in the owner from authorizing it.
+func blockMappingQueryHasFixedTableMarkerAtCall(source *blockMappingSourceStrings, function *ast.FuncDecl, functionLiteral *ast.FuncLit, arguments []ast.Expr, outer map[string]ast.Expr, call *ast.CallExpr, argument ast.Expr, marker string) bool {
+	if marker == "" {
+		return true
+	}
+	locals := source.queryLocalsAt(function, functionLiteral, arguments, outer, call.Pos())
+	resolved := source.resolve(argument, locals, map[string]bool{}, map[string]bool{}, 0)
+	if !resolved.ambiguous && strings.Contains(strings.ToLower(resolved.text), strings.ToLower(marker)) {
+		return true
+	}
+	identifier, ok := blockMappingResolveAlias(argument, locals, map[string]bool{}).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	var body ast.Node
+	if function != nil {
+		body = function.Body
+	} else if functionLiteral != nil {
+		body = functionLiteral.Body
+	}
+	if body == nil {
+		return false
+	}
+	markerLocals := make(map[string]ast.Expr, len(locals))
+	for name, expression := range locals {
+		if name != identifier.Name {
+			markerLocals[name] = expression
+		}
+	}
+	initialized := false
+	valid := true
+	ast.Inspect(body, func(node ast.Node) bool {
+		if node == nil {
+			return true
+		}
+		if node.Pos() >= call.Pos() {
+			return false
+		}
+		if _, nestedFunction := node.(*ast.FuncLit); nestedFunction {
+			return false
+		}
+		initialize := func(expression ast.Expr) {
+			if initialized {
+				valid = false
+				return
+			}
+			value := source.resolve(expression, markerLocals, map[string]bool{}, map[string]bool{}, 0)
+			initialized = true
+			if !strings.Contains(strings.ToLower(value.text), strings.ToLower(marker)) {
+				valid = false
+			}
+		}
+		switch value := node.(type) {
+		case *ast.ValueSpec:
+			for index, name := range value.Names {
+				if name.Name != identifier.Name {
+					continue
+				}
+				if index >= len(value.Values) {
+					valid = false
+					continue
+				}
+				initialize(value.Values[index])
+			}
+		case *ast.AssignStmt:
+			for index, left := range value.Lhs {
+				name, isIdentifier := left.(*ast.Ident)
+				if !isIdentifier || name.Name != identifier.Name {
+					continue
+				}
+				if index >= len(value.Rhs) {
+					valid = false
+					continue
+				}
+				if value.Tok == token.ADD_ASSIGN && initialized {
+					continue
+				}
+				if value.Tok == token.ASSIGN && initialized {
+					if concat, ok := value.Rhs[index].(*ast.BinaryExpr); ok && concat.Op == token.ADD {
+						if leftName, ok := concat.X.(*ast.Ident); ok && leftName.Name == identifier.Name {
+							continue
+						}
+					}
+					valid = false
+					continue
+				}
+				initialize(value.Rhs[index])
+			}
+		}
+		return valid
+	})
+	return initialized && valid
 }
 
 func blockMappingInvalidateControlAssignments(control ast.Node, at token.Pos, locals map[string]ast.Expr) {
@@ -436,13 +584,23 @@ func blockMappingHasDirectQuery(body ast.Node) bool {
 	found := false
 	ast.Inspect(body, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
-		if ok && blockMappingCallName(call.Fun) == "Query" {
+		if ok && blockMappingIsCQLEntryPoint(blockMappingCallName(call.Fun), len(call.Args)) {
 			found = true
 			return false
 		}
 		return !found
 	})
 	return found
+}
+
+func blockMappingIsBatchEntryType(expression ast.Expr) bool {
+	switch value := expression.(type) {
+	case *ast.Ident:
+		return value.Name == "BatchEntry"
+	case *ast.SelectorExpr:
+		return value.Sel.Name == "BatchEntry"
+	}
+	return false
 }
 
 func blockMappingMigrationQueryAllowlisted(relPath, owner string, argument ast.Expr) bool {
@@ -491,6 +649,165 @@ func blockMappingParentMap(root ast.Node) map[ast.Node]ast.Node {
 		return true
 	})
 	return parents
+}
+
+func blockMappingEnclosingFunctionName(parents map[ast.Node]ast.Node, node ast.Node) string {
+	for parent := parents[node]; parent != nil; parent = parents[parent] {
+		if function, ok := parent.(*ast.FuncDecl); ok {
+			return function.Name.Name
+		}
+	}
+	return ""
+}
+
+func blockMappingIsCQLEntryPoint(method string, arguments int) bool {
+	switch method {
+	case "Query":
+		return arguments > 0
+	case "Bind":
+		// gocql Batch.Bind takes the CQL string and a binding callback.
+		// The argument count avoids treating ordinary one-argument Bind
+		// methods (for example, an HTTP request binder) as CQL entry points.
+		return arguments >= 2
+	default:
+		return false
+	}
+}
+
+func blockMappingExprCreatesBatch(expression ast.Expr) bool {
+	if expression == nil {
+		return false
+	}
+	created := false
+	ast.Inspect(expression, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Batch" {
+			created = true
+			return false
+		}
+		return true
+	})
+	return created
+}
+
+func blockMappingTypeIsBatch(expression ast.Expr) bool {
+	if expression == nil {
+		return false
+	}
+	isBatch := false
+	ast.Inspect(expression, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.Ident:
+			if value.Name == "Batch" {
+				isBatch = true
+				return false
+			}
+		case *ast.SelectorExpr:
+			if value.Sel.Name == "Batch" {
+				isBatch = true
+				return false
+			}
+		}
+		return true
+	})
+	return isBatch
+}
+
+func blockMappingBatchIdentifiers(body ast.Node, parameters *ast.FieldList) map[string]bool {
+	identifiers := map[string]bool{}
+	if parameters != nil {
+		for _, field := range parameters.List {
+			if !blockMappingTypeIsBatch(field.Type) {
+				continue
+			}
+			for _, name := range field.Names {
+				identifiers[name.Name] = true
+			}
+		}
+	}
+	if body == nil {
+		return identifiers
+	}
+	changed := true
+	for changed {
+		changed = false
+		ast.Inspect(body, func(node ast.Node) bool {
+			if literal, ok := node.(*ast.FuncLit); ok && literal.Body != body {
+				return false
+			}
+			add := func(name *ast.Ident, expression ast.Expr) {
+				if name == nil || identifiers[name.Name] {
+					return
+				}
+				alias, isAlias := expression.(*ast.Ident)
+				if blockMappingExprCreatesBatch(expression) || (isAlias && identifiers[alias.Name]) {
+					identifiers[name.Name] = true
+					changed = true
+				}
+			}
+			switch value := node.(type) {
+			case *ast.AssignStmt:
+				for index, left := range value.Lhs {
+					if index >= len(value.Rhs) {
+						continue
+					}
+					name, _ := left.(*ast.Ident)
+					add(name, value.Rhs[index])
+				}
+			case *ast.ValueSpec:
+				for index, name := range value.Names {
+					if blockMappingTypeIsBatch(value.Type) {
+						if !identifiers[name.Name] {
+							identifiers[name.Name] = true
+							changed = true
+						}
+						continue
+					}
+					var expression ast.Expr
+					if index < len(value.Values) {
+						expression = value.Values[index]
+					}
+					add(name, expression)
+				}
+			}
+			return true
+		})
+	}
+	return identifiers
+}
+
+func blockMappingUnclassifiedBatchEntries(body ast.Node, parameters *ast.FieldList) int {
+	if body == nil {
+		return 0
+	}
+	batches := blockMappingBatchIdentifiers(body, parameters)
+	parents := blockMappingParentMap(body)
+	violations := 0
+	ast.Inspect(body, func(node ast.Node) bool {
+		if literal, ok := node.(*ast.FuncLit); ok && literal.Body != body {
+			return false
+		}
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "Entries" {
+			return true
+		}
+		batch, ok := selector.X.(*ast.Ident)
+		if (!ok || !batches[batch.Name]) && !blockMappingExprCreatesBatch(selector.X) {
+			return true
+		}
+		call, ok := parents[selector].(*ast.CallExpr)
+		if ok && len(call.Args) == 1 && call.Args[0] == selector {
+			if name, ok := call.Fun.(*ast.Ident); ok && name.Name == "len" {
+				return true
+			}
+		}
+		violations++
+		return true
+	})
+	return violations
 }
 
 func blockMappingAuthorityParse(t *testing.T, path string) *ast.File {
@@ -591,6 +908,8 @@ func TestBlockMappingAuthorityClaimsAreImmutableRepositoryWide(t *testing.T) {
 func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 	repoRoot := r3RepositoryRoot(t)
 	var violations []string
+	freezeDefinitions := 0
+	freezeDirectCalls := 0
 	for _, path := range identityAuthorityProductionGoFiles(t, repoRoot) {
 		relPath, err := filepath.Rel(repoRoot, path)
 		if err != nil {
@@ -600,6 +919,19 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 		parsed := blockMappingAuthorityParse(t, path)
 		parents := blockMappingParentMap(parsed)
 		ast.Inspect(parsed, func(node ast.Node) bool {
+			if function, ok := node.(*ast.FuncDecl); ok && function.Name.Name == "freezeBlockMappingProjection" {
+				freezeDefinitions++
+				if relPath != "internal/db/block_mapping_authority.go" {
+					violations = append(violations, relPath+": unauthorized freezeBlockMappingProjection definition")
+				}
+			}
+			if call, ok := node.(*ast.CallExpr); ok && blockMappingCallName(call.Fun) == "freezeBlockMappingProjection" {
+				freezeDirectCalls++
+				owner := blockMappingEnclosingFunctionName(parents, call)
+				if relPath != "internal/db/block_mapping_authority.go" || owner != "blockMappingPromotionPorts" {
+					violations = append(violations, relPath+": freezeBlockMappingProjection direct caller must be blockMappingPromotionPorts, found "+owner)
+				}
+			}
 			var name string
 			switch value := node.(type) {
 			case *ast.Ident:
@@ -624,6 +956,12 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 			return true
 		})
 	}
+	if freezeDefinitions != 1 {
+		violations = append(violations, "freezeBlockMappingProjection definition count="+strconv.Itoa(freezeDefinitions)+", want 1")
+	}
+	if freezeDirectCalls != 1 {
+		violations = append(violations, "freezeBlockMappingProjection direct caller count="+strconv.Itoa(freezeDirectCalls)+", want 1 authorized call")
+	}
 
 	source := filepath.Join(repoRoot, "internal", "db", "block_references.go")
 	parsed := blockMappingAuthorityParse(t, source)
@@ -633,6 +971,7 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 		"writeCheckedBlockIDMapping":          true,
 		"insertBlockIDMappingForWriteCheckFn": true,
 		"getBlockIDMappingForWriteCheckFn":    true,
+		"getBlockIDMappingForWriteCheck":      true,
 	}
 	seen := map[string]bool{}
 	checkHotPath := func(name string, body ast.Node) {
@@ -640,13 +979,13 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 		ast.Inspect(body, func(node ast.Node) bool {
 			switch value := node.(type) {
 			case *ast.SelectorExpr:
-				if value.Sel.Name == "SerialConsistency" || value.Sel.Name == "MapScanCAS" || value.Sel.Name == "ScanCAS" {
+				if value.Sel.Name == "SerialConsistency" || strings.HasSuffix(value.Sel.Name, "ScanCAS") || strings.HasSuffix(value.Sel.Name, "ExecCAS") || strings.HasSuffix(value.Sel.Name, "CASContext") {
 					violations = append(violations, "upload mapping writer "+name+" runs an LWT ("+value.Sel.Name+")")
 				}
 			case *ast.BasicLit:
 				if text, ok := constantIdentityAuthorityString(value); ok {
 					lower := strings.ToLower(text)
-					if strings.Contains(lower, "if not exists") || strings.Contains(lower, blockMappingAuthorityClaimsTable) || strings.Contains(lower, " if ") {
+					if blockMappingCQLConditionalPattern.MatchString(text) || strings.Contains(lower, blockMappingAuthorityClaimsTable) {
 						violations = append(violations, "upload mapping writer "+name+" issues conditional/authority CQL")
 					}
 				}
@@ -968,14 +1307,49 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 
 	var checkQuery func(source *blockMappingSourceStrings, node ast.Node, owner, relPath string, body ast.Node, function *ast.FuncDecl, functionLiteral *ast.FuncLit, arguments []ast.Expr, outer map[string]ast.Expr, active map[string]bool)
 	checkQuery = func(source *blockMappingSourceStrings, node ast.Node, owner, relPath string, body ast.Node, function *ast.FuncDecl, functionLiteral *ast.FuncLit, arguments []ast.Expr, outer map[string]ast.Expr, active map[string]bool) {
+		var parameters *ast.FieldList
+		if function != nil {
+			parameters = function.Type.Params
+		} else if functionLiteral != nil {
+			parameters = functionLiteral.Type.Params
+		}
+		if entries := blockMappingUnclassifiedBatchEntries(body, parameters); entries > 0 {
+			violations = append(violations, relPath+":"+owner+" directly accesses gocql.Batch.Entries ("+strconv.Itoa(entries)+" sites); classify the batch statements")
+		}
 		ast.Inspect(node, func(child ast.Node) bool {
+			if composite, ok := child.(*ast.CompositeLit); ok && blockMappingIsBatchEntryType(composite.Type) {
+				foundStatement := false
+				for _, element := range composite.Elts {
+					field, ok := element.(*ast.KeyValueExpr)
+					if !ok {
+						continue
+					}
+					name, ok := field.Key.(*ast.Ident)
+					if !ok || name.Name != "Stmt" {
+						continue
+					}
+					foundStatement = true
+					entryLocals := source.queryLocalsAt(function, functionLiteral, arguments, outer, field.Value.Pos())
+					resolved := source.resolve(field.Value, entryLocals, map[string]bool{}, map[string]bool{}, 0)
+					if !resolved.constant {
+						violations = append(violations, relPath+":"+owner+" has an unresolved/dynamic gocql.BatchEntry statement")
+						continue
+					}
+					if blockMappingTableMentionPattern.MatchString(resolved.text) {
+						violations = append(violations, relPath+":"+owner+" submits block_id_mappings CQL through gocql.BatchEntry")
+					}
+				}
+				if !foundStatement {
+					violations = append(violations, relPath+":"+owner+" builds gocql.BatchEntry without a classifiable Stmt")
+				}
+			}
 			call, ok := child.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
 			callName := blockMappingCallName(call.Fun)
 			locals := source.queryLocalsAt(function, functionLiteral, arguments, outer, call.Pos())
-			if callName != "Query" {
+			if !blockMappingIsCQLEntryPoint(callName, len(call.Args)) {
 				var helper *ast.FuncDecl
 				if identifier, ok := call.Fun.(*ast.Ident); ok {
 					helper = source.functions[identifier.Name]
@@ -1007,7 +1381,11 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 					violations = append(violations, relPath+": unresolved/dynamic block_id_mappings Query argument in "+owner)
 					return true
 				}
-				if _, allowed := blockMappingDynamicQueryAllowlist[relPath][owner]; allowed {
+				if contract, allowed := blockMappingDynamicQueryAllowlist[relPath][owner]; allowed {
+					if contract.tableMarker != "" && !blockMappingQueryHasFixedTableMarkerAtCall(source, function, functionLiteral, arguments, outer, call, call.Args[0], contract.tableMarker) {
+						violations = append(violations, relPath+":"+owner+" dynamic Query lost fixed table marker "+contract.tableMarker+" at this call site")
+						return true
+					}
 					querySite := relPath + ":" + strconv.Itoa(int(call.Pos()))
 					if !dynamicQueryCallsites[querySite] {
 						dynamicQueryCallsites[querySite] = true
@@ -1068,6 +1446,31 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 		relPath = filepath.ToSlash(relPath)
 		parsed := parsedSource.file
 		source := packages[filepath.Dir(path)]
+		parents := blockMappingParentMap(parsed)
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok || (selector.Sel.Name != "Query" && selector.Sel.Name != "Bind") {
+				return true
+			}
+			if selector.Sel.Name == "Query" {
+				if pointer, isType := parents[selector].(*ast.StarExpr); isType && pointer.X == selector {
+					return true
+				}
+			}
+			call, directCall := parents[selector].(*ast.CallExpr)
+			if directCall && call.Fun == selector {
+				if selector.Sel.Name == "Bind" && !blockMappingIsCQLEntryPoint("Bind", len(call.Args)) {
+					return true
+				}
+				return true
+			}
+			if selector.Sel.Name == "Bind" {
+				violations = append(violations, relPath+": Batch.Bind method values/aliases are forbidden because their CQL call site cannot be inventoried")
+			} else {
+				violations = append(violations, relPath+": Session.Query method values/aliases are forbidden because their CQL call site cannot be inventoried at AST position "+strconv.Itoa(int(selector.Pos())))
+			}
+			return true
+		})
 		for _, declaration := range parsed.Decls {
 			switch value := declaration.(type) {
 			case *ast.FuncDecl:
@@ -1099,38 +1502,10 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 		}
 	}
 	for relPath, owners := range blockMappingDynamicQueryAllowlist {
-		parsed := blockMappingAuthorityParse(t, filepath.Join(repoRoot, filepath.FromSlash(relPath)))
-		functions := map[string]*ast.FuncDecl{}
-		for _, declaration := range parsed.Decls {
-			if function, ok := declaration.(*ast.FuncDecl); ok {
-				functions[function.Name.Name] = function
-			}
-		}
 		for owner, contract := range owners {
 			key := relPath + "::" + owner
 			if actual := dynamicQueryCounts[key]; actual != contract.count {
 				violations = append(violations, relPath+":"+owner+" dynamic Query inventory count="+strconv.Itoa(actual)+", want "+strconv.Itoa(contract.count))
-			}
-			if contract.tableMarker != "" {
-				function := functions[owner]
-				foundMarker := false
-				if function != nil {
-					ast.Inspect(function.Body, func(node ast.Node) bool {
-						literal, ok := node.(*ast.BasicLit)
-						if !ok {
-							return true
-						}
-						text, ok := constantIdentityAuthorityString(literal)
-						if ok && strings.Contains(text, contract.tableMarker) {
-							foundMarker = true
-							return false
-						}
-						return true
-					})
-				}
-				if !foundMarker {
-					violations = append(violations, relPath+":"+owner+" dynamic Query lost fixed table marker "+contract.tableMarker)
-				}
 			}
 			delete(dynamicQueryCounts, key)
 		}

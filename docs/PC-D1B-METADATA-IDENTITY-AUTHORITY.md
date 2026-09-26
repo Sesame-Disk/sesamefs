@@ -221,22 +221,34 @@ source legs, each required to fail with its own diagnostic:
 - T2/H3: an ordinary mapping INSERT gains an explicit timestamp above the
   frozen timestamp.
 - DEL1: a production DELETE is added despite the R11a prohibition.
-- A1/A2: direct or aliased calls bypass the confined freeze primitive.
+- A1/A2/A3: external direct calls, aliases, and same-file wrappers cannot
+  bypass the single authorized `blockMappingPromotionPorts` freeze caller.
 - T3/T4/D2: assembled or unresolved mapping CQL cannot escape inventory.
-- T5/T6/T7: call-site reassignment, generic helper arguments, or runtime table
-  identity cannot hide a mapping query.
+- T5/T6/T7/T11/T12/T13/T16: call-site reassignment, generic helper arguments,
+  runtime table identity, `Session.Query` method values, and ambiguous control
+  flow (including goto-based assignment paths) cannot hide a mapping query.
+- H3/H4: the concrete upload pre-check is inventoried and rejects both CAS
+  terminals and conditional CQL.
+- T8/T9/T10/T15: `Batch.Bind`, hand-built `BatchEntry`, direct `Batch.Entries`
+  writes, and `Batch.Bind` method values cannot hide a mapping statement.
+- T14: a dynamic-query allowlist's fixed table marker must reach its own Query
+  callsite through a fixed initializer and suffix-only appends.
 - R3/R4: unclassified mapping readers and consistency on an unrelated query
   fail the reader contract.
 
-Unresolved CQL `Query` arguments fail closed unless they are one of the
-function-specific dynamic builders explicitly listed with an expected call-site
-count in the guard. Those allowlisted builders retain fixed non-mapping table
-identity; GC hard-delete lock builders additionally inventory their literal
-table/partition-key pairs. Migration execution is separately allowlisted to the
-checked-in migration statements.
+Unresolved CQL `Query` and `Batch.Bind` arguments fail closed unless they are
+one of the function-specific dynamic builders explicitly listed with an
+expected call-site count in the guard. Those allowlisted builders retain fixed
+non-mapping table identity at the exact callsite; GC hard-delete lock builders
+additionally inventory their literal table/partition-key pairs. Method-value
+aliases, `BatchEntry` statements, and direct `Batch.Entries` access fail closed.
+Migration execution is separately allowlisted to checked-in migration
+statements. **Follow-up:** migrations added after this PR that touch
+`block_id_mappings` require explicit Mapping Authority review; future migration
+CQL hardening is not part of this PR.
 
 With `--with-integration` it also runs T1 on real Cassandra and MinIO in a
-private Compose project. The final suite is 32/32 expected RED: the 31 source
+private Compose project. The final suite is 44/44 expected RED: the 43 source
 legs above plus T1. T1
 replaces the dominant-timestamp freeze with an ordinary rewrite. The reproducer
 that writes B between the final recheck and the witness CAS must then fail,

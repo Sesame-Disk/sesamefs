@@ -251,6 +251,89 @@ t7_runtime_mapping_table_identity() {
 	expect_red "T7 unresolved runtime table identity" "unresolved/dynamic block_id_mappings Query argument" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
 }
 
+# H3: the concrete upload conflict pre-check is part of the no-Paxos inventory,
+# including CAS terminals unrelated to mapping authority.
+h3_upload_precheck_cas() {
+	mutate "$WRITERS" 's/(func \(db \*DB\) getBlockIDMappingForWriteCheck\([^\n]*\) \{\n)/$1\t_, _ = db.Session().Query("UPDATE unrelated SET state = ? IF EXISTS", "x").ScanCAS()\n/'
+	expect_red "H3 upload pre-check gains a CAS call" "upload mapping writer getBlockIDMappingForWriteCheck runs an LWT" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# H4: the upload pre-check must also reject a conditional CQL statement even
+# when it is consumed through Exec rather than a method named CAS.
+h4_upload_precheck_conditional_cql() {
+	mutate "$WRITERS" 's/(func \(db \*DB\) getBlockIDMappingForWriteCheck\([^\n]*\) \{\n)/$1\t_ = db.Session().Query("DELETE FROM unrelated WHERE id = ? IF EXISTS", "x").Exec()\n/'
+	expect_red "H4 upload pre-check gains conditional CQL" "upload mapping writer getBlockIDMappingForWriteCheck issues conditional/authority CQL" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# T8: Batch.Bind is a second gocql CQL entry point and must feed the mapping
+# mutation inventory just like Query.
+t8_mapping_batch_bind() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3BatchBindMappingMutation(session *gocql.Session) { batch := session.Batch(gocql.LoggedBatch); batch.Bind("DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?", func(info *gocql.QueryInfo) ([]interface{}, error) { return nil, nil }); _ = session.ExecuteBatch(batch) }\n/'
+	expect_red "T8 mapping mutation through Batch.Bind" "production DELETE from block_id_mappings is prohibited by R11a" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T9: callers can append a public gocql.BatchEntry with a mapping statement.
+t9_mapping_batchentry_statement() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3BatchEntryMappingMutation(session *gocql.Session) { batch := session.Batch(gocql.LoggedBatch); entry := gocql.BatchEntry{Stmt: "DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?"}; batch.Entries = append(batch.Entries, entry); _ = session.ExecuteBatch(batch) }\n/'
+	expect_red "T9 mapping mutation through BatchEntry" "submits block_id_mappings CQL through gocql.BatchEntry" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T10: public access to Batch.Entries can inject a statement without a new
+# BatchEntry literal at the mutation point.
+t10_direct_batch_entries_statement() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3DirectBatchEntriesMappingMutation(session *gocql.Session) { batch := session.Batch(gocql.LoggedBatch); batch.Query("SELECT now() FROM system.local"); batch.Entries[0].Stmt = "DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?"; _ = session.ExecuteBatch(batch) }\n/'
+	expect_red "T10 direct Batch.Entries mapping injection" "directly accesses gocql.Batch.Entries" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T11: taking Session.Query as a method value severs the Query callsite from
+# the structural CQL inventory.
+t11_query_method_value_alias() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3QueryMethodValueAliasMutation(session *gocql.Session) { query := session.Query; query("DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?", "org", "plain:v1", "sha1").Exec() }\n/'
+	expect_red "T11 Session.Query method-value alias" "Session.Query method values/aliases are forbidden" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T14: an allowlist is valid only while this exact dynamic Query keeps its
+# fixed table marker; a matching literal elsewhere in the function is not enough.
+t14_dynamic_query_allowlist_marker_moved() {
+	mutate "internal/api/v2/admin_link_helpers.go" 's/(func listAdminLinkProjectionCursorPage\([^\n]*\) \{.*?FROM )admin_links_by_created/$1unrelated_table/s'
+	expect_red "T14 dynamic Query allowlist marker moved away from its callsite" "dynamic Query lost fixed table marker FROM admin_links_by_created at this call site" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T15: taking Batch.Bind as a method value is another route around direct CQL
+# entry-point discovery.
+t15_batch_bind_method_value_alias() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3BatchBindMethodValueAliasMutation(session *gocql.Session) { batch := session.Batch(gocql.LoggedBatch); bind := batch.Bind; bind("DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?", func(info *gocql.QueryInfo) ([]interface{}, error) { return nil, nil }); _ = session.ExecuteBatch(batch) }\n/'
+	expect_red "T15 Batch.Bind method-value alias" "Batch.Bind method values/aliases are forbidden" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T12: a helper with mutually exclusive CQL return paths is not a constant
+# builder even when one branch is harmless.
+t12_branching_cql_helper() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3BranchingCQLMutation(flag bool) string { if flag { return "DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?" }; return "SELECT now() FROM system.local" }\nfunc pcd1b3BranchingCQLQueryMutation(session *gocql.Session, flag bool) { session.Query(pcd1b3BranchingCQLMutation(flag), "org", "plain:v1", "sha1").Exec() }\n/'
+	expect_red "T12 ambiguous helper return paths" "unresolved/dynamic block_id_mappings Query argument" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T13: a local CQL value assigned in a branch is unresolved at the Query
+# callsite even if its pre-branch initializer was safe to classify.
+t13_branch_assignment_cql() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3BranchAssignedCQLMutation(session *gocql.Session, flag bool) { query := "SELECT now() FROM system.local"; if flag { query = "DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?" }; session.Query(query, "org", "plain:v1", "sha1").Exec() }\n/'
+	expect_red "T13 branch-assigned CQL value" "unresolved/dynamic Query argument in pcd1b3BranchAssignedCQLMutation" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T16: goto-based control flow cannot make the resolver pick the textually last
+# assignment when an earlier branch can jump around it.
+t16_goto_branch_cql() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3GotoBranchMappingMutation(session *gocql.Session, flag bool) { query := "DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?"; if flag { goto safe }; query = "SELECT now() FROM system.local"; safe: session.Query(query, "org", "plain:v1", "sha1").Exec() }\n/'
+	expect_red "T16 goto-ambiguous CQL value" "unresolved/dynamic Query argument in pcd1b3GotoBranchMappingMutation" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# A3: even an in-file wrapper must not become a second caller of the raw freeze
+# primitive, because callers outside the promotion ports could skip provenance.
+a3_same_file_freeze_wrapper() {
+	mutate_many "$PRIMITIVE" 's/\z/\nfunc pcd1b3RawMappingFreezeWrapperMutation(ctx context.Context, session *gocql.Session, identity blockMappingIdentity, authority string) (BlockMappingProjectionState, error) { return freezeBlockMappingProjection(ctx, session, identity, authority) }\n/' "$WRITERS" 's/\z/\nfunc pcd1b3ExternalRawMappingFreezeWrapperMutation(ctx context.Context, session *gocql.Session, identity blockMappingIdentity, authority string) { _, _ = pcd1b3RawMappingFreezeWrapperMutation(ctx, session, identity, authority) }\n/'
+	expect_red "A3 same-file freeze wrapper has an external caller" "freezeBlockMappingProjection direct caller must be blockMappingPromotionPorts" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
 # R4: LOCAL_QUORUM on an unrelated query must not satisfy the mapping reader's
 # query-chain consistency contract.
 r4_unrelated_query_has_local_quorum() {
@@ -320,8 +403,20 @@ ALL_MUTATIONS=(
     t5_query_before_harmless_reassignment
     t6_mapping_cql_through_generic_helper
     t7_runtime_mapping_table_identity
+    h3_upload_precheck_cas
+    h4_upload_precheck_conditional_cql
+    t8_mapping_batch_bind
+    t9_mapping_batchentry_statement
+    t10_direct_batch_entries_statement
+    t11_query_method_value_alias
+    t14_dynamic_query_allowlist_marker_moved
+    t15_batch_bind_method_value_alias
+    t12_branching_cql_helper
+    t13_branch_assignment_cql
+    t16_goto_branch_cql
     r4_unrelated_query_has_local_quorum
     a2_aliased_freeze_caller
+    a3_same_file_freeze_wrapper
 )
 
 WITH_INTEGRATION=0
@@ -378,4 +473,4 @@ if [ "$WITH_INTEGRATION" -eq 1 ]; then
     restore
     TOTAL=$((TOTAL + 1))
 fi
-echo "PC-D1B.3 M18/M19, representation, evidence, SERIAL, hot-path and immutability contract legs are red (${TOTAL}/${TOTAL})"
+echo "PC-D1B.3 M18/M19, representation, evidence, SERIAL, hot-path, batch CQL, callsite and immutability contract legs are red (${TOTAL}/${TOTAL})"
