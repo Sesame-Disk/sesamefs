@@ -969,6 +969,19 @@ migration `UPDATE ... SET head_commit_id ... IF EXISTS`, a whole-row
 CAS writers).
 `CASSANDRA_SERIAL_CONSISTENCY` may still control other LWTs.
 
+`scripts/library-hard-delete-lease-serial-domain-multidc-validation.sh`
+is the 3-DC evidence for `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`, closed
+in PR #234. It starts the isolated
+three-DC Cassandra fixture and a Docker Go runner, configures all three client
+sessions with `LOCAL_SERIAL`, and races library lease acquisition from dc-na
+and dc-eu. `EACH_QUORUM` reads verify the sole owner, cross-DC renewal and
+conditional release, acquisition by the next owner, and stale takeover. The
+required-evidence gate is
+`SESAMEFS_REQUIRE_LIBRARY_HARD_DELETE_LEASE_SERIAL_DOMAIN_EVIDENCE=1`.
+`scripts/library-hard-delete-lease-serial-domain-mutation-validation.sh`
+removes the explicit global `SERIAL` setting and checks that the focused Go
+contract test goes RED for the lease-domain reason.
+
 ### PC-D1 inherited-continuity evidence
 
 The PC-D1 decision model remains documentation/test-only, but PC-D1A now adds

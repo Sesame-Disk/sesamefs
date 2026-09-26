@@ -1,5 +1,25 @@
 # Current Work - SesameFS
 
+**Active branch — PR #234, `fix/library-hard-delete-lease-global-serial` (rebased onto `main@cd591709c`, 2026-09-30; originally 2026-09-26):**
+The library hard-delete lease now pins global `SERIAL` for acquire (including
+stale takeover), renew, and conditional release, independent of a session
+default of `LOCAL_SERIAL`. The existing lease token, TTL, stale takeover,
+renewal, release, and error behavior are preserved. User/org lease domains and
+all runtime caller flows are unchanged.
+
+The Docker `go test ./... -count=1`, `go vet ./...`, and
+`go test -race -short ./...` suites pass. The directed pin-removal mutation is
+RED for the library lease SERIAL-domain contract. The isolated Cassandra 3-DC
+harness passed with client sessions configured as `LOCAL_SERIAL`: concurrent
+dc-na/dc-eu contenders had one owner by `EACH_QUORUM`, cross-DC renew/release
+and next-owner acquisition worked, and stale takeover remained available.
+`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` is closed. The separate P1
+non-fencing finding remains a FOLLOW-UP; this change does not make a broader GC
+readiness claim. Per [docs/X1-CRITICAL-PATH.md](docs/X1-CRITICAL-PATH.md) §7 this
+closes the first of the two current-runtime lease items (the global SERIAL
+pin); the generation-fenced final batch (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`)
+remains open in both §6 and §7. `GC_ENABLED=false` remains mandatory.
+
 ### PR #239 crossed audit correction (2026-09-30)
 
 Pre-D GC now distinguishes real references, repair-only protection and zero.
@@ -11,7 +31,7 @@ durable physical continuation are proved; the future physical executor remains
 outside this PR. W2-0/W2-6a remain OPEN and GC_ENABLED=false.
 See [crossed audit evidence](./docs/W2-0-PUBLICATION-CONTINUITY.md).
 
-## Active branch: fix/w2-0-publish-liveness-through-head (base main@50c50903e, 2026-09-29)
+## Merged PR #239: fix/w2-0-publish-liveness-through-head (base main@50c50903e, 2026-09-29)
 
 The current branch adds a fail-closed GC guard using the existing non-expiring
 `published_block_reference_repairs` rows. Acquisition explicitly writes at
@@ -207,7 +227,6 @@ next available number (`028` if #233 lands first).
 Side findings registered: `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` (was
 `ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`; now also covers the intent LWT),
 `ISSUE-PCD1B-STALE-TOMBSTONE-DISPLAY-METADATA-01`,
-`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` (PRE-GC multi-DC),
 `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (P1, CURRENT-RUNTIME / FOLLOW-UP;
 also required PRE-GC; pre-existing, not a #232 blocker), and Phase 6 execute-time
 TOCTOU under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`.

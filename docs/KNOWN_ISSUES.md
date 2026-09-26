@@ -6610,19 +6610,33 @@ policy), with a characterization. Not part of PC-D1B.5.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01: The library hard-delete lease inherits `serial_consistency`
 
-**Status**: 🟡 Open — found 2026-09-23 (PC-D1B.4 inventory); CURRENT-RUNTIME / CONFIG-DEPENDENT multi-DC and PRE-GC (reclassified 2026-09-29: restore and `PermanentDeleteRepo` use the lease through the API independently of `GC_ENABLED`; the shipped `configs/config.prod.yaml` uses `SERIAL`, but `LOCAL_SERIAL` is a supported setting — `configs/config-*.cluster.yaml` use it and startup only warns — and the lease LWTs inherit it)
+**Status**: ✅ Closed in PR #234 on 2026-09-26 — library lease LWTs now use explicit global `SERIAL` (classified CURRENT-RUNTIME / CONFIG-DEPENDENT and PRE-GC by the 2026-09-29 X1 reset; both classifications are discharged)
 **Severity**: Medium — multi-DC lifecycle serialization
 **Affected**: `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock` (`internal/gc/store_cassandra.go`), used by restore, API permanent delete and GC library cascade
 **Registered**: 2026-09-23, PC-D1B.4
 
-The lease LWTs set no `SerialConsistency`, so a deployment with
-`database.serial_consistency: LOCAL_SERIAL` gives each DC its own Paxos domain:
-a restore in one DC and a cascade or permanent delete in another can both
-acquire the library lease. The canonical-row checks each performs under the
-lease are then not serialized with each other. Fix direction: pin the lease
-LWTs to global SERIAL like the HEAD domain. Independent of the certification
-fence (restore is not a witness lifecycle event), but required before GC runs
-multi-DC.
+The three library lease operations now apply `SerialConsistency(gocql.Serial)`
+to their LWT queries: acquire (including stale takeover), renew, and conditional
+release. This is independent of the configured session default
+`database.serial_consistency` / `CASSANDRA_SERIAL_CONSISTENCY`. User and org
+hard-delete leases continue to inherit the session default.
+
+Evidence: `internal/gc/store_cassandra_serial_domain_test.go` pins the three
+current library operations to global SERIAL, and
+`scripts/library-hard-delete-lease-serial-domain-mutation-validation.sh`
+removes the explicit pin and goes RED with the lease-domain contract reason.
+The isolated Cassandra 3-DC harness
+(`scripts/library-hard-delete-lease-serial-domain-multidc-validation.sh`) ran
+with client sessions configured as `LOCAL_SERIAL`: concurrent contenders from
+dc-na and dc-eu had one owner, confirmed by `EACH_QUORUM`; correct and wrong
+tokens behaved correctly for renewal/release, dc-eu acquired after release,
+and stale takeover still succeeded.
+
+> The library hard-delete lease fixes global SERIAL for acquire, renew and release, independent of a session default of LOCAL_SERIAL.
+
+This closes only the lease's SERIAL-domain issue. It does not close the
+separately tracked stale-owner non-fencing issue or establish GC activation
+readiness.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01: A stale lease owner can resume its final lifecycle batch
 

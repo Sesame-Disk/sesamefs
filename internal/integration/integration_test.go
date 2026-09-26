@@ -68,6 +68,7 @@ func TestMain(m *testing.M) {
 		os.Getenv("SESAMEFS_REQUIRE_PC0_PUBLICATION_CHARACTERIZATION") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_LIBRARY_HEAD_SERIAL_DOMAIN_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_LIBRARY_HARD_DELETE_LEASE_SERIAL_DOMAIN_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_LIBRARY_CONTINUITY_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_EVIDENCE") == "1" ||
@@ -198,6 +199,12 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv(libraryHeadSerialDomainEvidenceEnv) == "1" && !libraryHeadSerialDomainEvidence.complete() {
 		fmt.Printf("%s=1 requires the real 3-DC library HEAD SERIAL-domain legs (TestLibraryHeadSerialDomainConcurrentAdvance3DC and TestLibraryHeadSerialDomainInitialHead3DC)\n", libraryHeadSerialDomainEvidenceEnv)
+		if code == 0 {
+			code = 1
+		}
+	}
+	if os.Getenv(libraryHardDeleteLeaseSerialDomainEvidenceEnv) == "1" && !libraryHardDeleteLeaseSerialDomainEvidence {
+		fmt.Printf("%s=1 requires the real 3-DC library hard-delete lease SERIAL-domain cycle (TestLibraryHardDeleteLeaseSerialDomain3DC)\n", libraryHardDeleteLeaseSerialDomainEvidenceEnv)
 		if code == 0 {
 			code = 1
 		}

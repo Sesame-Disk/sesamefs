@@ -68,16 +68,32 @@ func parseCASTime(value interface{}) time.Time {
 
 const hardDeleteLockTTLSeconds = 21600
 
-func acquireHardDeleteLock(session *gocql.Session, tableName, keyColumn string, keyValue, leaseToken uuid.UUID) (bool, error) {
+// hardDeleteLockSerialDomain keeps the library lease's global Paxos authority
+// explicit while user and org leases continue to inherit their session default.
+type hardDeleteLockSerialDomain uint8
+
+const (
+	hardDeleteLockSessionSerialDomain hardDeleteLockSerialDomain = iota
+	hardDeleteLockGlobalSerialDomain
+)
+
+func applyHardDeleteLockSerialDomain(query *gocql.Query, domain hardDeleteLockSerialDomain) *gocql.Query {
+	if domain == hardDeleteLockGlobalSerialDomain {
+		return query.SerialConsistency(gocql.Serial)
+	}
+	return query
+}
+
+func acquireHardDeleteLock(session *gocql.Session, tableName, keyColumn string, keyValue, leaseToken uuid.UUID, serialDomain hardDeleteLockSerialDomain) (bool, error) {
 	now := time.Now().UTC()
 	existing := map[string]interface{}{}
 	// CQL requires IF NOT EXISTS before USING on an LWT insert; the reverse order is a
 	// syntax error. The explicit TTL bounds a lock leaked by a crash between acquire and
 	// release, while the stale-aware takeover below reclaims it sooner than full expiry.
-	applied, err := session.Query(fmt.Sprintf(`
+	applied, err := applyHardDeleteLockSerialDomain(session.Query(fmt.Sprintf(`
 		INSERT INTO %s (%s, started_at, heartbeat, lease_token)
 		VALUES (?, ?, ?, ?) IF NOT EXISTS USING TTL %d
-	`, tableName, keyColumn, hardDeleteLockTTLSeconds), keyValue.String(), now, now, leaseToken.String()).MapScanCAS(existing)
+	`, tableName, keyColumn, hardDeleteLockTTLSeconds), keyValue.String(), now, now, leaseToken.String()), serialDomain).MapScanCAS(existing)
 	if err != nil || applied {
 		return applied, err
 	}
@@ -88,33 +104,33 @@ func acquireHardDeleteLock(session *gocql.Session, tableName, keyColumn string, 
 		return false, nil
 	}
 
-	applied, err = session.Query(fmt.Sprintf(`
+	applied, err = applyHardDeleteLockSerialDomain(session.Query(fmt.Sprintf(`
 		UPDATE %s USING TTL %d
 		SET started_at = ?, heartbeat = ?, lease_token = ?
 		WHERE %s = ? IF lease_token = ?
-	`, tableName, hardDeleteLockTTLSeconds, keyColumn), now, now, leaseToken.String(), keyValue.String(), existingToken.String()).MapScanCAS(map[string]interface{}{})
+	`, tableName, hardDeleteLockTTLSeconds, keyColumn), now, now, leaseToken.String(), keyValue.String(), existingToken.String()), serialDomain).MapScanCAS(map[string]interface{}{})
 	if err != nil {
 		return false, err
 	}
 	return applied, nil
 }
 
-func renewHardDeleteLock(session *gocql.Session, tableName, keyColumn string, keyValue, leaseToken uuid.UUID) (bool, error) {
-	applied, err := session.Query(fmt.Sprintf(`
+func renewHardDeleteLock(session *gocql.Session, tableName, keyColumn string, keyValue, leaseToken uuid.UUID, serialDomain hardDeleteLockSerialDomain) (bool, error) {
+	applied, err := applyHardDeleteLockSerialDomain(session.Query(fmt.Sprintf(`
 		UPDATE %s USING TTL %d
 		SET heartbeat = ?, lease_token = ?
 		WHERE %s = ? IF lease_token = ?
-	`, tableName, hardDeleteLockTTLSeconds, keyColumn), time.Now().UTC(), leaseToken.String(), keyValue.String(), leaseToken.String()).MapScanCAS(map[string]interface{}{})
+	`, tableName, hardDeleteLockTTLSeconds, keyColumn), time.Now().UTC(), leaseToken.String(), keyValue.String(), leaseToken.String()), serialDomain).MapScanCAS(map[string]interface{}{})
 	if err != nil {
 		return false, err
 	}
 	return applied, nil
 }
 
-func releaseHardDeleteLock(session *gocql.Session, tableName, keyColumn string, keyValue, leaseToken uuid.UUID) error {
-	applied, err := session.Query(fmt.Sprintf(`
+func releaseHardDeleteLock(session *gocql.Session, tableName, keyColumn string, keyValue, leaseToken uuid.UUID, serialDomain hardDeleteLockSerialDomain) error {
+	applied, err := applyHardDeleteLockSerialDomain(session.Query(fmt.Sprintf(`
 		DELETE FROM %s WHERE %s = ? IF lease_token = ?
-	`, tableName, keyColumn), keyValue.String(), leaseToken.String()).MapScanCAS(map[string]interface{}{})
+	`, tableName, keyColumn), keyValue.String(), leaseToken.String()), serialDomain).MapScanCAS(map[string]interface{}{})
 	if err != nil {
 		return err
 	}
@@ -130,19 +146,19 @@ func releaseHardDeleteLock(session *gocql.Session, tableName, keyColumn string, 
 // AcquireLibraryHardDeleteLockLease acquires the library hard-delete lock using
 // the same stale-aware CAS semantics as the GC worker.
 func AcquireLibraryHardDeleteLockLease(session *gocql.Session, libraryID, leaseToken uuid.UUID) (bool, error) {
-	return acquireHardDeleteLock(session, "gc_library_hard_delete_locks", "library_id", libraryID, leaseToken)
+	return acquireHardDeleteLock(session, "gc_library_hard_delete_locks", "library_id", libraryID, leaseToken, hardDeleteLockGlobalSerialDomain)
 }
 
 // RenewLibraryHardDeleteLockLease fences ownership of the library hard-delete
 // lock and refreshes its TTL.
 func RenewLibraryHardDeleteLockLease(session *gocql.Session, libraryID, leaseToken uuid.UUID) (bool, error) {
-	return renewHardDeleteLock(session, "gc_library_hard_delete_locks", "library_id", libraryID, leaseToken)
+	return renewHardDeleteLock(session, "gc_library_hard_delete_locks", "library_id", libraryID, leaseToken, hardDeleteLockGlobalSerialDomain)
 }
 
 // ReleaseLibraryHardDeleteLockLease releases the library hard-delete lock only
 // when the same lease token still owns it.
 func ReleaseLibraryHardDeleteLockLease(session *gocql.Session, libraryID, leaseToken uuid.UUID) error {
-	return releaseHardDeleteLock(session, "gc_library_hard_delete_locks", "library_id", libraryID, leaseToken)
+	return releaseHardDeleteLock(session, "gc_library_hard_delete_locks", "library_id", libraryID, leaseToken, hardDeleteLockGlobalSerialDomain)
 }
 
 // parseDirEntries extracts child fs_ids from a JSON dir_entries column.
@@ -6095,15 +6111,15 @@ func (s *CassandraStore) HardDeleteUser(orgID, userID uuid.UUID, email string) e
 }
 
 func (s *CassandraStore) AcquireUserHardDeleteLock(userID, leaseToken uuid.UUID) (bool, error) {
-	return acquireHardDeleteLock(s.db.Session(), "gc_user_hard_delete_locks", "user_id", userID, leaseToken)
+	return acquireHardDeleteLock(s.db.Session(), "gc_user_hard_delete_locks", "user_id", userID, leaseToken, hardDeleteLockSessionSerialDomain)
 }
 
 func (s *CassandraStore) RenewUserHardDeleteLock(userID, leaseToken uuid.UUID) (bool, error) {
-	return renewHardDeleteLock(s.db.Session(), "gc_user_hard_delete_locks", "user_id", userID, leaseToken)
+	return renewHardDeleteLock(s.db.Session(), "gc_user_hard_delete_locks", "user_id", userID, leaseToken, hardDeleteLockSessionSerialDomain)
 }
 
 func (s *CassandraStore) ReleaseUserHardDeleteLock(userID, leaseToken uuid.UUID) error {
-	return releaseHardDeleteLock(s.db.Session(), "gc_user_hard_delete_locks", "user_id", userID, leaseToken)
+	return releaseHardDeleteLock(s.db.Session(), "gc_user_hard_delete_locks", "user_id", userID, leaseToken, hardDeleteLockSessionSerialDomain)
 }
 
 func (s *CassandraStore) AcquireLibraryHardDeleteLock(libraryID, leaseToken uuid.UUID) (bool, error) {
@@ -6351,15 +6367,15 @@ func (s *CassandraStore) DeleteGroupFull(orgID, groupID uuid.UUID) error {
 }
 
 func (s *CassandraStore) AcquireOrgHardDeleteLock(orgID, leaseToken uuid.UUID) (bool, error) {
-	return acquireHardDeleteLock(s.db.Session(), "gc_org_hard_delete_locks", "org_id", orgID, leaseToken)
+	return acquireHardDeleteLock(s.db.Session(), "gc_org_hard_delete_locks", "org_id", orgID, leaseToken, hardDeleteLockSessionSerialDomain)
 }
 
 func (s *CassandraStore) RenewOrgHardDeleteLock(orgID, leaseToken uuid.UUID) (bool, error) {
-	return renewHardDeleteLock(s.db.Session(), "gc_org_hard_delete_locks", "org_id", orgID, leaseToken)
+	return renewHardDeleteLock(s.db.Session(), "gc_org_hard_delete_locks", "org_id", orgID, leaseToken, hardDeleteLockSessionSerialDomain)
 }
 
 func (s *CassandraStore) ReleaseOrgHardDeleteLock(orgID, leaseToken uuid.UUID) error {
-	return releaseHardDeleteLock(s.db.Session(), "gc_org_hard_delete_locks", "org_id", orgID, leaseToken)
+	return releaseHardDeleteLock(s.db.Session(), "gc_org_hard_delete_locks", "org_id", orgID, leaseToken, hardDeleteLockSessionSerialDomain)
 }
 
 func (s *CassandraStore) BeginOrgPurge(orgID uuid.UUID, identityAt time.Time) (bool, error) {

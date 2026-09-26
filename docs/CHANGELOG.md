@@ -6,6 +6,18 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-29 - PR #234 library hard-delete lease global SERIAL domain (rebased onto the X1 reset / W2-6a)
+
+Closed `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`. Library lease acquire
+(including stale takeover), renew, and conditional release now apply explicit
+global `SERIAL`; user/org hard-delete leases retain their session-default
+behavior. A focused Go source contract and pin-removal mutation cover the
+current operations. The isolated Cassandra 3-DC lifecycle harness passed with
+sessions configured as `LOCAL_SERIAL`, including concurrent acquisition with
+one owner, cross-DC renewal and release, next-owner acquisition, and stale
+takeover. The lease SERIAL-domain closure does not close the separately tracked
+stale-owner non-fencing issue or mark GC ready for activation.
+
 ## 2026-09-29 - W2-6a: CreateFile Office-template exact placement before HEAD
 
 Reproduced the bug first on real Cassandra/MinIO for `.docx`, `.xlsx` and
