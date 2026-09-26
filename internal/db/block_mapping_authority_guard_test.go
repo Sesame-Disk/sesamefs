@@ -25,7 +25,6 @@ var (
 	blockMappingAuthoritySelectPattern = regexp.MustCompile(`(?is)^SELECT\s+.+\s+FROM\s+block_mapping_authority_claims\s+WHERE\s+.+$`)
 	blockMappingAuthorityCreatePattern = regexp.MustCompile(`(?is)^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+block_mapping_authority_claims\b`)
 	blockMappingTableMentionPattern    = regexp.MustCompile(`(?i)\bblock_id_mappings\b`)
-	blockMappingCQLKeywordPattern      = regexp.MustCompile(`(?i)\b(?:SELECT|INSERT|UPDATE|DELETE|FROM|INTO)\b`)
 	blockMappingSelectPattern          = regexp.MustCompile(`(?is)^SELECT\s+.+\s+FROM\s+block_id_mappings\b`)
 	blockMappingInsertPattern          = regexp.MustCompile(`(?is)^INSERT\s+INTO\s+block_id_mappings\s*\(org_id,\s*representation_id,\s*external_id,\s*internal_id,\s*created_at\)\s*VALUES\s*\(\?,\s*\?,\s*\?,\s*\?,\s*\?\)$`)
 	blockMappingFreezePattern          = regexp.MustCompile(`(?is)^UPDATE\s+block_id_mappings\s+USING\s+TIMESTAMP\s+\?\s+SET\s+internal_id\s*=\s*\?\s+WHERE\s+org_id\s*=\s*\?\s+AND\s+representation_id\s*=\s*\?\s+AND\s+external_id\s*=\s*\?$`)
@@ -46,6 +45,16 @@ var blockMappingAuthorityAcquisitionSymbols = map[string]map[string]bool{
 	"promoteBlockMappingAuthority": {
 		"internal/db/block_mapping_authority.go":             true,
 		"internal/db/block_mapping_authority_integration.go": true,
+	},
+	"ReadBlockMappingAuthority": {
+		"internal/db/block_mapping_authority.go": true,
+	},
+	"readBlockMappingAuthority": {
+		"internal/db/block_mapping_authority.go":             true,
+		"internal/db/block_mapping_authority_integration.go": true,
+	},
+	"blockMappingPromotionPorts": {
+		"internal/db/block_mapping_authority.go": true,
 	},
 	"PromoteBlockMappingAuthority": {
 		"internal/db/block_mapping_authority.go":      true,
@@ -81,16 +90,63 @@ func blockMappingHasAmbiguousStringControlFlow(function *ast.FuncDecl) bool {
 	return ambiguous || returns != 1
 }
 
+// blockMappingNestedClosureWrites returns captured locals assigned by nested
+// function literals. The CQL resolver cannot prove whether a closure runs, so
+// it must not treat such a value as an immutable string.
+func blockMappingNestedClosureWrites(body ast.Node, locals map[string]ast.Expr, before token.Pos) map[string]bool {
+	writes := map[string]bool{}
+	if body == nil || len(locals) == 0 {
+		return writes
+	}
+	inspectAssignments := func(root ast.Node) {
+		ast.Inspect(root, func(node ast.Node) bool {
+			if node == nil || (before.IsValid() && node.Pos() >= before) {
+				return false
+			}
+			switch value := node.(type) {
+			case *ast.AssignStmt:
+				if value.Tok == token.DEFINE {
+					return true
+				}
+				for _, left := range value.Lhs {
+					if name, ok := left.(*ast.Ident); ok {
+						if _, tracked := locals[name.Name]; tracked {
+							writes[name.Name] = true
+						}
+					}
+				}
+			case *ast.IncDecStmt:
+				if name, ok := value.X.(*ast.Ident); ok {
+					if _, tracked := locals[name.Name]; tracked {
+						writes[name.Name] = true
+					}
+				}
+			}
+			return true
+		})
+	}
+	ast.Inspect(body, func(node ast.Node) bool {
+		literal, ok := node.(*ast.FuncLit)
+		if !ok {
+			return true
+		}
+		inspectAssignments(literal.Body)
+		return false
+	})
+	return writes
+}
+
 // blockMappingSourceStrings follows string values used as Query arguments,
 // including local bindings, constant concatenation, strings.Join and local
 // helper returns. It deliberately does not try to execute Go code: unknown
 // pieces keep the known fragments so a split table name still taints the
 // statement and fails closed.
 type blockMappingSourceStrings struct {
-	functions     map[string]*ast.FuncDecl
-	functionPaths map[string]string
-	globals       map[string]ast.Expr
-	dynamicValues map[ast.Expr]bool
+	functions      map[string]*ast.FuncDecl
+	functionPaths  map[string]string
+	globals        map[string]ast.Expr
+	mutableGlobals map[string]bool
+	dynamicValues  map[ast.Expr]bool
 }
 
 // These production CQL builders use dynamic fragments but have fixed table
@@ -192,6 +248,9 @@ func blockMappingLocalStrings(body ast.Node, parameters *ast.FieldList, argument
 		return locals
 	}
 	ast.Inspect(body, func(node ast.Node) bool {
+		if _, nestedFunction := node.(*ast.FuncLit); nestedFunction {
+			return false
+		}
 		switch value := node.(type) {
 		case *ast.AssignStmt:
 			for index, left := range value.Lhs {
@@ -242,6 +301,9 @@ func (source *blockMappingSourceStrings) resolve(expr ast.Expr, locals map[strin
 			}
 			seen[value.Name] = true
 			return source.resolve(next, locals, seen, activeFunctions, depth+1)
+		}
+		if source.mutableGlobals[value.Name] {
+			return blockMappingResolvedString{ambiguous: true}
 		}
 		if next, ok := source.globals[value.Name]; ok {
 			return source.resolve(next, source.globals, seenLocals, activeFunctions, depth+1)
@@ -329,7 +391,7 @@ func (source *blockMappingSourceStrings) resolve(expr ast.Expr, locals map[strin
 			return true
 		})
 		if found {
-			if blockMappingHasAmbiguousStringControlFlow(function) {
+			if blockMappingHasAmbiguousStringControlFlow(function) || len(blockMappingNestedClosureWrites(function.Body, functionLocals, token.NoPos)) != 0 {
 				result.constant = false
 				result.ambiguous = true
 			}
@@ -369,6 +431,9 @@ func (source *blockMappingSourceStrings) queryLocalsAt(function *ast.FuncDecl, f
 		if node == nil || node.Pos() >= at {
 			return true
 		}
+		if _, nestedFunction := node.(*ast.FuncLit); nestedFunction {
+			return false
+		}
 		switch value := node.(type) {
 		case *ast.AssignStmt:
 			for index, left := range value.Lhs {
@@ -394,6 +459,12 @@ func (source *blockMappingSourceStrings) queryLocalsAt(function *ast.FuncDecl, f
 	ast.Inspect(body, func(node ast.Node) bool {
 		if node == nil || node.Pos() >= at {
 			return true
+		}
+		if _, nestedFunction := node.(*ast.FuncLit); nestedFunction {
+			for name := range blockMappingNestedClosureWrites(node, locals, at) {
+				locals[name] = nil
+			}
+			return false
 		}
 		switch value := node.(type) {
 		case *ast.IfStmt:
@@ -674,6 +745,294 @@ func blockMappingIsCQLEntryPoint(method string, arguments int) bool {
 	}
 }
 
+func blockMappingIsDBType(expression ast.Expr) bool {
+	switch value := expression.(type) {
+	case *ast.StarExpr:
+		return blockMappingIsDBType(value.X)
+	case *ast.ParenExpr:
+		return blockMappingIsDBType(value.X)
+	case *ast.Ident:
+		return value.Name == "DB"
+	case *ast.SelectorExpr:
+		return value.Sel.Name == "DB"
+	default:
+		return false
+	}
+}
+
+// blockMappingHotPathNoPaxosViolations follows same-package functions and DB
+// methods reachable from upload mapping writers. Queries in those helpers must
+// be statically resolved and free of conditional CQL; global SERIAL reads and
+// CAS terminals are prohibited anywhere on the reachable path.
+func blockMappingHotPathNoPaxosViolations(t *testing.T, repoRoot string, roots map[string]bool) []string {
+	t.Helper()
+	type sourceFile struct {
+		path string
+		file *ast.File
+	}
+	type hotTarget struct {
+		name string
+		path string
+		fn   *ast.FuncDecl
+		lit  *ast.FuncLit
+		body ast.Node
+	}
+	files := identityAuthorityProductionGoFiles(t, repoRoot)
+	source := &blockMappingSourceStrings{
+		functions:      map[string]*ast.FuncDecl{},
+		functionPaths:  map[string]string{},
+		globals:        map[string]ast.Expr{},
+		mutableGlobals: map[string]bool{},
+		dynamicValues:  map[ast.Expr]bool{},
+	}
+	var dbFiles []sourceFile
+	freeFunctions := map[string]*ast.FuncDecl{}
+	dbMethods := map[string]*ast.FuncDecl{}
+	functionLiterals := map[string]*ast.FuncLit{}
+	rootTargets := map[string]hotTarget{}
+	isDBMethod := func(function *ast.FuncDecl) bool {
+		if function.Recv == nil {
+			return false
+		}
+		for _, field := range function.Recv.List {
+			if blockMappingIsDBType(field.Type) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, path := range files {
+		relPath, err := filepath.Rel(repoRoot, path)
+		if err != nil {
+			t.Fatalf("relative path %s: %v", path, err)
+		}
+		relPath = filepath.ToSlash(relPath)
+		if filepath.ToSlash(filepath.Dir(relPath)) != "internal/db" {
+			continue
+		}
+		parsed := blockMappingAuthorityParse(t, path)
+		dbFiles = append(dbFiles, sourceFile{path: relPath, file: parsed})
+		for _, declaration := range parsed.Decls {
+			switch value := declaration.(type) {
+			case *ast.FuncDecl:
+				source.functions[value.Name.Name] = value
+				source.functionPaths[value.Name.Name] = relPath
+				if isDBMethod(value) {
+					dbMethods[value.Name.Name] = value
+				} else if value.Recv == nil {
+					freeFunctions[value.Name.Name] = value
+				}
+				if roots[value.Name.Name] {
+					rootTargets[value.Name.Name] = hotTarget{name: value.Name.Name, path: relPath, fn: value, body: value.Body}
+				}
+			case *ast.GenDecl:
+				for _, spec := range value.Specs {
+					valueSpec, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for index, name := range valueSpec.Names {
+						if value.Tok == token.VAR {
+							source.mutableGlobals[name.Name] = true
+						}
+						if value.Tok == token.CONST && index < len(valueSpec.Values) {
+							source.globals[name.Name] = valueSpec.Values[index]
+						}
+						if index < len(valueSpec.Values) {
+							if literal, ok := valueSpec.Values[index].(*ast.FuncLit); ok {
+								functionLiterals[name.Name] = literal
+								if roots[name.Name] {
+									rootTargets[name.Name] = hotTarget{name: name.Name, path: relPath, lit: literal, body: literal.Body}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if len(dbFiles) == 0 {
+		t.Fatalf("no internal/db production sources found for the upload hot-path audit")
+	}
+	var violations []string
+	for name := range roots {
+		if _, found := rootTargets[name]; !found {
+			violations = append(violations, "hot-path mapping writer "+name+" not found; transitive guard would be vacuous")
+		}
+	}
+	var visit func(rootName string, target hotTarget, arguments []ast.Expr, outer map[string]ast.Expr, active map[string]bool, depth int)
+	visit = func(rootName string, target hotTarget, arguments []ast.Expr, outer map[string]ast.Expr, active map[string]bool, depth int) {
+		if target.body == nil {
+			return
+		}
+		key := target.path + ":" + target.name
+		if active[key] {
+			return
+		}
+		if depth > 32 {
+			violations = append(violations, "upload mapping writer "+rootName+" reaches a call chain too deep to classify at "+target.path+":"+target.name)
+			return
+		}
+		nestedActive := make(map[string]bool, len(active)+1)
+		for current, inUse := range active {
+			nestedActive[current] = inUse
+		}
+		nestedActive[key] = true
+		dbIdentifiers := map[string]bool{}
+		addDBFields := func(fields *ast.FieldList) {
+			if fields == nil {
+				return
+			}
+			for _, field := range fields.List {
+				if !blockMappingIsDBType(field.Type) {
+					continue
+				}
+				for _, name := range field.Names {
+					dbIdentifiers[name.Name] = true
+				}
+			}
+		}
+		if target.fn != nil {
+			addDBFields(target.fn.Recv)
+			addDBFields(target.fn.Type.Params)
+		} else if target.lit != nil {
+			addDBFields(target.lit.Type.Params)
+		}
+		for changed := true; changed; {
+			changed = false
+			ast.Inspect(target.body, func(node ast.Node) bool {
+				switch value := node.(type) {
+				case *ast.ValueSpec:
+					if blockMappingIsDBType(value.Type) {
+						for _, name := range value.Names {
+							if !dbIdentifiers[name.Name] {
+								dbIdentifiers[name.Name] = true
+								changed = true
+							}
+						}
+					}
+				case *ast.AssignStmt:
+					for index, left := range value.Lhs {
+						if index >= len(value.Rhs) {
+							continue
+						}
+						right, rightOK := value.Rhs[index].(*ast.Ident)
+						name, leftOK := left.(*ast.Ident)
+						if rightOK && leftOK && dbIdentifiers[right.Name] && !dbIdentifiers[name.Name] {
+							dbIdentifiers[name.Name] = true
+							changed = true
+						}
+					}
+				}
+				return true
+			})
+		}
+		ast.Inspect(target.body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			callName := blockMappingCallName(call.Fun)
+			callLocals := source.queryLocalsAt(target.fn, target.lit, arguments, outer, call.Pos())
+			if callName == "ReadBlockMappingAuthority" || callName == "readBlockMappingAuthority" {
+				violations = append(violations, "upload mapping writer "+rootName+" reaches cold-path "+callName+" through "+target.path+":"+target.name)
+			}
+			if blockMappingIsCQLEntryPoint(callName, len(call.Args)) {
+				resolved := source.resolve(call.Args[0], callLocals, map[string]bool{}, map[string]bool{}, 0)
+				if !resolved.constant || resolved.ambiguous {
+					violations = append(violations, "upload mapping writer "+rootName+" reaches unresolved/dynamic CQL through "+target.path+":"+target.name)
+				} else if blockMappingCQLConditionalPattern.MatchString(resolved.text) {
+					violations = append(violations, "upload mapping writer "+rootName+" issues conditional CQL through "+target.path+":"+target.name)
+				}
+			}
+			if selector, isSelector := call.Fun.(*ast.SelectorExpr); isSelector {
+				method := selector.Sel.Name
+				if method == "SerialConsistency" || strings.HasSuffix(method, "ScanCAS") || strings.HasSuffix(method, "ExecCAS") || strings.HasSuffix(method, "CASContext") {
+					violations = append(violations, "upload mapping writer "+rootName+" reaches an LWT ("+method+") through "+target.path+":"+target.name)
+				}
+				if method == "Consistency" && len(call.Args) == 1 {
+					serial := false
+					ast.Inspect(call.Args[0], func(argumentNode ast.Node) bool {
+						name := ""
+						switch value := argumentNode.(type) {
+						case *ast.Ident:
+							name = value.Name
+						case *ast.SelectorExpr:
+							name = value.Sel.Name
+						}
+						lower := strings.ToLower(name)
+						if lower == "serial" || lower == "identityauthorityreadconsistency" || lower == "libraryheadserialconsistency" {
+							serial = true
+						}
+						return true
+					})
+					resolved := source.resolve(call.Args[0], callLocals, map[string]bool{}, map[string]bool{}, 0)
+					serial = serial || strings.EqualFold(strings.TrimSpace(resolved.text), "SERIAL")
+					if serial {
+						violations = append(violations, "upload mapping writer "+rootName+" reaches a global SERIAL read through "+target.path+":"+target.name)
+					}
+				}
+			}
+			var next hotTarget
+			found := false
+			switch value := call.Fun.(type) {
+			case *ast.Ident:
+				if function := freeFunctions[value.Name]; function != nil {
+					rel := source.functionPaths[value.Name]
+					next = hotTarget{name: value.Name, path: rel, fn: function, body: function.Body}
+					found = true
+				} else if literal := functionLiterals[value.Name]; literal != nil {
+					for _, sourceFile := range dbFiles {
+						for _, declaration := range sourceFile.file.Decls {
+							gen, ok := declaration.(*ast.GenDecl)
+							if !ok {
+								continue
+							}
+							for _, spec := range gen.Specs {
+								values, ok := spec.(*ast.ValueSpec)
+								if !ok {
+									continue
+								}
+								for index, name := range values.Names {
+									if name.Name == value.Name && index < len(values.Values) && values.Values[index] == literal {
+										next = hotTarget{name: value.Name, path: sourceFile.path, lit: literal, body: literal.Body}
+										found = true
+									}
+								}
+							}
+						}
+					}
+				}
+			case *ast.SelectorExpr:
+				if receiver, ok := value.X.(*ast.Ident); ok && dbIdentifiers[receiver.Name] {
+					if method := dbMethods[value.Sel.Name]; method != nil {
+						rel := source.functionPaths[value.Sel.Name]
+						for _, sourceFile := range dbFiles {
+							for _, declaration := range sourceFile.file.Decls {
+								function, ok := declaration.(*ast.FuncDecl)
+								if ok && function == method {
+									rel = sourceFile.path
+								}
+							}
+						}
+						next = hotTarget{name: method.Name.Name, path: rel, fn: method, body: method.Body}
+						found = true
+					}
+				}
+			}
+			if found {
+				visit(rootName, next, call.Args, callLocals, nestedActive, depth+1)
+			}
+			return true
+		})
+	}
+	for name, target := range rootTargets {
+		visit(name, target, nil, source.globals, map[string]bool{}, 0)
+	}
+	sort.Strings(violations)
+	return violations
+}
+
 func blockMappingExprCreatesBatch(expression ast.Expr) bool {
 	if expression == nil {
 		return false
@@ -910,6 +1269,9 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 	var violations []string
 	freezeDefinitions := 0
 	freezeDirectCalls := 0
+	promotionPortsDefinitions := 0
+	promotionPortsCalls := 0
+	promotionHelperCalls := 0
 	for _, path := range identityAuthorityProductionGoFiles(t, repoRoot) {
 		relPath, err := filepath.Rel(repoRoot, path)
 		if err != nil {
@@ -925,11 +1287,45 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 					violations = append(violations, relPath+": unauthorized freezeBlockMappingProjection definition")
 				}
 			}
+			if function, ok := node.(*ast.FuncDecl); ok && function.Name.Name == "blockMappingPromotionPorts" {
+				promotionPortsDefinitions++
+				if relPath != "internal/db/block_mapping_authority.go" {
+					violations = append(violations, relPath+": unauthorized blockMappingPromotionPorts definition")
+				}
+			}
 			if call, ok := node.(*ast.CallExpr); ok && blockMappingCallName(call.Fun) == "freezeBlockMappingProjection" {
 				freezeDirectCalls++
 				owner := blockMappingEnclosingFunctionName(parents, call)
 				if relPath != "internal/db/block_mapping_authority.go" || owner != "blockMappingPromotionPorts" {
 					violations = append(violations, relPath+": freezeBlockMappingProjection direct caller must be blockMappingPromotionPorts, found "+owner)
+				}
+			}
+			if call, ok := node.(*ast.CallExpr); ok {
+				owner := blockMappingEnclosingFunctionName(parents, call)
+				switch blockMappingCallName(call.Fun) {
+				case "blockMappingPromotionPorts":
+					promotionPortsCalls++
+					if relPath != "internal/db/block_mapping_authority.go" || owner != "PromoteBlockMappingAuthority" {
+						violations = append(violations, relPath+": blockMappingPromotionPorts may only be called by PromoteBlockMappingAuthority, found "+owner)
+					}
+					parent, directArgument := parents[call].(*ast.CallExpr)
+					if !directArgument || blockMappingCallName(parent.Fun) != "promoteBlockMappingAuthority" || len(parent.Args) < 2 || parent.Args[1] != call {
+						violations = append(violations, relPath+": blockMappingPromotionPorts result must feed directly into promoteBlockMappingAuthority")
+					}
+				case "promoteBlockMappingAuthority":
+					promotionHelperCalls++
+					if relPath != "internal/db/block_mapping_authority.go" || owner != "PromoteBlockMappingAuthority" {
+						violations = append(violations, relPath+": promoteBlockMappingAuthority production caller must be PromoteBlockMappingAuthority, found "+owner)
+					}
+				}
+				if selector, ok := call.Fun.(*ast.SelectorExpr); ok && (selector.Sel.Name == "freeze" || selector.Sel.Name == "claim") && strings.HasPrefix(relPath, "internal/db/") {
+					allowedOwner := "promoteBlockMappingAuthority"
+					if selector.Sel.Name == "claim" {
+						allowedOwner = "acquireBlockMappingClaim"
+					}
+					if relPath != "internal/db/block_mapping_authority.go" || owner != allowedOwner {
+						violations = append(violations, relPath+": blockMappingPromotionPorts ."+selector.Sel.Name+" capability called outside "+allowedOwner)
+					}
 				}
 			}
 			var name string
@@ -961,6 +1357,15 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 	}
 	if freezeDirectCalls != 1 {
 		violations = append(violations, "freezeBlockMappingProjection direct caller count="+strconv.Itoa(freezeDirectCalls)+", want 1 authorized call")
+	}
+	if promotionPortsDefinitions != 1 {
+		violations = append(violations, "blockMappingPromotionPorts definition count="+strconv.Itoa(promotionPortsDefinitions)+", want 1")
+	}
+	if promotionPortsCalls != 1 {
+		violations = append(violations, "blockMappingPromotionPorts productive caller count="+strconv.Itoa(promotionPortsCalls)+", want 1")
+	}
+	if promotionHelperCalls != 1 {
+		violations = append(violations, "promoteBlockMappingAuthority production caller count="+strconv.Itoa(promotionHelperCalls)+", want 1")
 	}
 
 	source := filepath.Join(repoRoot, "internal", "db", "block_references.go")
@@ -1018,6 +1423,7 @@ func TestBlockMappingAuthorityAcquisitionIsColdPathOnly(t *testing.T) {
 			violations = append(violations, "hot-path mapping writer "+name+" not found; this guard is vacuous")
 		}
 	}
+	violations = append(violations, blockMappingHotPathNoPaxosViolations(t, repoRoot, hotPath)...)
 	sort.Strings(violations)
 	if len(violations) > 0 {
 		t.Fatalf("PCD1B3 MAPPING AUTHORITY HOT PATH: %v", violations)
@@ -1203,10 +1609,11 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 		source := packages[packageRoot]
 		if source == nil {
 			source = &blockMappingSourceStrings{
-				functions:     map[string]*ast.FuncDecl{},
-				functionPaths: map[string]string{},
-				globals:       map[string]ast.Expr{},
-				dynamicValues: map[ast.Expr]bool{},
+				functions:      map[string]*ast.FuncDecl{},
+				functionPaths:  map[string]string{},
+				globals:        map[string]ast.Expr{},
+				mutableGlobals: map[string]bool{},
+				dynamicValues:  map[ast.Expr]bool{},
 			}
 			packages[packageRoot] = source
 		}
@@ -1220,6 +1627,17 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 				source.functions[value.Name.Name] = value
 				source.functionPaths[value.Name.Name] = filepath.ToSlash(relFunctionPath)
 			case *ast.GenDecl:
+				if value.Tok == token.VAR {
+					for _, spec := range value.Specs {
+						if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+							for _, name := range valueSpec.Names {
+								source.mutableGlobals[name.Name] = true
+								delete(source.globals, name.Name)
+							}
+						}
+					}
+					continue
+				}
 				for _, spec := range value.Specs {
 					valueSpec, ok := spec.(*ast.ValueSpec)
 					if !ok {
@@ -1242,7 +1660,7 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 	dynamicQueryCounts := map[string]int{}
 	checkStandaloneCQL := func(relPath, owner, statement string) {
 		normalized := strings.Join(strings.Fields(statement), " ")
-		if !blockMappingTableMentionPattern.MatchString(normalized) || !blockMappingCQLKeywordPattern.MatchString(normalized) {
+		if !blockMappingTableMentionPattern.MatchString(normalized) {
 			return
 		}
 		upper := strings.ToUpper(normalized)
@@ -1429,9 +1847,7 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 					}
 				}
 			default:
-				if blockMappingCQLKeywordPattern.MatchString(normalized) || strings.TrimSpace(normalized) == "block_id_mappings" {
-					violations = append(violations, relPath+": unrecognized/dynamic block_id_mappings CQL mutation in "+owner)
-				}
+				violations = append(violations, relPath+": unrecognized/dynamic block_id_mappings CQL mutation in "+owner)
 			}
 			return true
 		})

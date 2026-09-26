@@ -6448,11 +6448,43 @@ mapping resolution to `LOCAL_QUORUM`, which intersects that freeze in the
 reader's local DC. A repository-wide production-Go mutation inventory requires
 the sole ordinary INSERT to omit explicit timestamps, permits explicit
 timestamps only on the authority freeze, and prohibits production DELETE under
-R11a. Directed mutations M20, T2/H3 and DEL1 turn RED if those guarantees are
-weakened. The separate GC resolver `CassandraStore.lookupBlockMapping()` still
+R11a. The closed-world CQL inventory rejects every unclassified statement
+mentioning the table. Directed mutations M20, T2/H3 and DEL1 turn RED if those
+guarantees are weakened. The separate GC resolver `CassandraStore.lookupBlockMapping()` still
 inherits session consistency; it remains P2/PRE-GC follow-up and
 `GC_ENABLED=false` remains mandatory until that resolver is pinned or proved
 safe. This issue is separate from PC-D1B.5.
+
+### ISSUE-PCD1B-PAIRED-MAPPING-COMPATIBILITY-01: A paired SHA-1 projection can diverge for legacy readers after a witness
+
+**Status**: 🟡 Open — registered 2026-09-26; PRE-CONSUMER
+**Severity**: P2 — compatibility/integrity for legacy SHA-1 readers
+**Affected**: Paired `fs_objects` with canonical SHA-256 A and logical SHA-1 E
+**Blocks #233**: No
+
+For paired files, the witness dependency is the canonical SHA-256 A from the
+claim-bound `fs_object`. The compatible mapping E→A is checked but is not
+promoted or frozen as Mapping Authority. A later ordinary write can therefore
+make a legacy SHA-1-only reader resolve E→B after the witness, while the
+canonical witness still names A and remains valid. Before the first productive
+legacy reader, decide whether paired compatibility projections need their own
+authority/freeze or whether those readers must resolve through canonical
+identity. This is a consumer-compatibility follow-up, not a #233 blocker.
+
+### ISSUE-PCD1B-MAPPING-CLAIM-PROJECTION-RECONCILIATION-01: A durable mapping claim can remain stranded from its projection
+
+**Status**: 🟡 Open — registered 2026-09-26; PRE-CONSUMER
+**Severity**: P2 — operational recovery
+**Affected**: Mapping promotion interrupted after the durable claim and before the projection freeze
+**Blocks #233**: No
+
+A crash after claiming A but before freezing can be followed by an ordinary
+write that leaves the mutable projection at B. The existing protocol correctly
+fails closed: it does not repair the row and does not create a witness. The
+claim can nevertheless remain unusable until the projection agrees again or a
+separately designed reconciliation/retirement protocol is implemented. Define
+that recovery protocol before the first productive consumer; do not weaken the
+immutable claim or the no-repair behavior in #233.
 
 ### ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01: A continuity LWT racing a hard delete can leave a HEAD-less ghost `libraries` row
 

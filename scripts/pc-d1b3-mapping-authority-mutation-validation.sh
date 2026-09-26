@@ -334,6 +334,55 @@ a3_same_file_freeze_wrapper() {
 	expect_red "A3 same-file freeze wrapper has an external caller" "freezeBlockMappingProjection direct caller must be blockMappingPromotionPorts" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
 }
 
+# A4: the ports builder itself is a capability factory and may only feed the
+# public cold-path promotion helper from PromoteBlockMappingAuthority.
+a4_external_ports_freeze_bypass() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3ExternalPortsFreezeBypassMutation(db *DB, identity blockMappingIdentity) { ports := db.blockMappingPromotionPorts(nil); _, _ = ports.freeze(context.Background(), identity, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") }\n/'
+	expect_red "A4 external promotion-ports freeze bypass" "blockMappingPromotionPorts may only be called by PromoteBlockMappingAuthority" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# A5: callers cannot obtain the claim capability and manufacture a provenance
+# value inside package db, bypassing the physical-byte proof.
+a5_external_ports_forged_claim() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3ExternalPortsForgedClaimMutation(db *DB, identity blockMappingIdentity) { ports := db.blockMappingPromotionPorts(nil); proof := blockMappingProvenance{identity: identity, internalID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", evidence: BlockMappingEvidencePhysicalBytesV1}; _, _, _ = ports.claim(context.Background(), proof) }\n/'
+	expect_red "A5 external promotion-ports forged claim" "blockMappingPromotionPorts may only be called by PromoteBlockMappingAuthority" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# H5: a global SERIAL authority read must not become reachable from the
+# concrete upload conflict pre-check, even as a direct call.
+h5_upload_precheck_serial_authority_read() {
+	mutate "$WRITERS" 's/(func \(db \*DB\) getBlockIDMappingForWriteCheck\([^\n]*\) \{\n)/$1\t_, _, _ = ReadBlockMappingAuthority(context.Background(), db.Session(), orgID, representationID, externalID)\n/'
+	expect_red "H5 upload pre-check reaches Mapping Authority SERIAL reader" "upload mapping writer getBlockIDMappingForWriteCheck reaches cold-path ReadBlockMappingAuthority" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# H6: a helper and package constant cannot hide conditional CQL from the
+# transitive no-Paxos upload-path inventory.
+h6_upload_precheck_indirect_conditional_cql() {
+	mutate "$WRITERS" 's/(func \(db \*DB\) getBlockIDMappingForWriteCheck\([^\n]*\) \{\n)/$1\tif err := pcd1b3ConditionalUploadHelper(db); err != nil { return "", false, err }\n/; s/\z/\nconst pcd1b3HiddenConditionalUploadCQL = "INSERT INTO unrelated_table (id) VALUES (?) IF NOT EXISTS"\nfunc pcd1b3ConditionalUploadHelper(db *DB) error { return db.Session().Query(pcd1b3HiddenConditionalUploadCQL, "x").Exec() }\n/'
+	expect_red "H6 helper-hidden conditional CQL in upload pre-check" "upload mapping writer getBlockIDMappingForWriteCheck issues conditional CQL through" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# T17: mapping CQL is a closed-world inventory; operations other than the
+# authorized select, insert and freeze-update shapes are rejected.
+t17_truncate_mapping_table() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3TruncateMappingTableMutation(session *gocql.Session) { _ = session.Query("TRUNCATE block_id_mappings").Exec() }\n/'
+	expect_red "T17 TRUNCATE block_id_mappings" "unrecognized/dynamic block_id_mappings CQL mutation" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T18: a package var is mutable across functions and is never a constant query
+# source, even when its initializer is harmless.
+t18_mutable_global_cql_value() {
+	mutate "$WRITERS" 's/\z/\nvar pcd1b3RuntimeBlockMappingQueryMutation = "SELECT now() FROM system.local"\nfunc pcd1b3SwitchRuntimeBlockMappingQueryMutation() { pcd1b3RuntimeBlockMappingQueryMutation = "DELETE FROM block_id_mappings WHERE org_id = ?" }\nfunc pcd1b3ExecuteRuntimeBlockMappingQueryMutation(session *gocql.Session) { session.Query(pcd1b3RuntimeBlockMappingQueryMutation, "org").Exec() }\n/'
+	expect_red "T18 mutable package-global CQL value" "unresolved/dynamic block_id_mappings Query argument" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T19: a captured string write in a nested FuncLit makes a helper return
+# ambiguous; textual closure assignments cannot replace its runtime value.
+t19_nested_closure_cql_assignment() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3NestedClosureMappingHelperMutation() string { query := "DELETE FROM block_id_mappings WHERE org_id = ?"; _ = func() { query = "SELECT now() FROM system.local" }; return query }\nfunc pcd1b3NestedClosureMappingQueryMutation(session *gocql.Session) { session.Query(pcd1b3NestedClosureMappingHelperMutation(), "org").Exec() }\n/'
+	expect_red "T19 nested FuncLit CQL assignment" "unresolved/dynamic block_id_mappings Query argument" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
 # R4: LOCAL_QUORUM on an unrelated query must not satisfy the mapping reader's
 # query-chain consistency contract.
 r4_unrelated_query_has_local_quorum() {
@@ -358,6 +407,7 @@ t1_freeze_without_dominant_timestamp() {
 	STACK_STARTED=1
 	out="$(SESAMEFS_HOST_PORT=0 CASSANDRA_HOST_PORT=0 MINIO_API_HOST_PORT=0 MINIO_CONSOLE_HOST_PORT=0 FRONTEND_HOST_PORT=0 ONLYOFFICE_HOST_PORT=0 \
 		docker compose -p "$STACK_PROJECT" --profile test run --rm --build \
+        -e PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/bin:/sbin \
         -e SESAMEFS_REQUIRE_X1_NONOVERLAP_CHARACTERIZATION=0 \
         -e SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE=0 \
         go-integration-test go test -tags integration -count=1 ./internal/integration/ \
@@ -417,6 +467,13 @@ ALL_MUTATIONS=(
     r4_unrelated_query_has_local_quorum
     a2_aliased_freeze_caller
     a3_same_file_freeze_wrapper
+    a4_external_ports_freeze_bypass
+    a5_external_ports_forged_claim
+    h5_upload_precheck_serial_authority_read
+    h6_upload_precheck_indirect_conditional_cql
+    t17_truncate_mapping_table
+    t18_mutable_global_cql_value
+    t19_nested_closure_cql_assignment
 )
 
 WITH_INTEGRATION=0
@@ -437,7 +494,9 @@ case "${OSTYPE:-}" in
         ;;
 esac
 
-MSYS_NO_PATHCONV=1 docker run -d --name "$RUNNER" -v "$WORKSPACE_PATH:/build" -w /build "$TEST_IMAGE" sleep 3600 >/dev/null
+MSYS_NO_PATHCONV=1 docker run -d --name "$RUNNER" \
+    -e PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    -v "$WORKSPACE_PATH:/build" -w /build "$TEST_IMAGE" sleep 3600 >/dev/null
 for _ in $(seq 1 30); do
     if docker exec "$RUNNER" go version >/dev/null 2>&1; then
         break
@@ -453,14 +512,20 @@ baseline="$(docker exec "$RUNNER" go test ./internal/db -count=1 -run '^(TestCon
 }
 
 if [ -n "${1:-}" ]; then
-    for mutation in "${ALL_MUTATIONS[@]}"; do
-        if [ "$mutation" = "$1" ]; then
-            "$mutation"
-            restore
-            exit 0
-        fi
-    done
-    fail "unknown mutation $1"
+	while [ "$#" -gt 0 ]; do
+		selected=0
+		for mutation in "${ALL_MUTATIONS[@]}"; do
+			if [ "$mutation" = "$1" ]; then
+				"$mutation"
+				selected=1
+				break
+			fi
+		done
+		[ "$selected" -eq 1 ] || fail "unknown mutation $1"
+		shift
+	done
+	restore
+	exit 0
 fi
 
 for mutation in "${ALL_MUTATIONS[@]}"; do

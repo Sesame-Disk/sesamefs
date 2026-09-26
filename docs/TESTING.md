@@ -1138,7 +1138,7 @@ docker compose -p "$PROJECT" --profile test run --rm --build \
   go-integration-test go test -tags integration -count=1 ./internal/integration/ \
   -run '^TestBlockMappingAuthorityCertifierRealCassandra$|^TestUploadMappingWritersIssueNoAuthorityPaxosRealCassandra$'
 
-# Directed mutations (43 source legs plus real-Cassandra T1) and isolated 3-DC evidence
+# Directed mutations (50 source legs plus real-Cassandra T1) and isolated 3-DC evidence
 bash scripts/pc-d1b3-mapping-authority-mutation-validation.sh --with-integration
 bash scripts/pc-d1b3-mapping-authority-multidc-validation.sh
 

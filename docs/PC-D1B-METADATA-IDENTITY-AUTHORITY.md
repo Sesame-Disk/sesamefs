@@ -1,6 +1,6 @@
 # PC-D1B Metadata Identity Authority Decision
 
-**Status as of 2026-09-25:** DECIDED; PR #231 wires the merged primitive into production writers and deleters, PR #228 consumes those claims in the cold-path certifier, and PC-D1B.3 adds the Mapping Authority with cold-path promotion (M18/M19). The certification-window lifecycle fence and a productive consumer remain separate. This document owns
+**Status as of 2026-09-26:** DECIDED; PR #231 wires the merged primitive into production writers and deleters, PR #228 consumes those claims in the cold-path certifier, and PC-D1B.3 adds the Mapping Authority with cold-path promotion (M18/M19). The certification-window lifecycle fence and a productive consumer remain separate. This document owns
 the reasoning, the rejected alternatives and the required evidence. The
 current status of the finding lives in
 [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) and is deliberately not restated here.
@@ -197,7 +197,7 @@ The residual cases are handled explicitly:
   until the row agrees again. It is never repaired from here.
 
 **Mutation evidence.**
-`scripts/pc-d1b3-mapping-authority-mutation-validation.sh` runs 31 directed
+`scripts/pc-d1b3-mapping-authority-mutation-validation.sh` runs 50 directed
 source legs, each required to fail with its own diagnostic:
 
 - M18a: consume without a frozen projection.
@@ -223,16 +223,25 @@ source legs, each required to fail with its own diagnostic:
 - DEL1: a production DELETE is added despite the R11a prohibition.
 - A1/A2/A3: external direct calls, aliases, and same-file wrappers cannot
   bypass the single authorized `blockMappingPromotionPorts` freeze caller.
+- A4/A5: production callers cannot obtain promotion ports outside
+  `PromoteBlockMappingAuthority`, and the capabilities must flow directly
+  into the provenance-and-claim promotion helper.
 - T3/T4/D2: assembled or unresolved mapping CQL cannot escape inventory.
 - T5/T6/T7/T11/T12/T13/T16: call-site reassignment, generic helper arguments,
   runtime table identity, `Session.Query` method values, and ambiguous control
   flow (including goto-based assignment paths) cannot hide a mapping query.
 - H3/H4: the concrete upload pre-check is inventoried and rejects both CAS
   terminals and conditional CQL.
+- H5/H6: the transitive upload hot-path fence rejects cold-path authority reads
+  and helper-hidden conditional CQL.
 - T8/T9/T10/T15: `Batch.Bind`, hand-built `BatchEntry`, direct `Batch.Entries`
   writes, and `Batch.Bind` method values cannot hide a mapping statement.
 - T14: a dynamic-query allowlist's fixed table marker must reach its own Query
   callsite through a fixed initializer and suffix-only appends.
+- T17: any unrecognized CQL mentioning `block_id_mappings`, including
+  `TRUNCATE`, fails the closed-world mutation inventory.
+- T18/T19: mutable package-global queries and nested-closure writes cannot be
+  resolved as immutable CQL.
 - R3/R4: unclassified mapping readers and consistency on an unrelated query
   fail the reader contract.
 
@@ -248,7 +257,7 @@ statements. **Follow-up:** migrations added after this PR that touch
 CQL hardening is not part of this PR.
 
 With `--with-integration` it also runs T1 on real Cassandra and MinIO in a
-private Compose project. The final suite is 44/44 expected RED: the 43 source
+private Compose project. The final suite is 51/51 expected RED: the 50 source
 legs above plus T1. T1
 replaces the dominant-timestamp freeze with an ordinary rewrite. The reproducer
 that writes B between the final recheck and the witness CAS must then fail,
