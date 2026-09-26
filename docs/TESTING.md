@@ -1138,13 +1138,21 @@ docker compose -p "$PROJECT" --profile test run --rm --build \
   go-integration-test go test -tags integration -count=1 ./internal/integration/ \
   -run '^TestBlockMappingAuthorityCertifierRealCassandra$|^TestUploadMappingWritersIssueNoAuthorityPaxosRealCassandra$'
 
-# Directed mutations (50 source legs plus real-Cassandra T1) and isolated 3-DC evidence
+# Directed mutations (67 source legs plus real-Cassandra T1) and isolated 3-DC evidence
 bash scripts/pc-d1b3-mapping-authority-mutation-validation.sh --with-integration
 bash scripts/pc-d1b3-mapping-authority-multidc-validation.sh
 
 # Remove only the private project created for the commands above
 docker compose -p "$PROJECT" down --volumes --remove-orphans
 ```
+
+Final cross-audit verification (2026-09-26) ran in Docker: all 67 source
+mutations and real-Cassandra T1 were RED as required (68/68);
+`go test ./... -count=1`, `go vet ./...`, and
+`go test -race -short -timeout 20m ./...` passed. The full
+`go-integration-test` Compose profile passed in 287.127s, and the isolated
+3-DC mapping-authority harness passed cross-DC promotion, concurrent conflicts,
+SERIAL outage refusal, and recovery.
 
 The two X1/BorrowedFS variables are set to `0` only for this focused `-run`.
 The service enables those characterization gates for the full profile, and

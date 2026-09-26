@@ -6487,6 +6487,26 @@ separately designed reconciliation/retirement protocol is implemented. Define
 that recovery protocol before the first productive consumer; do not weaken the
 immutable claim or the no-repair behavior in #233.
 
+### PRE-X1 audit debt: identity claim-table CQL inventory and CAS mutation granularity
+
+**Status**: Open — follow-up / PRE-X1
+**Severity**: P2 — structural guard and evidence quality
+**Blocks #233**: No
+
+The `identity_authority_claims` guard still relies on a literal/string inventory
+that can miss a table name assembled from fragments across production files.
+Before PRE-X1, move that table to a closed-world inventory evaluated at each
+Query/Batch execution site, following the execution-site approach used for
+`block_mapping_authority_claims` in #233. Keep this separate from #233 and do
+not expand the Mapping Authority claim-table fix into the older identity claim
+guard.
+
+The H8 upload mutation also exercises several CAS terminals in one source
+mutation. Because another terminal can keep the mutation red, the result does
+not independently prove that every terminal remains inventoried. Split H8
+into one directed mutation per terminal before treating those checks as
+independent evidence. This is test debt, not a runtime blocker for #233.
+
 ### ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01: A continuity LWT racing a hard delete can leave a HEAD-less ghost `libraries` row
 
 **Status**: 🟡 Open — characterized 2026-09-23 (PC-D1B.4, R9g and R9i); PRE-GC. Supersedes the earlier id `ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`

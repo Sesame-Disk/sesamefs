@@ -197,7 +197,7 @@ The residual cases are handled explicitly:
   until the row agrees again. It is never repaired from here.
 
 **Mutation evidence.**
-`scripts/pc-d1b3-mapping-authority-mutation-validation.sh` runs 50 directed
+`scripts/pc-d1b3-mapping-authority-mutation-validation.sh` runs 67 directed
 source legs, each required to fail with its own diagnostic:
 
 - M18a: consume without a frozen projection.
@@ -226,6 +226,14 @@ source legs, each required to fail with its own diagnostic:
 - A4/A5: production callers cannot obtain promotion ports outside
   `PromoteBlockMappingAuthority`, and the capabilities must flow directly
   into the provenance-and-claim promotion helper.
+- A6: a same-file wrapper cannot expose the raw durable claim to manufactured
+  provenance.
+- A7/A8: promotion-port `freeze` and `claim` capabilities cannot escape as
+  function values.
+- A9: `blockMappingPromotionPorts` and `promoteBlockMappingAuthority` cannot
+  escape as function or method values even in their defining file.
+- A10: the integration claim helper remains pinned to exactly
+  `//go:build integration`.
 - T3/T4/D2: assembled or unresolved mapping CQL cannot escape inventory.
 - T5/T6/T7/T11/T12/T13/T16: call-site reassignment, generic helper arguments,
   runtime table identity, `Session.Query` method values, and ambiguous control
@@ -234,6 +242,10 @@ source legs, each required to fail with its own diagnostic:
   terminals and conditional CQL.
 - H5/H6: the transitive upload hot-path fence rejects cold-path authority reads
   and helper-hidden conditional CQL.
+- H7/H8/H9: upload helpers cannot hide SERIAL consistency through aliases,
+  omit any driver CAS terminal, or alias an LWT helper as a function value.
+- H10: same-package methods on non-`*DB` receivers are resolved and walked on
+  reachable upload paths; unresolved dispatch fails closed.
 - T8/T9/T10/T15: `Batch.Bind`, hand-built `BatchEntry`, direct `Batch.Entries`
   writes, and `Batch.Bind` method values cannot hide a mapping statement.
 - T14: a dynamic-query allowlist's fixed table marker must reach its own Query
@@ -242,6 +254,17 @@ source legs, each required to fail with its own diagnostic:
   `TRUNCATE`, fails the closed-world mutation inventory.
 - T18/T19: mutable package-global queries and nested-closure writes cannot be
   resolved as immutable CQL.
+- T20/T21: pointer-mutated query strings and helper-returned batch entries stay
+  in the closed-world inventory.
+- T22: CQL helper methods are resolved by receiver identity; ambiguous methods
+  fail closed.
+- T23/T24: `Query.WithTimestamp` and `Batch.WithTimestamp` cannot supersede the
+  dominant mapping freeze.
+- H11/R5: protected upload paths reject `SetConsistency`, and a productive
+  mapping read cannot override `LOCAL_QUORUM` with `SetConsistency(ONE)`.
+- I2: claim-table CQL is classified at each Query/Batch execution site, even
+  when its table name is assembled from cross-file fragments; only the exact
+  runtime INSERT and SELECT are allowed.
 - R3/R4: unclassified mapping readers and consistency on an unrelated query
   fail the reader contract.
 
@@ -257,7 +280,7 @@ statements. **Follow-up:** migrations added after this PR that touch
 CQL hardening is not part of this PR.
 
 With `--with-integration` it also runs T1 on real Cassandra and MinIO in a
-private Compose project. The final suite is 51/51 expected RED: the 50 source
+private Compose project. The final suite is 68/68 expected RED: the 67 source
 legs above plus T1. T1
 replaces the dominant-timestamp freeze with an ordinary rewrite. The reproducer
 that writes B between the final recheck and the witness CAS must then fail,

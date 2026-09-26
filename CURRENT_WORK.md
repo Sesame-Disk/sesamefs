@@ -9,27 +9,31 @@ closed on Query/Bind method values, BatchEntry and direct Batch.Entries writes,
 and rejects ambiguous CQL control flow. Dynamic-query table markers are tied to
 the exact argument reaching the callsite. The hot-path inventory includes the
 real upload pre-check; projection freeze has exactly one caller under
-`blockMappingPromotionPorts`. Docker verification for this audit is
-complete: all 50 directed source mutations plus real-Cassandra T1 were expected
-RED (51/51); the 3-DC mapping authority, outage and recovery harness passed;
-`go test ./... -count=1`, `go vet ./...`, and
-`go test -race -short -timeout 20m ./...` passed; the full
-`go-integration-test` Compose profile passed, including real-Cassandra
-certifier and upload-writer checks (`internal/integration`: 325.603s). The
-fresh 3-DC harness also passed cross-DC promotion, concurrent conflict,
-outage/recovery, and global SERIAL readiness checks. The recovery harness probes
-global SERIAL readiness after restoring the DCs before checking certification.
-The 2026-09-26 cross-audit closes the promotion-ports capability boundary,
-transitive upload no-Paxos fence, closed-world mapping CQL inventory, and mutable
-query resolver gaps. These are source-guard and evidence changes; production
-Mapping Authority behavior is unchanged.
+`blockMappingPromotionPorts`. The 2026-09-26 cross-audit closes all eight
+reported findings with source-guard and evidence changes: promotion factory and
+helper aliases, integration build-tag pinning, execution-site claim-table CQL,
+non-DB receiver methods, method identity, driver timestamp setters, and
+consistency setter overrides. Production Mapping Authority behavior is
+unchanged.
+
+Docker verification is complete: 67 directed source mutations plus real-
+Cassandra T1 were expected RED (68/68); `go test ./... -count=1`, `go vet
+./...`, and `go test -race -short -timeout 20m ./...` passed. The full
+`go-integration-test` Compose profile passed, including the real-Cassandra
+mapping certifier and upload-writer checks (`internal/integration`: 287.127s).
+The isolated 3-DC mapping-authority harness also passed cross-DC promotion,
+concurrent conflicts, outage/recovery, and global SERIAL readiness. The
+recovery harness probes global SERIAL readiness after restoring the DCs before
+checking certification.
 The PC-D1B.4 lifecycle decision from current `main` remains intact; its runtime
 and the separate GC resolver follow-up stay out of scope.
 Future migrations that touch `block_id_mappings` require explicit Mapping
 Authority review; migration hardening remains a follow-up outside this PR.
-Paired SHA-1 compatibility projection stability and claim/projection recovery
-remain PRE-CONSUMER follow-ups: `ISSUE-PCD1B-PAIRED-MAPPING-COMPATIBILITY-01`
-and `ISSUE-PCD1B-MAPPING-CLAIM-PROJECTION-RECONCILIATION-01`.
+The paired SHA-1 compatibility projection issue remains a pre-existing
+CURRENT-RUNTIME / FOLLOW-UP (`ISSUE-PCD1B-PAIRED-MAPPING-COMPATIBILITY-01`,
+does not block #233). Claim/projection reconciliation remains a separate
+PRE-CONSUMER follow-up (`ISSUE-PCD1B-MAPPING-CLAIM-PROJECTION-RECONCILIATION-01`,
+does not block #233).
 `GC_ENABLED=false` remains mandatory.
 
 **Merged PC-D1B.4 certification-window lifecycle fence — cross-audit round 4, final Paxos race characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**

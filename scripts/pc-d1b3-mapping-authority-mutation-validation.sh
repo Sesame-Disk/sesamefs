@@ -10,6 +10,7 @@ RUNNER="sesamefs-pcd1b3-mutation-runner-$$"
 PRIMITIVE=internal/db/block_mapping_authority.go
 CERTIFIER=internal/db/library_continuity_certifier.go
 WRITERS=internal/db/block_references.go
+INTEGRATION=internal/db/block_mapping_authority_integration.go
 BACKUP_SUFFIX=".pcd1b3bak.$$"
 MUTATED=()
 STACK_PROJECT="sesamefs-pcd1b3-mutation-stack-$$"
@@ -476,6 +477,68 @@ t21_helper_returned_batch_entries() {
 	expect_red "T21 helper-returned Batch.Entries mapping injection" "directly accesses gocql.Batch.Entries or an unproven .Entries receiver" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
 }
 
+# A9: declaration counts do not constrain function or method values. Neither
+# the ports factory nor the raw promotion helper may escape its direct call.
+a9_promotion_factory_and_helper_function_values() {
+	mutate "$PRIMITIVE" 's/\z/\nvar pcd1b3RawPromotionPortsValue = (*DB).blockMappingPromotionPorts\nvar pcd1b3RawPromotionHelperValue = promoteBlockMappingAuthority\n/'
+	expect_red "A9 promotion factory/helper function values" "may only be used as its authorized direct call" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# A10: the integration hook can create caller-chosen claims only while the Go
+# integration build constraint remains pinned to the exact integration tag.
+a10_integration_claim_build_constraint() {
+	mutate "$INTEGRATION" 's{\A//go:build integration\n}{}'
+	expect_red "A10 integration claim build constraint" "integration claim capability has no pinned //go:build integration constraint" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# I2: table identity must be resolved at the execution site even when a name
+# fragment is declared in another production file.
+i2_cross_file_claim_table_mutation() {
+	mutate_many "$PRIMITIVE" 's/\z/\nconst pcd1b3ClaimTableSuffixMutation = "authority_claims"\n/' "$WRITERS" 's/\z/\nfunc pcd1b3CrossFileClaimTableMutation(db *DB) { query := "DELETE FROM block_mapping_" + pcd1b3ClaimTableSuffixMutation + " WHERE org_id = ?"; _ = db.Session().Query(query, "org").Exec() }\n/'
+	expect_red "I2 cross-file claim-table mutation" "unauthorized execution of block_mapping_authority_claims" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# H10: the upload no-Paxos walker must resolve same-package receiver methods
+# on non-DB helper structs reached from an upload root.
+h10_non_db_receiver_hides_upload_lwt() {
+	mutate "$WRITERS" 's/(func \(db \*DB\) getBlockIDMappingForWriteCheck\([^\n]*\) \{\n)/$1\tpcd1b3UploadOpsMutation{db: db}.run()\n/; s/\z/\ntype pcd1b3UploadOpsMutation struct { db *DB }\nfunc (ops pcd1b3UploadOpsMutation) run() { query := ops.db.Session().Query("UPDATE unrelated SET state = ? IF EXISTS", "x"); _, _ = query.ScanCAS() }\n/'
+	expect_red "H10 LWT hidden behind non-DB receiver method" "reaches an LWT (ScanCAS)" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# T22: helper method resolution must use declaration identity. Same-name
+# methods with different receivers are unresolved until a receiver is proven.
+t22_same_name_method_cql_helpers() {
+	mutate "$WRITERS" 's/\z/\ntype pcd1b3DangerousBuilderMutation struct{}\ntype pcd1b3HarmlessBuilderMutation struct{}\nfunc (pcd1b3DangerousBuilderMutation) mappingQuery() string { return "DELETE FROM block_id_mappings WHERE org_id = ?" }\nfunc (pcd1b3HarmlessBuilderMutation) mappingQuery() string { return "SELECT now() FROM system.local" }\nfunc pcd1b3SameNameMethodCQLMutation(session *gocql.Session) { dangerous := pcd1b3DangerousBuilderMutation{}; _ = session.Query(dangerous.mappingQuery(), "org").Exec() }\n/'
+	expect_red "T22 same-name CQL helper methods" "production DELETE from block_id_mappings is prohibited by R11a" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T23: a driver timestamp override can supersede the dominant freeze even
+# while the ordinary INSERT's CQL text remains unchanged.
+t23_ordinary_query_with_timestamp() {
+	mutate "$WRITERS" 's/createdAt\)\.Exec\(\)/createdAt).WithTimestamp(BlockMappingProjectionFrozenTimestamp + 1).Exec()/'
+	expect_red "T23 ordinary Query.WithTimestamp" "block_id_mappings Query/Batch must not use WithTimestamp" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# T24: batches have the same timestamp override surface as ordinary Queries.
+t24_ordinary_batch_with_timestamp() {
+	mutate "$WRITERS" 's/\z/\nfunc pcd1b3OrdinaryMappingBatchTimestampMutation(session *gocql.Session) { batch := session.Batch(gocql.LoggedBatch); batch.Query("INSERT INTO block_id_mappings (org_id, representation_id, external_id, internal_id, created_at) VALUES (?, ?, ?, ?, ?)", "org", "plain:v1", "sha1", "sha256", time.Now()); batch.WithTimestamp(BlockMappingProjectionFrozenTimestamp + 1); _ = session.ExecuteBatch(batch) }\n/'
+	expect_red "T24 ordinary Batch.WithTimestamp" "block_id_mappings Query/Batch must not use WithTimestamp" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
+# H11: SetConsistency is an alternate driver setter and must not hide a global
+# SERIAL read on any reachable upload helper.
+h11_upload_set_consistency_serial() {
+	mutate "$WRITERS" 's/(func \(db \*DB\) getBlockIDMappingForWriteCheck\([^\n]*\) \{\n)/$1\tpcd1b3SetConsistencyUploadHelperMutation(db)\n/; s/\z/\nfunc pcd1b3SetConsistencyUploadHelperMutation(db *DB) { query := db.Session().Query("SELECT now() FROM system.local"); query.SetConsistency(gocql.Serial); _ = query.Scan(new(string)) }\n/'
+	expect_red "H11 upload SetConsistency(SERIAL)" "uses forbidden SetConsistency" '^TestBlockMappingAuthorityAcquisitionIsColdPathOnly$'
+}
+
+# R5: a later SetConsistency(ONE) cannot supersede the productive reader's
+# required LOCAL_QUORUM assignment.
+r5_mapping_reader_set_consistency_override() {
+	mutate "$WRITERS" 's/err = db\.Session\(\)\.Query\(/mappingQuery := db.Session().Query(/; s/WithContext\(ctx\)\.\n\t\tConsistency\(BlockMappingProjectionReadConsistency\)\.\n\t\tScan\(&internalID\)/WithContext(ctx).\n\t\tConsistency(BlockMappingProjectionReadConsistency)\n\tmappingQuery.SetConsistency(gocql.One)\n\terr = mappingQuery.Scan(&internalID)/'
+	expect_red "R5 mapping reader SetConsistency(ONE)" "block mapping SELECT consistency=" '^TestBlockMappingMutationsAreRepositoryWideInventoried$'
+}
+
 ALL_MUTATIONS=(
     m18a_consume_without_frozen_projection
     m18d_drop_pre_witness_mapping_recheck
@@ -535,6 +598,15 @@ ALL_MUTATIONS=(
     h9_upload_precheck_lwt_function_value_alias
     t20_pointer_alias_query_mutation
     t21_helper_returned_batch_entries
+    a9_promotion_factory_and_helper_function_values
+    a10_integration_claim_build_constraint
+    i2_cross_file_claim_table_mutation
+    h10_non_db_receiver_hides_upload_lwt
+    t22_same_name_method_cql_helpers
+    t23_ordinary_query_with_timestamp
+    t24_ordinary_batch_with_timestamp
+    h11_upload_set_consistency_serial
+    r5_mapping_reader_set_consistency_override
 )
 
 WITH_INTEGRATION=0
@@ -593,10 +665,14 @@ for mutation in "${ALL_MUTATIONS[@]}"; do
     "$mutation"
 done
 restore
-TOTAL=${#ALL_MUTATIONS[@]}
+SOURCE_TOTAL=${#ALL_MUTATIONS[@]}
+TOTAL=$SOURCE_TOTAL
 if [ "$WITH_INTEGRATION" -eq 1 ]; then
     t1_freeze_without_dominant_timestamp
     restore
     TOTAL=$((TOTAL + 1))
 fi
-echo "PC-D1B.3 M18/M19, representation, evidence, SERIAL, hot-path, capability, batch CQL, callsite and immutability contract legs are red (${TOTAL}/${TOTAL})"
+echo "PC-D1B.3 source mutation legs are RED as required (${SOURCE_TOTAL}/${SOURCE_TOTAL})"
+if [ "$WITH_INTEGRATION" -eq 1 ]; then
+	 echo "PC-D1B.3 source mutations plus real-Cassandra T1 are RED as required (${TOTAL}/${TOTAL})"
+fi
