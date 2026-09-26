@@ -286,6 +286,25 @@ func TestMigration026DeclaresPerIdentityClaimPartitionWithoutTTL(t *testing.T) {
 	assert.NotContains(t, content, "ALTER TABLE fs_objects")
 }
 
+// PC-D1B.3: the mapping-authority claim is keyed by exactly the
+// block_id_mappings identity, one Paxos partition per mapping, with no TTL and
+// no change to the mutable mapping table.
+func TestMigration027DeclaresPerMappingAuthorityClaimWithoutTTL(t *testing.T) {
+	raw, err := migrationsFS.ReadFile("migrations/027_block_mapping_authority_claims.cql")
+	require.NoError(t, err)
+	content := string(raw)
+
+	assert.Contains(t, content, "CREATE TABLE IF NOT EXISTS block_mapping_authority_claims")
+	assert.Contains(t, content, "PRIMARY KEY ((org_id, representation_id, external_id))")
+	assert.Contains(t, content, "org_id            UUID")
+	assert.Contains(t, content, "internal_id       TEXT")
+	assert.Contains(t, content, "contract_version  TEXT")
+	assert.NotContains(t, strings.ToLower(content), "default_time_to_live", "mapping claims must outlive the mutable mapping row")
+	assert.NotContains(t, strings.ToLower(content), "using ttl")
+	assert.NotContains(t, content, "DROP")
+	assert.NotContains(t, content, "ALTER TABLE block_id_mappings")
+}
+
 func TestMigration024AddsRepairReachabilityCursorColumns(t *testing.T) {
 	raw, err := migrationsFS.ReadFile("migrations/024_published_repair_reachability_cursor.cql")
 	require.NoError(t, err)

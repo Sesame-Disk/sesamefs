@@ -91,13 +91,16 @@ smallest mechanism that the exhaustive model (§11) found safe **without
 assuming that a superseded process stops writing**; every weaker variant has a
 concrete counterexample.
 
-**Scope of "only destruction falsifies a witness".** This holds against
-`main@62a2c0e0`, where no SHA-1-only file can be certified. Once Mapping
-Authority (#233) lets the certifier accept an authority-bound mapping, a later
-change of the mutable `block_id_mappings` row can make ordinary readers resolve
-a different canonical block without destroying anything. That is a separate
-PRE-CONSUMER property (`ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01`); this
-fence does not provide it.
+**Scope of "only destruction falsifies a witness".** This statement describes
+the #228 baseline (`main@62a2c0e0`), where no SHA-1-only file can be certified.
+The mapping-projection scenario recorded below as F4 was a real follow-up at
+that point: after #233, a witness could rest on authority A while a mutable
+mapping row later made ordinary readers resolve B. **PR #233 closes F4** by
+freezing the ordinary projection to the durable authority at the dominant
+timestamp, verifying its write time at EACH_QUORUM, pinning productive readers
+to LOCAL_QUORUM, and inventorying production mapping mutations and readers.
+The former PRE-CONSUMER issue `ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01` is
+therefore CLOSED by #233; PC-D1B.5 does not own or absorb it.
 
 ## 1. The question this PR answers
 
@@ -869,17 +872,15 @@ No speculative field becomes mandatory. The stored witness stays `(H, V)`.
   closed (`missing_fs_object`): the witness stays honest while HEAD is broken.
   Phase 5 and Phase 6 must be fixed before GC activation on their own; this
   PR does not absorb them.
-- **Mapping authority (PR A).** Untouched. The fence treats authority types
-  uniformly: claims are immutable and never written by the fence. Mapping rows
-  are org-scoped (shared across libraries), so a mapping deleter could not use
-  a per-library fence without fan-out; PR A must therefore keep mapping
-  authority non-destructible. No deleter exists today. The mutable
-  `block_id_mappings` row is a plain upsert: after #233 lets a witness rest on
-  mapping authority A, the row can later resolve to B for ordinary readers
-  without any destruction. That post-witness projection stability /
-  reader-authority alignment is a PRE-CONSUMER property tracked by
-  `ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01`; this fence does not cover it
-  and PC-D1B.5 does not absorb it.
+- **Mapping authority (PR A).** The fence treats authority types uniformly:
+  claims are immutable and never written by the fence. Mapping rows are
+  org-scoped (shared across libraries), so a mapping deleter could not use a
+  per-library fence without fan-out; PR A keeps mapping authority
+  non-destructible. No deleter exists today. F4 below records the former
+  mutable-projection risk from the #228 review; **PR #233 closes it** with the
+  dominant-timestamp projection freeze, EACH_QUORUM write-time verification,
+  LOCAL_QUORUM productive reads, and repository-wide mapping mutation/reader
+  guards. It is not a PC-D1B.5 responsibility.
 - **SYNC-ID-1.** Untouched. The fence assumes identities are canonical when
   they enter the system; #228 already compares fs_id keys byte-exactly.
 - **ISSUE-LIB-DELETED-FENCE-01.** Soft-delete serialization with HEAD writers
@@ -1048,7 +1049,7 @@ authority, SYNC-ID-1, soft-delete serialization, GC activation.
 | F2 `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` | `acquireHardDeleteLock`/renew/release are LWTs without `SerialConsistency`; with `serial_consistency: LOCAL_SERIAL` a restore in one DC and a cascade in another can both own the library lease | Medium (multi-DC lifecycle) | GC, PRE-GC |
 | F3 | Phase 6 items carry no library guard and no execute-time reachability recheck (scan-time keep set) | recorded under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | GC, PRE-GC |
 | F5 `ISSUE-PCD1B-STALE-TOMBSTONE-DISPLAY-METADATA-01` | A superseded generation's row tombstone at `ts(g)` also shadows display-only fs_object cells (`obj_name`, `full_path`, `mtime`) written at or before it. Reaffirmation restores the identity projection, not those cells; witness truth holds but display metadata can be lost | Medium — PRE-GC | GC / fs_objects metadata |
-| F4 `ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01` | After #233, a witness can rest on mapping authority A while the mutable `block_id_mappings` row later resolves to B for ordinary readers | High — PRE-CONSUMER | Mapping authority / consumer |
+| F4 `ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01` — **CLOSED by PR #233** | Historical #228 concern: a witness could rest on mapping authority A while ordinary readers later resolved mutable row B. #233 freezes the projection at the dominant timestamp, verifies it at EACH_QUORUM, pins productive readers to LOCAL_QUORUM, and guards the complete production mutation/reader inventory. PC-D1B.5 is not the owner. | Closed | PR #233 |
 
 ## 20. Out of scope
 

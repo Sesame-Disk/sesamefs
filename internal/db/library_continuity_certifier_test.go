@@ -383,7 +383,7 @@ func TestCertifierOrdersLivenessRevalidationAndWitness(t *testing.T) {
 	if !strings.Contains(body, "LibraryBaselineReasonLivenessNotVisible") {
 		t.Fatal("certifier must fail closed when permanent liveness is not EACH_QUORUM-visible")
 	}
-	if !strings.Contains(body, "walkContinuityTree(ctx, orgID, libraryID, representationID, rootFSID, DefaultLibraryBaselineCertificationLimits)") {
+	if !strings.Contains(body, "walkContinuityTree(ctx, orgID, libraryID, representationID, rootFSID, DefaultLibraryBaselineCertificationLimits, mappingAuthority)") {
 		t.Fatal("certifier must walk the complete reachable tree from the observed commit root")
 	}
 	if !strings.Contains(body, "ValidateMintedPhysicalLocator") || !strings.Contains(body, "ValidatePhysicalLocator") {
@@ -506,7 +506,7 @@ func TestContinuityIdentityVerificationFailsClosed(t *testing.T) {
 func TestWalkContinuityTreeTreatsEmptySHA1AsEmptyReachableTree(t *testing.T) {
 	// EMPTY_SHA1 has no fs_objects row by design; a nil session proves the
 	// walker never reads or claims a synthetic object for it.
-	dependencies, err := (&DB{}).walkContinuityTree(context.Background(), "org", "library", PlainBlockRepresentationID, continuityEmptyFSID, DefaultLibraryBaselineCertificationLimits)
+	dependencies, err := (&DB{}).walkContinuityTree(context.Background(), "org", "library", PlainBlockRepresentationID, continuityEmptyFSID, DefaultLibraryBaselineCertificationLimits, nil)
 	if err != nil || dependencies.fsObjects != 0 || len(dependencies.fsByBlock) != 0 || len(dependencies.projections) != 0 {
 		t.Fatalf("EMPTY_SHA1 root walk = %+v, %v; want an empty reachable tree", dependencies, err)
 	}

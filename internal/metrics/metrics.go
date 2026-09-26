@@ -1541,5 +1541,7 @@ func Register() {
 		LibraryContinuityCertificationUniqueBlocksTotal,
 		LibraryContinuityCertificationPermanentLivenessWritesTotal,
 		LibraryContinuityCertificationPhysicalRevalidationsTotal,
+		BlockMappingAuthorityPromotionsTotal,
+		LibraryContinuityMappingAuthorityDivergenceTotal,
 	)
 }

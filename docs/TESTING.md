@@ -1116,6 +1116,78 @@ This slice adds no mapping promotion/M18-M19, lifecycle serialization, first
 productive consumer, PC-2, historical backfill, or GC activation. It preserves
 `GC_ENABLED=false` and does not migrate a funnel.
 
+### PC-D1B.3 Mapping Authority
+
+PC-D1B.3 adds the write-once `block_mapping_authority_claims` table and the
+cold-path promotion the certifier uses for SHA-1-only dependencies (see
+[PC-D1B-METADATA-IDENTITY-AUTHORITY.md](./PC-D1B-METADATA-IDENTITY-AUTHORITY.md#pc-d1b3-mapping-authority-implementation-2026-09-23)).
+All commands run in Docker:
+
+```bash
+# Private Docker project for the PC-D1B.3 checks below
+PROJECT="sesamefs-pcd1b3-validation-$(date -u +%Y%m%d-%H%M%S)-$$"
+
+# Unit, AST and migration contracts
+docker compose -p "$PROJECT" --profile test run --rm --build --entrypoint go gotest test ./internal/db -run 'Mapping|Continuity|Certif|Migration027'
+
+# Real Cassandra + MinIO in the same private project
+SESAMEFS_HOST_PORT=0 CASSANDRA_HOST_PORT=0 MINIO_API_HOST_PORT=0 MINIO_CONSOLE_HOST_PORT=0 FRONTEND_HOST_PORT=0 ONLYOFFICE_HOST_PORT=0 \
+docker compose -p "$PROJECT" --profile test run --rm --build \
+  -e SESAMEFS_REQUIRE_X1_NONOVERLAP_CHARACTERIZATION=0 \
+  -e SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE=0 \
+  go-integration-test go test -tags integration -count=1 ./internal/integration/ \
+  -run '^TestBlockMappingAuthorityCertifierRealCassandra$|^TestUploadMappingWritersIssueNoAuthorityPaxosRealCassandra$'
+
+# Directed mutations (67 source legs plus real-Cassandra T1) and isolated 3-DC evidence
+bash scripts/pc-d1b3-mapping-authority-mutation-validation.sh --with-integration
+bash scripts/pc-d1b3-mapping-authority-multidc-validation.sh
+
+# Remove only the private project created for the commands above
+docker compose -p "$PROJECT" down --volumes --remove-orphans
+```
+
+Final cross-audit verification (2026-09-26) ran in Docker: all 67 source
+mutations and real-Cassandra T1 were RED as required (68/68);
+`go test ./... -count=1`, `go vet ./...`, and
+`go test -race -short -timeout 20m ./...` passed. The full
+`go-integration-test` Compose profile passed in 287.127s, and the isolated
+3-DC mapping-authority harness passed cross-DC promotion, concurrent conflicts,
+SERIAL outage refusal, and recovery.
+
+The two X1/BorrowedFS variables are set to `0` only for this focused `-run`.
+The service enables those characterization gates for the full profile, and
+they fail any filtered run that does not include their legs.
+
+The real-Cassandra tests cover these cases:
+
+- No mutable mapping, a mapping converged on bytes that do not hash to the
+  external SHA-1, or hash-valid bytes from another representation, stays
+  `identity_unproven` with no claim.
+- A provable mapping is claimed, its projection is frozen, and the library
+  certifies.
+- These ordinary writes after promotion are all inert, and certification
+  resolves only A:
+  - a later write;
+  - a late pre-fence write carrying an older timestamp;
+  - a `DELETE`;
+  - a write racing certification through `AfterLiveness`;
+  - a write between the final recheck and the witness CAS through
+    `BeforeWitnessCAS`.
+- A claim whose projection diverged before it was frozen, a claim with
+  unsupported evidence, or a claim whose block moved to another representation
+  is `identity_conflict` with no witness and no repair.
+- The upload mapping writers issue no LWT or authority statement on an
+  observed session.
+
+`--with-integration` adds T1. It rebuilds the integration image with the freeze
+downgraded to an ordinary-timestamp rewrite, and requires the recheck-to-CAS
+reproducer to fail because readers resolve B after the witness.
+
+The 3-DC runner uses the `sesamefs-pcd1b3-*` prefix. It runs
+MAPPING-3DC-1/1b/2/4/4b/5 plus the edge tests in one leg, then MAPPING-3DC-3 in
+three phases: prepare, a global-`SERIAL` outage with dc-eu and dc-asia stopped,
+and recovery. `GC_ENABLED=false` is unchanged.
+
 Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
 G3 canonical retirement merged (#212), a later integration run can hit
 `409 block_delete_in_progress` when it re-uploads a SHA-256 that GC already

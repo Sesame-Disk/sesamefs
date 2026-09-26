@@ -125,6 +125,10 @@ type continuityDependencies struct {
 	fsByBlock   map[string]map[string]struct{}
 	projections map[string]FSObjectProjection
 	fsObjects   int
+	// sha1Mappings records each SHA-1-only dependency's consumed mapping
+	// authority so the pre-witness pass can recheck that its projection is
+	// still frozen and its canonical block still in this representation.
+	sha1Mappings map[string]string
 }
 
 type continuityDirectoryEntry struct {
@@ -156,6 +160,41 @@ type continuityTreeWalker struct {
 	dependencies   continuityDependencies
 	treeEdges      int
 	blockRefs      int
+	// mappingAuthority resolves SHA-1-only dependencies. Nil means no mapping
+	// authority is reachable, so every SHA-1-only dependency stays unproven.
+	mappingAuthority continuityMappingAuthority
+	mappingResolved  map[string]string
+}
+
+// continuityMappingAuthority is the certifier's view of the PC-D1B.3 Mapping
+// Authority: cold-path acquisition of the durable claim plus the projection
+// freeze, a read of the ordinary projection and whether it is still frozen to
+// the claim, and the representation of the canonical block the claim names.
+type continuityMappingAuthority interface {
+	promote(ctx context.Context, orgID, representationID, externalID string) (BlockMappingPromotionResult, error)
+	readProjection(ctx context.Context, orgID, representationID, externalID string) (internalID string, frozen, found bool, err error)
+	canonicalRepresentation(ctx context.Context, orgID, blockID string) (representationID string, found bool, err error)
+}
+
+type dbContinuityMappingAuthority struct {
+	db             *DB
+	storageManager *storage.Manager
+}
+
+func (a dbContinuityMappingAuthority) promote(ctx context.Context, orgID, representationID, externalID string) (BlockMappingPromotionResult, error) {
+	return a.db.PromoteBlockMappingAuthority(ctx, a.storageManager, orgID, representationID, externalID)
+}
+
+func (a dbContinuityMappingAuthority) readProjection(ctx context.Context, orgID, representationID, externalID string) (string, bool, bool, error) {
+	return ReadBlockMappingProjection(ctx, a.db.Session(), orgID, representationID, externalID)
+}
+
+func (a dbContinuityMappingAuthority) canonicalRepresentation(ctx context.Context, orgID, blockID string) (string, bool, error) {
+	row, found, err := readBlockRepairAuthorityContextFn(ctx, a.db, orgID, blockID, BlockAuthorityStrong)
+	if err != nil || !found {
+		return "", found, err
+	}
+	return row.RepresentationID, true, nil
 }
 
 type libraryBaselineCertifierTestHooksContextKey struct{}
@@ -228,7 +267,8 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 	rootFSID := commitProjection.RootFSID
 	result.CommitsWalked = 1
 
-	dependencies, err := db.walkContinuityTree(ctx, orgID, libraryID, representationID, rootFSID, DefaultLibraryBaselineCertificationLimits)
+	mappingAuthority := dbContinuityMappingAuthority{db: db, storageManager: storageManager}
+	dependencies, err := db.walkContinuityTree(ctx, orgID, libraryID, representationID, rootFSID, DefaultLibraryBaselineCertificationLimits, mappingAuthority)
 	result.FSObjectsWalked = dependencies.fsObjects
 	result.UniqueBlocks = len(dependencies.fsByBlock)
 	if err != nil {
@@ -472,6 +512,11 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 			return result
 		}
 	}
+	if err := revalidateContinuityMappingAuthority(ctx, mappingAuthority, orgID, representationID, dependencies.sha1Mappings); err != nil {
+		outcome, reason := classifyContinuityDependencyError(err)
+		result.finish(outcome, reason, err)
+		return result
+	}
 
 	if testHooks.beforeWitnessCAS != nil {
 		testHooks.beforeWitnessCAS(ctx, orgID, libraryID, observedHead)
@@ -661,7 +706,7 @@ func sameContinuityFSObjectProjection(left, right FSObjectProjection) bool {
 	return leftErr == nil && rightErr == nil && leftDigest == rightDigest
 }
 
-func (database *DB) walkContinuityTree(ctx context.Context, orgID, libraryID, representationID, rootFSID string, limits LibraryBaselineCertificationLimits) (continuityDependencies, error) {
+func (database *DB) walkContinuityTree(ctx context.Context, orgID, libraryID, representationID, rootFSID string, limits LibraryBaselineCertificationLimits, mappingAuthority continuityMappingAuthority) (continuityDependencies, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -682,10 +727,14 @@ func (database *DB) walkContinuityTree(ctx context.Context, orgID, libraryID, re
 		visited:        make(map[string]struct{}),
 		active:         make(map[string]struct{}),
 		dependencies:   dependencies,
+
+		mappingAuthority: mappingAuthority,
+		mappingResolved:  make(map[string]string),
 	}
 	if err := walker.visit(rootFSID, 0); err != nil {
 		return walker.dependencies, err
 	}
+	walker.dependencies.sha1Mappings = walker.mappingResolved
 	return walker.dependencies, nil
 }
 
@@ -933,13 +982,18 @@ func (w *continuityTreeWalker) resolveBlockIDs(internalIDs, externalIDs []string
 		return nil, err
 	}
 	if len(externalIDs) == 0 {
+		resolved := make([]string, 0, len(storedIDs))
 		for _, blockID := range storedIDs {
-			if IsSHA1BlockID(blockID) {
-				return nil, fmt.Errorf("%w: SHA-1 block %s requires unauthoritative mapping", errContinuityIdentityUnproven, blockID)
+			if !IsSHA1BlockID(blockID) {
+				return nil, fmt.Errorf("%w: canonical block ids require an authority-bound paired projection", errContinuityMalformedTree)
 			}
-			return nil, fmt.Errorf("%w: canonical block ids require an authority-bound paired projection", errContinuityMalformedTree)
+			canonicalID, err := w.resolveSHA1MappingAuthority(blockID)
+			if err != nil {
+				return nil, err
+			}
+			resolved = append(resolved, canonicalID)
 		}
-		return []string{}, nil
+		return resolved, nil
 	}
 	if len(internalIDs) == 0 || len(internalIDs) != len(externalIDs) {
 		return nil, fmt.Errorf("%w: canonical ids are not authority-bound to the logical ids", errContinuityIdentityUnproven)
@@ -961,6 +1015,115 @@ func (w *continuityTreeWalker) resolveBlockIDs(internalIDs, externalIDs []string
 		resolved = append(resolved, canonicalID)
 	}
 	return resolved, nil
+}
+
+// resolveSHA1MappingAuthority resolves one SHA-1-only dependency through the
+// durable Mapping Authority, acquiring it on the cold path when absent. Only a
+// consumable promotion counts: a valid claim (semantic provenance) whose
+// ordinary projection is frozen to it (temporal authority), so no ordinary
+// write can later make readers resolve elsewhere. The canonical block must
+// still belong to this library's representation. The mutable row is never
+// consumed as the resolution and a diverged row is never repaired.
+func (w *continuityTreeWalker) resolveSHA1MappingAuthority(externalID string) (string, error) {
+	if resolvedID, ok := w.mappingResolved[externalID]; ok {
+		return resolvedID, nil
+	}
+	if w.mappingAuthority == nil {
+		return "", fmt.Errorf("%w: SHA-1 block %s has no mapping authority", errContinuityIdentityUnproven, externalID)
+	}
+	promotion, err := w.mappingAuthority.promote(w.ctx, w.orgID, w.representation, externalID)
+	resolvedID, consumable := promotion.ConsumableInternalID()
+	if !consumable {
+		return "", classifyMappingPromotionFailure(externalID, promotion, err)
+	}
+	if err := checkMappedBlockRepresentation(w.ctx, w.mappingAuthority, w.orgID, w.representation, externalID, resolvedID, false); err != nil {
+		return "", err
+	}
+	if w.mappingResolved == nil {
+		w.mappingResolved = make(map[string]string)
+	}
+	w.mappingResolved[externalID] = resolvedID
+	return resolvedID, nil
+}
+
+func classifyMappingPromotionFailure(externalID string, promotion BlockMappingPromotionResult, err error) error {
+	if _, claimed := promotion.claimedInternalID(); claimed {
+		if promotion.Projection == BlockMappingProjectionDiverged {
+			metrics.LibraryContinuityMappingAuthorityDivergenceTotal.Inc()
+			return fmt.Errorf("%w: SHA-1 block %s ordinary mapping diverges from its authority: %v", errContinuityIdentityConflict, externalID, err)
+		}
+		return fmt.Errorf("%w: SHA-1 block %s mapping projection is %s: %v", errContinuityIdentityUnavailable, externalID, promotion.Projection, err)
+	}
+	switch promotion.Outcome {
+	case BlockMappingAuthorityUnproven:
+		return fmt.Errorf("%w: SHA-1 block %s has no proven mapping authority: %v", errContinuityIdentityUnproven, externalID, err)
+	case BlockMappingAuthorityConflict:
+		return fmt.Errorf("%w: SHA-1 block %s mapping authority is unusable: %v", errContinuityIdentityConflict, externalID, err)
+	default:
+		return fmt.Errorf("%w: SHA-1 block %s mapping authority is %s: %v", errContinuityIdentityUnavailable, externalID, promotion.Outcome, err)
+	}
+}
+
+// checkMappedBlockRepresentation binds a consumed mapping authority to this
+// library's representation domain: the canonical block it names must still
+// carry the same representation_id. A missing row during the walk is left to
+// the physical proof (missing_block); before the witness it fails closed.
+func checkMappedBlockRepresentation(ctx context.Context, authority continuityMappingAuthority, orgID, representationID, externalID, blockID string, requireRow bool) error {
+	blockRepresentationID, found, err := authority.canonicalRepresentation(ctx, orgID, blockID)
+	if err != nil {
+		return fmt.Errorf("%w: read canonical block %s representation: %v", errContinuityIdentityUnavailable, blockID, err)
+	}
+	if !found {
+		if requireRow {
+			return fmt.Errorf("%w: canonical block %s for SHA-1 %s disappeared before witness", errContinuityIdentityConflict, blockID, externalID)
+		}
+		return nil
+	}
+	if blockRepresentationID != representationID {
+		return fmt.Errorf("%w: canonical block %s for SHA-1 %s belongs to representation %q, not %q", errContinuityIdentityConflict, blockID, externalID, blockRepresentationID, representationID)
+	}
+	return nil
+}
+
+// checkFrozenMappingProjection requires the ordinary row readers use to still
+// resolve to the authority at the frozen timestamp.
+func checkFrozenMappingProjection(ctx context.Context, authority continuityMappingAuthority, orgID, representationID, externalID, authoritativeID string) error {
+	mappedID, frozen, found, err := authority.readProjection(ctx, orgID, representationID, externalID)
+	if err != nil {
+		return fmt.Errorf("%w: read mapping projection %s: %v", errContinuityIdentityUnavailable, externalID, err)
+	}
+	if !found || !frozen || NormalizeBlockID(mappedID) != authoritativeID {
+		metrics.LibraryContinuityMappingAuthorityDivergenceTotal.Inc()
+		return fmt.Errorf("%w: SHA-1 block %s projection is %q (found=%t frozen=%t), authority is %s", errContinuityIdentityConflict, externalID, mappedID, found, frozen, authoritativeID)
+	}
+	return nil
+}
+
+// revalidateContinuityMappingAuthority repeats, immediately before the witness,
+// the checks that make a consumed mapping safe: the ordinary projection is
+// still frozen to the authority and the canonical block still belongs to this
+// representation. The claims themselves are write-once and are not re-read.
+func revalidateContinuityMappingAuthority(ctx context.Context, authority continuityMappingAuthority, orgID, representationID string, mappings map[string]string) error {
+	if len(mappings) == 0 {
+		return nil
+	}
+	if authority == nil {
+		return fmt.Errorf("%w: mapping authority unavailable for final revalidation", errContinuityIdentityUnavailable)
+	}
+	externalIDs := make([]string, 0, len(mappings))
+	for externalID := range mappings {
+		externalIDs = append(externalIDs, externalID)
+	}
+	sort.Strings(externalIDs)
+	for _, externalID := range externalIDs {
+		if err := checkFrozenMappingProjection(ctx, authority, orgID, representationID, externalID, mappings[externalID]); err != nil {
+			return fmt.Errorf("before witness: %w", err)
+		}
+		if err := checkMappedBlockRepresentation(ctx, authority, orgID, representationID, externalID, mappings[externalID], true); err != nil {
+			return fmt.Errorf("before witness: %w", err)
+		}
+	}
+	return nil
 }
 
 func validateCanonicalBlockMapping(authoritativeID, mappedID string, found bool) error {

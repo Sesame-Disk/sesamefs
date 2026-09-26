@@ -53,4 +53,19 @@ var (
 			Help: "Exact physical-authority revalidations performed by certification.",
 		},
 	)
+
+	BlockMappingAuthorityPromotionsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "block_mapping_authority_promotions_total",
+			Help: "Cold-path SHA-1 to SHA-256 mapping-authority promotions by outcome.",
+		},
+		[]string{"outcome"},
+	)
+
+	LibraryContinuityMappingAuthorityDivergenceTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "library_continuity_mapping_authority_divergence_total",
+			Help: "SHA-1 dependencies whose mutable block_id_mappings row disagreed with the durable mapping authority during certification.",
+		},
+	)
 )

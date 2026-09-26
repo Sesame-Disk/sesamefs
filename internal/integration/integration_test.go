@@ -71,7 +71,9 @@ func TestMain(m *testing.M) {
 		os.Getenv("SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_UNAVAILABLE_DC_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_PARTIAL_FS_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_IDENTITY_DIVERGENCE_EVIDENCE") == "1" ||
-		os.Getenv("SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_IDENTITY_UNAVAILABLE_EVIDENCE") == "1"
+		os.Getenv("SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_IDENTITY_UNAVAILABLE_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_BLOCK_MAPPING_AUTHORITY_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_BLOCK_MAPPING_AUTHORITY_UNAVAILABLE_EVIDENCE") == "1"
 	baseURL = os.Getenv("SESAMEFS_URL")
 	if baseURL == "" {
 		baseURL = "http://localhost:3000"
@@ -203,6 +205,18 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv(libraryBaselineCertifierPartialFSEvidenceEnv) == "1" && !libraryBaselineCertifierPartialFSEvidence {
 		fmt.Println(libraryBaselineCertifierPartialFSEvidenceEnv + "=1 requires the real 3-DC partial reachable fs_object fail-closed leg (TestLibraryBaselineCertifierPartialFSObject3DC)")
+		if code == 0 {
+			code = 1
+		}
+	}
+	if os.Getenv(blockMappingAuthorityEvidenceEnv) == "1" && !blockMappingAuthorityEvidence {
+		fmt.Println(blockMappingAuthorityEvidenceEnv + "=1 requires the real 3-DC mapping-authority matrix (TestBlockMappingAuthority3DC)")
+		if code == 0 {
+			code = 1
+		}
+	}
+	if os.Getenv(blockMappingAuthorityUnavailableEvidenceEnv) == "1" && !blockMappingAuthorityUnavailableEvidence {
+		fmt.Println(blockMappingAuthorityUnavailableEvidenceEnv + "=1 requires the real 3-DC mapping-authority outage leg (TestBlockMappingAuthorityUnavailable3DC)")
 		if code == 0 {
 			code = 1
 		}
