@@ -49,6 +49,7 @@ func TestLibraryContinuityAuthorityCQLContracts(t *testing.T) {
 		"SET continuity_certified_head_commit_id = ?, continuity_contract_version = ?",
 		"IF head_commit_id = ?",
 		"AND deleted_at = null",
+		"AND continuity_destruction_epoch = ?",
 		"SerialConsistency(LibraryHeadSerialConsistency)",
 	} {
 		if !strings.Contains(baseline, needle) {
@@ -66,6 +67,7 @@ func TestLibraryContinuityAuthorityCQLContracts(t *testing.T) {
 		"AND continuity_certified_head_commit_id = ?",
 		"AND continuity_contract_version = ?",
 		"AND deleted_at = null",
+		"AND continuity_destruction_epoch = ?",
 		"SerialConsistency(LibraryHeadSerialConsistency)",
 	} {
 		if !strings.Contains(advance, needle) {

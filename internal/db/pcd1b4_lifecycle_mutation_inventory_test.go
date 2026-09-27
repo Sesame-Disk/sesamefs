@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"io/fs"
@@ -30,11 +31,12 @@ import (
 type pcd1b4LifecycleKind string
 
 const (
-	pcd1b4SoftDelete    pcd1b4LifecycleKind = "soft-delete"
-	pcd1b4Restore       pcd1b4LifecycleKind = "restore"
-	pcd1b4RowDelete     pcd1b4LifecycleKind = "row-delete"
-	pcd1b4WitnessWrite  pcd1b4LifecycleKind = "witness-write"
-	pcd1b4LibraryInsert pcd1b4LifecycleKind = "library-create"
+	pcd1b4SoftDelete        pcd1b4LifecycleKind = "soft-delete"
+	pcd1b4Restore           pcd1b4LifecycleKind = "restore"
+	pcd1b4RowDelete         pcd1b4LifecycleKind = "row-delete"
+	pcd1b4WitnessWrite      pcd1b4LifecycleKind = "witness-write"
+	pcd1b4DestructionIntent pcd1b4LifecycleKind = "destruction-intent"
+	pcd1b4LibraryInsert     pcd1b4LifecycleKind = "library-create"
 	// A raw block_references delete outside RemoveBlockReference would bypass
 	// the fs: reference destroyer inventory.
 	pcd1b4ReferenceDelete pcd1b4LifecycleKind = "reference-delete"
@@ -90,6 +92,7 @@ var pcd1b4ExpectedLifecycleStatements = []pcd1b4LifecycleSite{
 	{path: "internal/db/library_continuity.go", decl: "CommitLibraryContinuityWitness", kind: pcd1b4WitnessWrite, role: pcd1b4PredicateEpoch},
 	{path: "internal/db/library_continuity.go", decl: "CommitLibraryContinuityWitnessContext", kind: pcd1b4WitnessWrite, role: pcd1b4PredicateEpoch},
 	{path: "internal/db/library_continuity.go", decl: "AdvanceLibraryCertifiedFrontier", kind: pcd1b4WitnessWrite, role: pcd1b4PredicateEpoch},
+	{path: "internal/db/library_destruction_fence.go", decl: "BeginDestructionIntent", kind: pcd1b4DestructionIntent, role: pcd1b4Participant},
 	// The single raw block_references delete; every caller is inventoried below.
 	{path: "internal/db/block_references.go", decl: "DB.RemoveBlockReference", kind: pcd1b4ReferenceDelete, role: pcd1b4Participant},
 }
@@ -164,6 +167,24 @@ func pcd1b4SetClauseAssignsDeletedAt(prepared string) bool {
 	return false
 }
 
+func pcd1b4SetClauseAssignsDestructionEpoch(prepared string) bool {
+	for _, loc := range pcd1b4UpdateLibrariesPattern.FindAllStringIndex(prepared, -1) {
+		rest := prepared[loc[1]:]
+		set := pc0SETKeywordPattern.FindStringIndex(rest)
+		if set == nil {
+			continue
+		}
+		clause := rest[set[1]:]
+		if where := pc0WHEREKeywordPattern.FindStringIndex(clause); where != nil {
+			clause = clause[:where[0]]
+		}
+		if pcd1b4FenceColumnPattern.MatchString(clause) {
+			return true
+		}
+	}
+	return false
+}
+
 func pcd1b4ClassifyStatement(statement string) []pcd1b4LifecycleKind {
 	prepared := pc0PreparedCQL(statement)
 	var kinds []pcd1b4LifecycleKind
@@ -176,7 +197,9 @@ func pcd1b4ClassifyStatement(statement string) []pcd1b4LifecycleKind {
 	if pcd1b4RowDeletePattern.MatchString(prepared) {
 		kinds = append(kinds, pcd1b4RowDelete)
 	}
-	if pcd1b4WitnessWritePattern.MatchString(prepared) {
+	if pcd1b4SetClauseAssignsDestructionEpoch(prepared) {
+		kinds = append(kinds, pcd1b4DestructionIntent)
+	} else if pcd1b4WitnessWritePattern.MatchString(prepared) {
 		kinds = append(kinds, pcd1b4WitnessWrite)
 	}
 	if pcd1b4ReferenceDeletePattern.MatchString(prepared) {
@@ -396,17 +419,34 @@ func TestPCD1B4DestroyerCallSitesAreInventoried(t *testing.T) {
 	}
 }
 
-// No production code writes the future fence columns yet. PC-D1B.5 introduces
-// them; this guard makes that introduction a deliberate, reviewed change.
-func TestPCD1B4FenceColumnsAreNotYetWritten(t *testing.T) {
+// Every production CQL statement that mentions E/P/S is confined to the
+// SERIAL capture/intent/completion primitives and the epoch-predicated witness
+// LWTs. New references fail closed until their authority and serial domain are
+// inventoried here.
+func TestPCD1B5FenceColumnsStayInsideAuthorizedPrimitives(t *testing.T) {
 	scan := pcd1b4ScanSource(t, "internal", "cmd")
-	if len(scan.fenceWrites) != 0 {
-		keys := make([]string, 0, len(scan.fenceWrites))
-		for key := range scan.fenceWrites {
-			keys = append(keys, key)
+	authorized := map[string]bool{
+		"internal/db/library_destruction_fence.go:CaptureDestructionFence":        true,
+		"internal/db/library_destruction_fence.go:BeginDestructionIntent":         true,
+		"internal/db/library_destruction_fence.go:CompleteDestructionIntent":      true,
+		"internal/db/library_continuity.go:libraryContinuityCASResult":            true,
+		"internal/db/library_continuity.go:CommitLibraryContinuityWitness":        true,
+		"internal/db/library_continuity.go:CommitLibraryContinuityWitnessContext": true,
+		"internal/db/library_continuity.go:AdvanceLibraryCertifiedFrontier":       true,
+	}
+	var drift []string
+	for key, count := range scan.fenceWrites {
+		if !authorized[key] || count != 1 {
+			drift = append(drift, fmt.Sprintf("%s (CQL statements=%d)", key, count))
 		}
-		sort.Strings(keys)
-		t.Fatalf("PC-D1B.4 LIFECYCLE: fence columns appear in production code %v; update the PC-D1B.4 inventory and the ADR in the runtime PR", keys)
+		delete(authorized, key)
+	}
+	for key := range authorized {
+		drift = append(drift, key+" (missing fence CQL)")
+	}
+	if len(drift) != 0 {
+		sort.Strings(drift)
+		t.Fatalf("PC-D1B.5 FENCE: E/P/S CQL escaped its authorized global-SERIAL primitives: %s", strings.Join(drift, ", "))
 	}
 }
 

@@ -27,6 +27,7 @@ type LibraryContinuityCASResult struct {
 	CurrentHeadCommitID          string
 	CurrentCertifiedHeadCommitID *string
 	CurrentContractVersion       *string
+	CurrentDestructionEpoch      *gocql.UUID
 }
 
 var (
@@ -73,6 +74,10 @@ func libraryContinuityCASResult(applied bool, err error, state map[string]interf
 		versionCopy := version
 		result.CurrentContractVersion = &versionCopy
 	}
+	if epoch, ok := state["continuity_destruction_epoch"].(gocql.UUID); ok {
+		epochCopy := epoch
+		result.CurrentDestructionEpoch = &epochCopy
+	}
 	return result
 }
 
@@ -85,7 +90,7 @@ func libraryContinuityCASResult(applied bool, err error, state map[string]interf
 // A predicate miss is NOT_APPLIED. Any Cassandra error, including a timeout
 // or RequestErrCASWriteUnknown, is UNKNOWN and must not be treated as
 // certification.
-func CommitLibraryContinuityWitness(session *gocql.Session, orgID, libraryID, observedHead, contractVersion string) (LibraryContinuityCASResult, error) {
+func CommitLibraryContinuityWitness(session *gocql.Session, orgID, libraryID, observedHead string, observedEpoch *gocql.UUID, contractVersion string) (LibraryContinuityCASResult, error) {
 	if session == nil {
 		return LibraryContinuityCASResult{Outcome: LibraryContinuityCASUnknown}, fmt.Errorf("%w: nil Cassandra session", ErrInvalidLibraryContinuityInput)
 	}
@@ -100,7 +105,8 @@ func CommitLibraryContinuityWitness(session *gocql.Session, orgID, libraryID, ob
 		WHERE org_id = ? AND library_id = ?
 		IF head_commit_id = ?
 		AND deleted_at = null
-	`, observedHead, contractVersion, orgID, libraryID, observedHead).
+		AND continuity_destruction_epoch = ?
+	`, observedHead, contractVersion, orgID, libraryID, observedHead, observedEpoch).
 		SerialConsistency(LibraryHeadSerialConsistency).
 		MapScanCAS(state)
 	result := libraryContinuityCASResult(applied, err, state)
@@ -118,7 +124,7 @@ func CommitLibraryContinuityWitness(session *gocql.Session, orgID, libraryID, ob
 // This is a DB authority primitive only; no current HEAD writer or productive
 // publication funnel calls it. PC-D1B must complete the proof precondition
 // before a future caller uses it.
-func AdvanceLibraryCertifiedFrontier(session *gocql.Session, orgID, libraryID, observedHead, nextHead, contractVersion string) (LibraryContinuityCASResult, error) {
+func AdvanceLibraryCertifiedFrontier(session *gocql.Session, orgID, libraryID, observedHead, nextHead string, observedEpoch *gocql.UUID, contractVersion string) (LibraryContinuityCASResult, error) {
 	if session == nil {
 		return LibraryContinuityCASResult{Outcome: LibraryContinuityCASUnknown}, fmt.Errorf("%w: nil Cassandra session", ErrInvalidLibraryContinuityInput)
 	}
@@ -138,7 +144,8 @@ func AdvanceLibraryCertifiedFrontier(session *gocql.Session, orgID, libraryID, o
 		AND continuity_certified_head_commit_id = ?
 		AND continuity_contract_version = ?
 		AND deleted_at = null
-	`, nextHead, nextHead, contractVersion, orgID, libraryID, observedHead, observedHead, contractVersion).
+		AND continuity_destruction_epoch = ?
+	`, nextHead, nextHead, contractVersion, orgID, libraryID, observedHead, observedHead, contractVersion, observedEpoch).
 		SerialConsistency(LibraryHeadSerialConsistency).
 		MapScanCAS(state)
 	result := libraryContinuityCASResult(applied, err, state)
@@ -152,7 +159,7 @@ func AdvanceLibraryCertifiedFrontier(session *gocql.Session, orgID, libraryID, o
 // CommitLibraryContinuityWitness. The LWT is intentionally identical: callers
 // must prove the complete dependency contract before entering this CAS, and an
 // ambiguous result remains UNKNOWN until the certifier settles it separately.
-func CommitLibraryContinuityWitnessContext(ctx context.Context, session *gocql.Session, orgID, libraryID, observedHead, contractVersion string) (LibraryContinuityCASResult, error) {
+func CommitLibraryContinuityWitnessContext(ctx context.Context, session *gocql.Session, orgID, libraryID, observedHead string, observedEpoch *gocql.UUID, contractVersion string) (LibraryContinuityCASResult, error) {
 	if session == nil {
 		return LibraryContinuityCASResult{Outcome: LibraryContinuityCASUnknown}, fmt.Errorf("%w: nil Cassandra session", ErrInvalidLibraryContinuityInput)
 	}
@@ -173,7 +180,8 @@ func CommitLibraryContinuityWitnessContext(ctx context.Context, session *gocql.S
 		WHERE org_id = ? AND library_id = ?
 		IF head_commit_id = ?
 		AND deleted_at = null
-	`, observedHead, contractVersion, orgID, libraryID, observedHead).
+		AND continuity_destruction_epoch = ?
+	`, observedHead, contractVersion, orgID, libraryID, observedHead, observedEpoch).
 		WithContext(ctx).
 		SerialConsistency(LibraryHeadSerialConsistency).
 		MapScanCAS(state)

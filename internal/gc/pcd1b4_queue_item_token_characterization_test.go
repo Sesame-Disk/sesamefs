@@ -1,8 +1,6 @@
 package gc
 
 import (
-	"bytes"
-	"encoding/binary"
 	"testing"
 	"time"
 
@@ -30,6 +28,17 @@ func TestPCD1B4Characterization_QueueItemIdentityCollidesAcrossUnits(t *testing.
 		if units[i].Identity() != units[0].Identity() {
 			t.Fatalf("CURRENT: distinct destruction units share Identity() on main; unit %d now differs (%+v vs %+v). Update the PC-D1B.4 token tuple rationale", i, units[i].Identity(), units[0].Identity())
 		}
+	}
+	tokens := make(map[uuid.UUID]struct{}, len(units))
+	for _, item := range units {
+		token, err := DestructionTokenV1(item)
+		if err != nil {
+			t.Fatalf("derive durable token: %v", err)
+		}
+		if _, duplicate := tokens[token]; duplicate {
+			t.Fatalf("distinct durable queue items collided on destruction token %s", token)
+		}
+		tokens[token] = struct{}{}
 	}
 }
 
@@ -77,6 +86,10 @@ func TestPCD1B4Characterization_PersistedIdentityAtSurvivesRetry(t *testing.T) {
 			t.Fatalf("persisted identity_at = %v, want durable fallback %v", item.IdentityAt, queuedAt)
 		}
 	}
+	firstToken, err := DestructionTokenV1(persisted[0])
+	if err != nil {
+		t.Fatalf("derive persisted queue token: %v", err)
+	}
 	if persisted[0].IdentityAt != persisted[1].IdentityAt || persisted[0].ItemID == persisted[1].ItemID {
 		t.Fatal("test precondition: distinct durable items share identity_at but retain distinct item identities")
 	}
@@ -90,50 +103,34 @@ func TestPCD1B4Characterization_PersistedIdentityAtSurvivesRetry(t *testing.T) {
 		t.Fatalf("queue rows after retry = %d, want 2", len(afterRetry))
 	}
 	for _, item := range afterRetry {
-		if item.ItemID == "commit-1" && (!item.IdentityAt.Equal(firstIdentityAt) || item.QueuedAt.Equal(queuedAt)) {
-			t.Fatalf("retry must move queued_at but preserve durable identity_at; got %+v", item)
+		if item.ItemID == "commit-1" {
+			if !item.IdentityAt.Equal(firstIdentityAt) || item.QueuedAt.Equal(queuedAt) {
+				t.Fatalf("retry must move queued_at but preserve durable identity_at; got %+v", item)
+			}
+			retriedToken, tokenErr := DestructionTokenV1(item)
+			if tokenErr != nil || retriedToken != firstToken {
+				t.Fatalf("retry token = %s, %v; want stable token %s", retriedToken, tokenErr, firstToken)
+			}
 		}
 	}
 }
 
-func encodePCD1B4LengthDelimitedV1(fields ...[]byte) []byte {
-	var encoded bytes.Buffer
-	for _, field := range fields {
-		var length [4]byte
-		binary.BigEndian.PutUint32(length[:], uint32(len(field)))
-		_, _ = encoded.Write(length[:])
-		_, _ = encoded.Write(field)
+func TestDestructionTokenRejectsUnpersistedIdentity(t *testing.T) {
+	item := QueueItem{
+		OrgID: uuid.New(), LibraryID: uuid.New(), ItemType: ItemCommit,
+		ItemID: "commit-unpersisted", QueuedAt: time.Now(),
 	}
-	return encoded.Bytes()
+	if _, err := DestructionTokenV1(item); err == nil {
+		t.Fatal("destruction token must require the persisted identity_at")
+	}
 }
-
-func encodePCD1B4TimestampMillis(at time.Time) []byte {
-	var encoded [8]byte
-	binary.BigEndian.PutUint64(encoded[:], uint64(at.UTC().UnixMilli()))
-	return encoded[:]
-}
-
-const pcd1b4DestructionTokenNamespaceV1 = "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
 
 func pcd1b4DestructionTokenV1(item QueueItem) string {
-	blockCandidate := []byte{}
-	if !item.BlockGCCandidateIdentity.Target.IsZero() || !item.BlockGCCandidateIdentity.CandidateAt.IsZero() {
-		blockCandidate = encodePCD1B4LengthDelimitedV1(
-			[]byte(item.BlockGCCandidateIdentity.Target.StorageClass),
-			[]byte(item.BlockGCCandidateIdentity.Target.StorageKey),
-			encodePCD1B4TimestampMillis(item.BlockGCCandidateIdentity.CandidateAt),
-		)
+	token, err := DestructionTokenV1(item)
+	if err != nil {
+		return "ERROR: " + err.Error()
 	}
-	name := encodePCD1B4LengthDelimitedV1(
-		[]byte("sesamefs/pcd1b4/destruction-token/v1"),
-		item.OrgID[:],
-		item.LibraryID[:],
-		[]byte(item.ItemType),
-		[]byte(item.ItemID),
-		encodePCD1B4TimestampMillis(item.IdentityAt),
-		blockCandidate,
-	)
-	return uuid.NewSHA1(uuid.MustParse(pcd1b4DestructionTokenNamespaceV1), name).String()
+	return token.String()
 }
 
 // TestPCD1B4DestructionTokenV1KnownVector freezes the namespace UUID, domain

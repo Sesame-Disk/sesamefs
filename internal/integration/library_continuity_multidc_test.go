@@ -106,12 +106,12 @@ func TestLibraryContinuityCertifiedFrontier3DC(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		result, err := dbpkg.CommitLibraryContinuityWitness(na.Session(), orgID, libraryID, h0, dbpkg.SupportedContinuityContractVersion)
+		result, err := dbpkg.CommitLibraryContinuityWitness(na.Session(), orgID, libraryID, h0, nil, dbpkg.SupportedContinuityContractVersion)
 		results <- certifyResult{result: result, err: err}
 	}()
 	go func() {
 		defer wg.Done()
-		result, err := dbpkg.CommitLibraryContinuityWitness(eu.Session(), orgID, libraryID, h0, dbpkg.SupportedContinuityContractVersion)
+		result, err := dbpkg.CommitLibraryContinuityWitness(eu.Session(), orgID, libraryID, h0, nil, dbpkg.SupportedContinuityContractVersion)
 		results <- certifyResult{result: result, err: err}
 	}()
 	wg.Wait()
@@ -129,7 +129,7 @@ func TestLibraryContinuityCertifiedFrontier3DC(t *testing.T) {
 		}
 	}
 
-	retry, err := dbpkg.CommitLibraryContinuityWitness(asia.Session(), orgID, libraryID, h0, dbpkg.SupportedContinuityContractVersion)
+	retry, err := dbpkg.CommitLibraryContinuityWitness(asia.Session(), orgID, libraryID, h0, nil, dbpkg.SupportedContinuityContractVersion)
 	if err != nil || retry.Outcome != dbpkg.LibraryContinuityCASApplied {
 		t.Fatalf("same witness retry was not idempotently accepted: result=%+v err=%v", retry, err)
 	}
@@ -142,7 +142,7 @@ func TestLibraryContinuityCertifiedFrontier3DC(t *testing.T) {
 		t.Fatalf("legacy HEAD move did not leave the expected stale witness: head=%s certified=%v version=%v", head, certified, version)
 	}
 
-	stale, err := dbpkg.CommitLibraryContinuityWitness(asia.Session(), orgID, libraryID, h0, dbpkg.SupportedContinuityContractVersion)
+	stale, err := dbpkg.CommitLibraryContinuityWitness(asia.Session(), orgID, libraryID, h0, nil, dbpkg.SupportedContinuityContractVersion)
 	if err != nil || stale.Outcome != dbpkg.LibraryContinuityCASNotApplied {
 		t.Fatalf("stale certifier outcome=%+v err=%v, want NOT_APPLIED", stale, err)
 	}
@@ -151,12 +151,12 @@ func TestLibraryContinuityCertifiedFrontier3DC(t *testing.T) {
 		t.Fatalf("stale certifier changed authority: head=%s certified=%v version=%v", head, certified, version)
 	}
 
-	fresh, err := dbpkg.CommitLibraryContinuityWitness(eu.Session(), orgID, libraryID, h1, dbpkg.SupportedContinuityContractVersion)
+	fresh, err := dbpkg.CommitLibraryContinuityWitness(eu.Session(), orgID, libraryID, h1, nil, dbpkg.SupportedContinuityContractVersion)
 	if err != nil || fresh.Outcome != dbpkg.LibraryContinuityCASApplied {
 		t.Fatalf("fresh H1 certificate outcome=%+v err=%v", fresh, err)
 	}
 
-	advanced, err := dbpkg.AdvanceLibraryCertifiedFrontier(asia.Session(), orgID, libraryID, h1, h2, dbpkg.SupportedContinuityContractVersion)
+	advanced, err := dbpkg.AdvanceLibraryCertifiedFrontier(asia.Session(), orgID, libraryID, h1, h2, nil, dbpkg.SupportedContinuityContractVersion)
 	if err != nil || advanced.Outcome != dbpkg.LibraryContinuityCASApplied {
 		t.Fatalf("atomic H1->H2 advance outcome=%+v err=%v", advanced, err)
 	}
@@ -167,11 +167,11 @@ func TestLibraryContinuityCertifiedFrontier3DC(t *testing.T) {
 		}
 	}
 
-	staleAdvance, err := dbpkg.AdvanceLibraryCertifiedFrontier(na.Session(), orgID, libraryID, h1, h1+"-unexpected", dbpkg.SupportedContinuityContractVersion)
+	staleAdvance, err := dbpkg.AdvanceLibraryCertifiedFrontier(na.Session(), orgID, libraryID, h1, h1+"-unexpected", nil, dbpkg.SupportedContinuityContractVersion)
 	if err != nil || staleAdvance.Outcome != dbpkg.LibraryContinuityCASNotApplied {
 		t.Fatalf("stale frontier predecessor outcome=%+v err=%v, want NOT_APPLIED", staleAdvance, err)
 	}
-	wrongVersion, err := dbpkg.AdvanceLibraryCertifiedFrontier(na.Session(), orgID, libraryID, h2, h2+"-wrong-version", "V0")
+	wrongVersion, err := dbpkg.AdvanceLibraryCertifiedFrontier(na.Session(), orgID, libraryID, h2, h2+"-wrong-version", nil, "V0")
 	if err == nil || !errors.Is(err, dbpkg.ErrUnsupportedContinuityContract) || wrongVersion.Outcome != dbpkg.LibraryContinuityCASUnknown {
 		t.Fatalf("wrong-version advance outcome=%+v err=%v, want UNKNOWN plus unsupported-contract error", wrongVersion, err)
 	}
@@ -183,7 +183,7 @@ func TestLibraryContinuityCertifiedFrontier3DC(t *testing.T) {
 	missingOrgID, missingLibraryID := uuid.NewString(), uuid.NewString()
 	missingHead := "pc-d1a-missing-witness-" + uuid.NewString()
 	seedLibraryContinuityRow(t, na, missingOrgID, missingLibraryID, missingHead)
-	missing, err := dbpkg.AdvanceLibraryCertifiedFrontier(eu.Session(), missingOrgID, missingLibraryID, missingHead, h2, dbpkg.SupportedContinuityContractVersion)
+	missing, err := dbpkg.AdvanceLibraryCertifiedFrontier(eu.Session(), missingOrgID, missingLibraryID, missingHead, h2, nil, dbpkg.SupportedContinuityContractVersion)
 	if err != nil || missing.Outcome != dbpkg.LibraryContinuityCASNotApplied {
 		t.Fatalf("missing predecessor witness outcome=%+v err=%v, want NOT_APPLIED", missing, err)
 	}
@@ -195,7 +195,7 @@ func TestLibraryContinuityCertifiedFrontier3DC(t *testing.T) {
 	deletedOrgID, deletedLibraryID := uuid.NewString(), uuid.NewString()
 	deletedHead := "pc-d1a-deleted-" + uuid.NewString()
 	seedLibraryContinuityRow(t, na, deletedOrgID, deletedLibraryID, deletedHead)
-	deletedCertificate, err := dbpkg.CommitLibraryContinuityWitness(na.Session(), deletedOrgID, deletedLibraryID, deletedHead, dbpkg.SupportedContinuityContractVersion)
+	deletedCertificate, err := dbpkg.CommitLibraryContinuityWitness(na.Session(), deletedOrgID, deletedLibraryID, deletedHead, nil, dbpkg.SupportedContinuityContractVersion)
 	if err != nil || deletedCertificate.Outcome != dbpkg.LibraryContinuityCASApplied {
 		t.Fatalf("deleted-library setup certificate outcome=%+v err=%v", deletedCertificate, err)
 	}
@@ -216,11 +216,11 @@ func TestLibraryContinuityCertifiedFrontier3DC(t *testing.T) {
 	if deletedState.ContinuityWitnessValidFor(dbpkg.SupportedContinuityContractVersion) {
 		t.Fatal("soft-deleted witness was accepted as live")
 	}
-	deletedCommit, err := dbpkg.CommitLibraryContinuityWitness(asia.Session(), deletedOrgID, deletedLibraryID, deletedHead, dbpkg.SupportedContinuityContractVersion)
+	deletedCommit, err := dbpkg.CommitLibraryContinuityWitness(asia.Session(), deletedOrgID, deletedLibraryID, deletedHead, nil, dbpkg.SupportedContinuityContractVersion)
 	if err != nil || deletedCommit.Outcome != dbpkg.LibraryContinuityCASNotApplied {
 		t.Fatalf("deleted-library baseline witness outcome=%+v err=%v, want NOT_APPLIED", deletedCommit, err)
 	}
-	deletedAdvance, err := dbpkg.AdvanceLibraryCertifiedFrontier(eu.Session(), deletedOrgID, deletedLibraryID, deletedHead, deletedHead+"-next", dbpkg.SupportedContinuityContractVersion)
+	deletedAdvance, err := dbpkg.AdvanceLibraryCertifiedFrontier(eu.Session(), deletedOrgID, deletedLibraryID, deletedHead, deletedHead+"-next", nil, dbpkg.SupportedContinuityContractVersion)
 	if err != nil || deletedAdvance.Outcome != dbpkg.LibraryContinuityCASNotApplied {
 		t.Fatalf("deleted-library frontier outcome=%+v err=%v, want NOT_APPLIED", deletedAdvance, err)
 	}

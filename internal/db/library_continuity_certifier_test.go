@@ -459,6 +459,38 @@ func TestCertifierVerifiesIdentityBeforePhysicalHandshakeAndRechecksBeforeWitnes
 	}
 }
 
+func TestPCD1B5CertifierCapturesDestructionFenceBeforeFinalRevalidation(t *testing.T) {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	sourceBytes, err := os.ReadFile(filepath.Join(filepath.Dir(filename), "library_continuity_certifier.go"))
+	if err != nil {
+		t.Fatalf("read certifier source: %v", err)
+	}
+	source := string(sourceBytes)
+	start := strings.Index(source, "func (db *DB) CertifyLibraryBaseline(")
+	if start < 0 {
+		t.Fatal("CertifyLibraryBaseline source not found")
+	}
+	certify := source[start:]
+	if next := strings.Index(certify[len("func (db *DB) CertifyLibraryBaseline("):], "\nfunc "); next >= 0 {
+		certify = certify[:len("func (db *DB) CertifyLibraryBaseline(")+next]
+	}
+	capture := strings.Index(certify, "CaptureDestructionFence(ctx, db.Session(), orgID, libraryID)")
+	pending := strings.Index(certify, "fence.Status == DestructionFencePending")
+	finalCommit := strings.Index(certify, "currentCommit, err := readContinuityCommitProjectionContext")
+	finalFSObject := strings.Index(certify, "currentProjection, verifyErr := readContinuityFSObjectProjectionContext")
+	witness := strings.Index(certify, "cas, casErr := CommitLibraryContinuityWitnessContext")
+	if capture < 0 || pending < 0 || finalCommit < 0 || finalFSObject < 0 || witness < 0 ||
+		!(capture < pending && pending < finalCommit && finalCommit < finalFSObject && finalFSObject < witness) {
+		t.Fatalf("CW-M4/CW-M5: fence capture and pending refusal must precede the final revalidation and witness CAS: capture=%d pending=%d commit=%d fs=%d witness=%d", capture, pending, finalCommit, finalFSObject, witness)
+	}
+	if !strings.Contains(certify, "LibraryBaselineReasonIdentityDestructionPending") || !strings.Contains(certify, "fence.Epoch, SupportedContinuityContractVersion") {
+		t.Fatal("CW-M1/CW-M4: pending intents need an explicit refusal reason and the witness CAS must predicate the captured epoch")
+	}
+}
+
 func TestCanonicalBlockMappingCannotOverrideAuthority(t *testing.T) {
 	authoritativeID := strings.Repeat("a", 64)
 	otherID := strings.Repeat("b", 64)

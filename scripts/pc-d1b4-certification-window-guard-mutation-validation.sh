@@ -109,17 +109,17 @@ expect_red "G2 unlisted destroyer" "unlisted DeleteFSObjectIdentity call at inte
 mutate internal/api/v2/write_helpers.go 's/DELETE deleted_at, deleted_by FROM libraries/DELETE deleted_by FROM libraries/'
 expect_red "G3 inventoried restore disappears" "inventoried restore no longer found at internal/api/v2/write_helpers.go:restoreDeletedLibrary" '^TestPCD1B4LifecycleStatementsAreInventoried$'
 
-# G4: a fence column written in production before PC-D1B.5 (CW-M9 precursor).
+# G4/CW-M9: a fence-column statement outside the authorized serial primitives turns red.
 append internal/db/library_continuity.go '
 const pcd1b4MutationFenceWrite = `UPDATE libraries SET continuity_destruction_epoch = now() WHERE org_id = ? AND library_id = ?`'
-expect_red "G4 premature fence write" "fence columns appear in production code" '^TestPCD1B4FenceColumnsAreNotYetWritten$'
+expect_red "G4 unauthorized fence-column CQL" "E/P/S CQL escaped its authorized global-SERIAL primitives" '^TestPCD1B5FenceColumnsStayInsideAuthorizedPrimitives$'
 
 # G5: a library creator binding a non-fresh id.
 mutate internal/api/v2/org_admin_groups.go 's/newLibID := uuid\.New\(\)\.String\(\)/newLibID := c.Param("group_id")/'
 expect_red "G5 reused library id" "library creators whose library_id is not a freshly minted UUID" '^TestPCD1B4LibraryCreatorsMintFreshIDs$'
 
 # G6: the selected fence without its epoch predicate must lose its safety proof.
-mutate internal/db/pcd1b4_certification_window_model_test.go 's/captures: true, captureRequiresIdle: true, casEpochPredicate: true\}\n\)/captures: true, captureRequiresIdle: true}\n)/'
+mutate internal/db/pcd1b4_certification_window_model_test.go 's/(cwSelected = cwDesign\{.*?casEpochPredicate: )true/$1false/s'
 expect_red "G6 model selected fence weakened" "PC-D1B.4 MODEL: selected fence violated" '^TestPCD1B4ModelSelectedFenceHoldsInvariants$'
 
 # G7: the model must still see the current runtime as unsafe; a model that
@@ -147,7 +147,7 @@ func pcd1b4MutationRawReferenceDelete(session *gocql.Session) error {
 expect_red "G10 raw reference delete" "unlisted reference-delete at internal/gc/store_cassandra.go:pcd1b4MutationRawReferenceDelete" '^TestPCD1B4LifecycleStatementsAreInventoried$'
 
 # G11: the model must catch a completion that ignores its generation.
-mutate internal/db/pcd1b4_certification_window_model_test.go 's/\tif d\.pendingByGeneration && n\.pendingGen\[token\] != gen \{\n\t\treturn\n\t\}\n//'
+mutate internal/db/pcd1b4_certification_window_model_test.go 's/if d\.pendingByGeneration && n\.pendingGen\[token\] != gen \{/if false {/'
 expect_red "G11 generation-blind completion" "PC-D1B.4 MODEL: selected fence violated in retry/same-token-stale-completion" '^TestPCD1B4ModelSelectedFenceHoldsInvariants$'
 
 # G12: without generation-timestamped tombstones a paused generation's late
@@ -162,7 +162,7 @@ expect_red "G13 missing cross-node clock-skew margin" "CW-M29: with no safe inte
 
 # G14/CW-M30: changing the exact UUIDv5 namespace must break the durable known
 # vector, rather than silently minting different tokens after a deploy.
-mutate internal/gc/pcd1b4_queue_item_token_characterization_test.go 's/6ba7b811-9dad-11d1-80b4-00c04fd430c8/6ba7b811-9dad-11d1-80b4-00c04fd430c9/'
+mutate internal/gc/destruction_token.go 's/6ba7b811-9dad-11d1-80b4-00c04fd430c8/6ba7b811-9dad-11d1-80b4-00c04fd430c9/'
 expect_red "G14 UUIDv5 namespace drift" "CW-M30 destruction-token vector" '^TestPCD1B4DestructionTokenV1KnownVector$' ./internal/gc
 
 # G15/CW-M31: replacing the global absence proof with a local row miss must
@@ -177,7 +177,7 @@ expect_red "G17 writer bypasses clock-health admission" "CW-M32: commit material
 
 # G18/CW-M30: replacing the required zero-length candidate field for
 # non-block items with an encoded empty candidate must change their token.
-mutate internal/gc/pcd1b4_queue_item_token_characterization_test.go 's/blockCandidate := \[\]byte\{\}/blockCandidate := encodePCD1B4LengthDelimitedV1([]byte{}, []byte{}, encodePCD1B4TimestampMillis(time.Time{}))/'
+mutate internal/gc/destruction_token.go 's/blockCandidate := \[\]byte\{\}/blockCandidate := []byte{1}/'
 expect_red "G18 non-block candidate encoding drift" "CW-M30 destruction-token vector" '^TestPCD1B4DestructionTokenV1KnownVector$' ./internal/gc
 
 # G19/CW-M33: EACH_QUORUM absence without settling a pre-existing HEAD Paxos

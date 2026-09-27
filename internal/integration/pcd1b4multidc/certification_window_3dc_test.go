@@ -532,6 +532,10 @@ func TestPCD1B4CanonicalAbsenceProof3DC(t *testing.T) {
 		if localExists || !remoteExists {
 			t.Fatalf("CW-M31 precondition: want dc-na absent / dc-eu present; got na=%v eu=%v", localExists, remoteExists)
 		}
+		proof, proofErr := dbpkg.ProveGlobalCanonicalAbsence(context.Background(), na.Session(), orgID, libraryID)
+		if proofErr == nil || proof.Matches(orgID, libraryID) {
+			t.Fatalf("CW-M31: runtime global-absence primitive minted proof from dc-na local absence while dc-eu retained the canonical row: proof=%+v err=%v", proof, proofErr)
+		}
 		if pcd1b4CanonicalAbsenceProofConsistency() != gocql.EachQuorum {
 			t.Fatal("CW-M31: global absence proof consistency is not EACH_QUORUM")
 		}

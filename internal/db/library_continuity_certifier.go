@@ -30,6 +30,8 @@ const (
 	LibraryBaselineReasonInvalidInput                 LibraryBaselineCertificationReason = "invalid_input"
 	LibraryBaselineReasonLibraryNotFound              LibraryBaselineCertificationReason = "library_not_found"
 	LibraryBaselineReasonLibraryDeleted               LibraryBaselineCertificationReason = "library_deleted"
+	LibraryBaselineReasonIdentityDestructionPending   LibraryBaselineCertificationReason = "identity_destruction_pending"
+	LibraryBaselineReasonSupersededGenerationPending  LibraryBaselineCertificationReason = "identity_superseded_generation_unreaffirmed"
 	LibraryBaselineReasonHeadChanged                  LibraryBaselineCertificationReason = "head_changed"
 	LibraryBaselineReasonMissingCommit                LibraryBaselineCertificationReason = "missing_commit"
 	LibraryBaselineReasonMissingFSObject              LibraryBaselineCertificationReason = "missing_fs_object"
@@ -404,7 +406,11 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 
 	// Recheck the HEAD before the final authority pass. The witness CAS below
 	// still fences a concurrent advance after this read.
-	finalState, err := ReadLibraryStateContext(ctx, db.Session(), orgID, libraryID)
+	// Capture E/P/S from the canonical row in global SERIAL before the final
+	// identity, physical-authority and liveness revalidation below. P is a
+	// durable fail-closed barrier: a pending destroyer means no witness may be
+	// written, even if its source delete has not become visible yet.
+	fence, err := CaptureDestructionFence(ctx, db.Session(), orgID, libraryID)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonLibraryNotFound, err)
@@ -413,12 +419,30 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 		}
 		return result
 	}
-	if finalState.DeletedAt != nil {
+	if fence.Status == DestructionFencePending {
+		result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonIdentityDestructionPending, fmt.Errorf("library has %d pending identity destruction intent(s)", len(fence.Pending)))
+		return result
+	}
+	if fence.Status != DestructionFenceIdle {
+		result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonDependencyReadFailed, fmt.Errorf("destruction fence capture returned unknown state"))
+		return result
+	}
+	// A non-null S means an older generation may still resume and issue a
+	// timestamped tombstone. Until the identity gateway has globally reaffirmed
+	// every covered projection above S, issuing a witness would let that stale
+	// tombstone make the witness false. Refuse certification closed; the
+	// reaffirmation path is intentionally not inferred from local WRITETIME.
+	if fence.Superseded != nil {
+		result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonSupersededGenerationPending,
+			fmt.Errorf("superseded destruction generation %s requires global identity reaffirmation", fence.Superseded))
+		return result
+	}
+	if fence.DeletedAt != nil {
 		result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonLibraryDeleted, ErrLibraryDeleted)
 		return result
 	}
-	if finalState.HeadCommitID != observedHead {
-		result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonHeadChanged, fmt.Errorf("current HEAD is %q", finalState.HeadCommitID))
+	if fence.Head != observedHead {
+		result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonHeadChanged, fmt.Errorf("current HEAD is %q", fence.Head))
 		return result
 	}
 
@@ -521,7 +545,7 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 	if testHooks.beforeWitnessCAS != nil {
 		testHooks.beforeWitnessCAS(ctx, orgID, libraryID, observedHead)
 	}
-	cas, casErr := CommitLibraryContinuityWitnessContext(ctx, db.Session(), orgID, libraryID, observedHead, SupportedContinuityContractVersion)
+	cas, casErr := CommitLibraryContinuityWitnessContext(ctx, db.Session(), orgID, libraryID, observedHead, fence.Epoch, SupportedContinuityContractVersion)
 	if testHooks.afterWitnessCAS != nil {
 		cas, casErr = testHooks.afterWitnessCAS(cas, casErr)
 	}
