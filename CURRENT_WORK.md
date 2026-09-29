@@ -8,8 +8,10 @@ for each Office extension) returned 201 and advanced HEAD. GREEN after the fix:
 409, HEAD unchanged, `pub:` cleaned, D unrevoked or fully retired P still absent.
 The nine Office legs also cover fresh/reused templates; empty CreateFile remains
 blockless. Plan and evidence: [docs/W2-6A-CREATEFILE-EXACT-P.md](docs/W2-6A-CREATEFILE-EXACT-P.md).
-W2-6a is `CLOSED-FIX` pre-HEAD; W2-0 remains OPEN for W2-7/8/9 and the other
-open funnel slices. R31, PC-D1B.5, G4 and PRE-GC remain unchanged.
+Cross-audit correction: W2-6a remains `OPEN`. The fix rejects GC that wins before
+exact-P validation; TTL-bound `pub:` (35d) does not prove continuity until HEAD.
+W2-0 remains OPEN even for adopting callers; historical closure claims require
+re-audit. R31, PC-D1B.5, G4 and PRE-GC remain unchanged.
 `GC_ENABLED=false` remains mandatory in production. Directed Docker races use
 a local override disabling GC on all three nodes; the full development suite
 uses the documented primary-node worker/scanner exception for its scanner test.

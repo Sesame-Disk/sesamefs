@@ -397,7 +397,11 @@ CreateFileFromBlocks / shared Once (when commitBlocks is populated):
 Sync direct HEAD / auto-merge:
   stage pub  →  readiness (renew up + exact-P, provenanced only)  →  queue repair  →  HEAD
 
-CreateFile / stored UploadFile / OnlyOffice / SeafHTTP / cross-repo:
+CreateFile Office / stored UploadFile (W2-6a / #237):
+  stage pub → queue repair → insert commit → exact-P → HEAD
+  (exact-P checks authority; own pub: has a 35d TTL, not proven continuity through HEAD)
+
+OnlyOffice / SeafHTTP / cross-repo:
   stage pub  →  queue repair  →  HEAD
   (no pre-HEAD readiness/exact-P; own liveness is whatever the prepare step left)
 ```
@@ -414,8 +418,9 @@ stage pub ────────┤                           ├→ HEAD
 
 An empty-file path with no physical dependencies may skip the repair row. Do
 not freeze readiness-before-repair as the coordinator spine: CFFB requires
-repair-before-fence, while Sync requires readiness-before-repair. The other
-current block-bearing funnels use stage → repair → HEAD. Any future unification
+repair-before-fence, while Sync requires readiness-before-repair. CreateFile Office
+and stored UploadFile validate exact-P after repair; OnlyOffice, SeafHTTP and
+cross-repo use stage → repair → HEAD. Any future unification
 must preserve the observed orders unless a separate PR provides evidence.
 
 ---
@@ -456,7 +461,7 @@ PC-0 does not shorten this to a three-value scheme and does not rename
 | CL | session `LOCAL_QUORUM`; HEAD LWT uses session `serial_consistency` |
 | Paxos | HEAD CAS only (plus any materialize install LWT, funnel-specific) |
 | Cost | O(1) file; stage 0 or 1 block; W2-6a adds two LOCAL_QUORUM point reads per Office-template HEAD attempt (zero for empty CreateFile) |
-| W2 | W2-6a `CLOSED-FIX` pre-HEAD (real Cassandra/MinIO, nine Office legs + empty control); R31 remains / n/a empty |
+| W2 | W2-6a `OPEN`: exact-P GC-before-validation cases fixed (nine Office legs + empty control); 35d pub: expiry leaves validator-to-HEAD continuity unresolved; R31 remains / n/a empty |
 | Common | stage, repair, HEAD, classify, settle |
 | Specific | template materialize, empty-file, UUID operation, retry wrapper |
 
@@ -1140,7 +1145,8 @@ An empty-file path with no physical dependencies may have no repair row. CFFB
 observes `verify/capture placement → own-liveness work → stage → repair →
 final exact-P fence → HEAD`; Sync observes `stage → provenance/readiness →
 repair → HEAD`, and can discover `UNPROVENANCED`/`ERROR` after staging. The
-other current block-bearing funnels observe `stage → repair → HEAD`. The target
+CreateFile Office and stored UploadFile observe `stage → repair → exact-P → HEAD`;
+OnlyOffice, SeafHTTP and cross-repo observe `stage → repair → HEAD`. The target
 coordinator contract below deliberately adds a stronger adapter boundary to
 close the classification gap; it is not a claim about every current funnel.
 
@@ -1384,7 +1390,7 @@ would change classification — so the unification remains its own PR.
 | Raw-CQL HEAD writers invisible to the lexical guard | P2 | THIS-PR (hardening, closed) | `TestPC0RawHeadColumnWritersAreInventoried` + mutation leg M7; the finding is not hypothetical (§3.4). Method-value / aliased-callee coverage stays documented as out of scope: P2 TECH DEBT. |
 | §11 protocol-order wording | P2 | THIS-PR (fixed) | `PutCommit` stores the commit before blocks arrive; PutBlock↔pending-commit binding is a DESIGN HYPOTHESIS and `CheckBlocks` pins a DESIGN OPTION, both follow-ups, neither adopted. Sync remains last. |
 | Harness startup sensitivity | P2 | TECH DEBT | #210/#213 scripts abort on non-evidence legs (cost) or EACH_QUORUM timeouts seconds after `migrate`/node restarts; integration runs against the 3-DC fixture need `CASSANDRA_HOSTS` pointed at a fixture node or `TestMain` cleanup fails against the dev Cassandra (§13, `docs/TESTING.md`). No architectural impact. |
-| `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | Publication-authority/continuity before HEAD is not uniform by provenance. Exact-P exists for CreateFileFromBlocks placements, UploadFile's materialized placement (W2-6, PR #237; previously `nil`) and Sync-provenanced blocks. `CreateFile` Office-template publication is fixed pre-HEAD by W2-6a (actual materialized exact P, staged `pub:`, final validation); OnlyOffice, SeafHTTP and cross-repo remain open. This does **not** prescribe exact-P as the only fix. |
+| `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | Publication-authority/continuity before HEAD is not uniform by provenance. Exact-P exists for CreateFileFromBlocks placements, UploadFile's materialized placement (W2-6, PR #237; previously `nil`) and Sync-provenanced blocks. `CreateFile` Office-template publication now checks exact P before HEAD (W2-6a), but remains OPEN because TTL-bound `pub:` does not prove continuity through HEAD; OnlyOffice, SeafHTTP and cross-repo remain open. This does **not** prescribe exact-P as the only fix. |
 | Sync PutBlock identity | P1 | already `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`; cross-DC visibility slice closed by `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01` (#210, resolved) | Evidence is still inference from `up:sync:<repo>:<block>` — #210 widened its visibility domain, not its identity (§11). The target coordinator must reject input with no provenanced PutBlock; today's Sync can still publish after a clean global miss, which remains the open W2 gap. |
 | `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01` | P2 | ✅ Resolved 2026-09-11 (`fix/library-rollback-ghost-projections`) | Durable `library_rollback_pending` marker + bounded **fair** reaper (clustering cursor, rotating start bucket). Marker is discovery only; cleanup authority remains `DELETE libraries ... IF head_commit_id = null`. Fault-injection covers authority-applied → crash → recovery. Soft-delete alternative not taken (`InitializeLibraryHeadIfUnset` interaction). |
 | HEAD classify split | P2 | FOLLOW-UP / PC-1 | v2 confirms ambiguous CAS with SERIAL; Sync maps every CAS error to UNKNOWN without confirm. Also (2026-09-11, H1 review): v2's `resolveLibraryHeadUpdateError` reports `ambiguous + a different current HEAD` as the original ambiguous failure, although the commit may have applied and been succeeded — the initializer classifies that same shape as UNKNOWN. Not destructive authority today. PC-1 (2026-09-11) introduced the common tri-state `publication.HeadOutcome` and documented the mapping (§9) but deliberately did **not** convert any classifier, because the v2 ambiguous-plus-different-HEAD shape would change classification; the unification is a separate explicit PR after PC-1. |

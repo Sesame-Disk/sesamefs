@@ -4,6 +4,31 @@ Scope: `.docx`, `.xlsx`, `.pptx` publication in `CreateFile` only.
 Base: main@63aa84573 (merged PR #237). Directed race validation keeps GC disabled.
 The full local suite uses the development-only worker/scanner exception in Compose.
 
+## Cross-audit verdict: partial fix, W2-6a OPEN
+
+The 35d `PublishAttemptReferenceTTLSeconds` is a crash backstop, not a permanent
+pin. `ValidateBorrowedFSPublicationAuthority` reads canonical placement and orphan
+fences at LOCAL_QUORUM; it does not read own-reference liveness, renew it, or
+couple that liveness to HEAD CAS. Its four-case proof requires a pin still live
+when GC performs the EACH_QUORUM zero-reference read.
+
+Reachable counterexample: stage pub:; pause until both up: and pub: expire;
+exact-P reads an unfenced valid P; GC claims P, proves zero refs and commits D;
+the writer resumes and publishes HEAD. A pause after an authorized validation
+until pub: expires admits the same sequence. Durable repair intent does not
+supply an unconditional permanent pin before HEAD. There is no bound in the
+runtime contract that excludes either pause.
+
+The current tests remove up: before stage and make GC win before validation.
+Their GREEN result proves that narrower fix, not unbounded continuity through
+HEAD. No real 35-day-expiry/after-validation race was executed; this finding is
+a source-level counterexample, not a new measured test result. W2-6a remains
+OPEN and #238 must not be merged as full W2 closure. Shared continuity is
+tracked as `ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01` under W2-0.
+
+This revision changes contracts only. It preserves the useful runtime guard
+and its existing RED/GREEN evidence without inventing a new pin protocol.
+
 ## Plan and acceptance evidence
 
 1. RED first: real Cassandra/MinIO, production in-process CreateFile. For each
@@ -23,7 +48,7 @@ The full local suite uses the development-only worker/scanner exception in Compo
    Require every named leg; a filtered run or unavailable backend fails closed.
 5. Docker checks: formatting, short package suite, vet, full integration profile,
    and scoped mutation script. Audit the final diff and docs before commit/push.
-6. Close only W2-6a pre-HEAD in X1 and align its existing issue references.
+6. Record W2-6a as OPEN with a partial GC-before-validation fix and align issue references.
    W2-0 stays OPEN. Create a PR against main with RED/GREEN/mutation evidence.
 
 Excluded: W2-7/8/9/10, Sync W2-3/4/5, R31 W2-11..14, PC-D1B.5, G4, PRE-GC.
@@ -49,7 +74,8 @@ The publication protocol, tables and coordinator are unchanged.
   GREEN in Docker (4.313s / 59.921s); no races.
 - Final scope audit in Docker compared normalized bytes with the Git base:
   `files.go` outside CreateFile is identical; every other W2 exit row is
-  identical; W2-0 stays OPEN and W2-6a is CLOSED-FIX pre-HEAD.
+  identical in the original audit. This cross-audit supersedes its closure conclusion:
+  W2-0 and W2-6a stay OPEN due to own-pin expiry before HEAD.
 - After the full local profile, GC was restored to false on all three nodes.
   The final mutation run used that disabled-GC stack and passed 3/3 production
   mutations plus 2/2 fail-closed gate checks. No source changes followed it.
@@ -74,7 +100,7 @@ The full suite also contains a manual GC scanner test. Use the development-only
 configuration documented in docker-compose.yaml (primary GC worker/scanner
 allowed, other nodes disabled) for that full profile, then restore the directed
 override. Production GC activation remains prohibited. The fix reuses the
-established W2-0 ordering proof and adds no 3-DC protocol.
+W2-0 ordering argument subject to its live-pin premise and adds no 3-DC protocol.
 
 ```sh
 docker compose --profile test build go-integration-test
@@ -105,8 +131,8 @@ integration build tag. Empty files pass no placements (zero added DB reads).
 
 Cost: two LOCAL_QUORUM point reads per Office-template HEAD attempt, repeated
 on HEAD-conflict retries, using the existing bounded validator. All other
-funnel code and W2 exit states are unchanged. W2-0 stays OPEN, W2-6a closes
-only pre-HEAD, and post-HEAD R31 remains OPEN.
+funnel runtime code is unchanged. W2-0 and W2-6a stay OPEN; the shared proof
+requires pin liveness through HEAD. Post-HEAD R31 also remains OPEN.
 
 ## Merge requirement audit
 
@@ -119,5 +145,5 @@ only pre-HEAD, and post-HEAD R31 remains OPEN.
 | Evidence cannot silently skip | Filtered required legs and unreachable backend both exit nonzero |
 | GC rejection invariants | 409, HEAD unchanged, pub: removed, no own fs:, D unrevoked / canonical P absent; physical retirement checked |
 | Empty CreateFile preserved | 201, size zero, no block IDs, no materialization hook |
-| W2-6a closes alone | X1 CLOSED-FIX pre-HEAD; all other exit rows identical, W2-0 still OPEN |
+| W2-6a full closure | **NOT MET**: own pub: expires after 35d; validator-to-HEAD continuity unresolved. X1 W2-6a and W2-0 remain OPEN |
 | Final audit | Source/scope checks passed; this PR delivers the verified branch against main |

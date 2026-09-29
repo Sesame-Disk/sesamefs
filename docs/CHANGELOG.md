@@ -18,7 +18,9 @@ Adds scoped integration barriers, nine named Office evidence legs (including
 fresh/reused templates), an empty-file control, and mutations of placement/key/hash.
 Cost: two LOCAL_QUORUM point reads per Office-template HEAD attempt, zero for
 empty files. No new CQL, table, protocol, coordinator or GC activation. Only
-W2-6a closes pre-HEAD; W2-0 and the remaining funnel/R31 rows stay open.
+W2-6a remains OPEN: this fixes GC-before-validation races, while the 35d pub:
+TTL leaves validator-to-HEAD continuity unresolved. W2-0 and R31 stay open.
+Cross-audit also corrected the PC-0 canonical CreateFile ordering.
 Plan and verification: [W2-6A-CREATEFILE-EXACT-P.md](W2-6A-CREATEFILE-EXACT-P.md).
 
 ## 2026-09-29 - Cross-audit: track CreateFile in the W2 exit gate
