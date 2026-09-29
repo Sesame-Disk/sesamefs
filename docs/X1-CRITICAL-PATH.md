@@ -17,8 +17,10 @@ other documents keep their investigation and evidence.
 Between #202 and #215 (2026-09-02 → 09-12) the project closed W1, the pre-HEAD
 W2 slices for CreateFileFromBlocks/SessionUpload and Sync PutBlock, G1, G2, G3,
 and several real runtime defects (H1, rollback ghost projections, Sync
-identity). Between #216 and #233 (2026-09-12 → 09-26) no #201 step advanced:
-the work went into the PublicationCoordinator skeleton, the PC-D1 certified
+identity). Between #216 and #233 (2026-09-12 → 09-26) most of the interval
+was spent outside the #201 progression: apart from real R31 and runtime fixes
+(#219 R31 convergence, #221 HEAD global SERIAL, #226 gone-check), the work went
+into the PublicationCoordinator skeleton, the PC-D1 certified
 baseline line (witness, certifier, identity and mapping authority, lifecycle
 fence decision) and the repair-liveness protocol attempts (#220/#222
 abandoned, #223/#224).
@@ -70,19 +72,31 @@ Consequences:
   cover current call sites only.
 - Decision records propose; they create obligations only through #201 steps,
   §4 or §6.
-- At most two audit rounds per PR. Later findings go to follow-ups unless they
-  are a demonstrated defect under the first two rows of the table.
-- "Demonstrate first": a §4 row can close with evidence (`CLOSED-EVIDENCE`)
-  when the failure cannot be demonstrated; it does not need a new mechanism.
+- Target: no more than two planned audit rounds per PR. The round number never
+  changes a finding's severity or scope: a real finding introduced or worsened
+  by the PR, or one that falsifies the PR's contract, blocks that PR whenever it
+  is discovered; a real pre-existing independent finding is a follow-up
+  whenever it is discovered.
+- "Demonstrate first": do not assume a §4 row needs a new mechanism. A failure
+  that could not be reproduced is **not** evidence of safety; closing a row
+  needs one of the three closure states defined in §4.
 
 ## 4. W2 exit checklist
 
 Derived from the `CONDITIONAL`/`UNKNOWN` rows of
 [R3-LIVENESS-CONTINUITY.md](./R3-LIVENESS-CONTINUITY.md) (the #201 definition
-of W2) and the R31 residuals named in #201 §16. Row states: `OPEN`,
-`CLOSED-EVIDENCE`, `CLOSED-FIX`. Criterion for every row (#201 §25 W2): once
-D(P1) is committed, no legitimate writer may later publish durable liveness
-that depends on P1.
+of W2) and the R31 residuals named in #201 §16. Criterion for every row
+(#201 §25 W2): once D(P1) is committed, no legitimate writer may later publish
+durable liveness that depends on P1.
+
+Row states:
+
+| State | Meaning |
+|---|---|
+| `OPEN` | not closed |
+| `CLOSED-EVIDENCE` | positive, reviewable evidence that the failure sequence is unreachable under the current code/runtime contract (for example a source-level argument that an existing bound already excludes it). "We tried and did not reproduce it" is not evidence |
+| `CLOSED-FIX` | a change removes the failure sequence, with evidence |
+| `ACCEPTED-BOUNDED` | the sequence remains reachable but is bounded by a named operational mechanism (for example the fail-closed GC health gate), and the owner explicitly accepts the residual; E1 re-checks the bound |
 
 **Reopen rule:** a newly discovered funnel reopens W2 only if it exists and is
 reachable in `main` and violates the criterion. The possibility that someone
@@ -140,23 +154,47 @@ or W2-6, each starting with a demonstration of the failure; then the Sync
 
 ## 6. PRE-GC list (A1 prerequisites)
 
-X1 CLOSED does not authorize `GC_ENABLED=true`. A1 additionally requires:
+X1 CLOSED does not authorize `GC_ENABLED=true`. **The A1 gate is every open
+entry tagged `PRE-GC` or `PRE-ACTIVATION` in
+[KNOWN_ISSUES.md](./KNOWN_ISSUES.md) and
+[TECHNICAL-DEBT.md](./TECHNICAL-DEBT.md), plus the table below.** The table
+names the known items; it is not a substitute for the tags. Enumerate the tags
+before A1, for example:
+
+```sh
+grep -nE 'PRE-GC|PRE-ACTIVATION' docs/KNOWN_ISSUES.md docs/TECHNICAL-DEBT.md docs/OPEN-WORK-INDEX.md
+```
+
+A new PRE-GC finding is registered with that tag; it does not need to be
+added here to count.
 
 | Item | Tracking |
 |---|---|
 | Phase 5 expired-version cascade keeps fs_objects shared with HEAD (P0 latent) | `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` |
-| Certification-window fence, **only as far as the GC destroyers D1–D3 need it** (re-scope PC-D1B.4 §18 before implementing; the full CW-M1..M34 list is not automatically required) | `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01` |
+| Phase 6 execute-time TOCTOU: the keep-set is computed at scan time and fs_object items carry no library guard and no execute-time reachability recheck, so a HEAD that re-references an fs_id between scan and execution loses the fs_object row. Closing W2-10 (block liveness for content resurrection) does **not** close this; the certification-window fence does not either (PC-D1B.4 §15) | recorded under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` (PC-D1B.4 finding F3) |
+| Stale-claim settle race: after `ReleaseStaleBlockClaim` reports `BlockClaimAbsent`, `settleBlockCandidate` deletes the candidate conditioned only on `candidate_at`, so a claim won by another worker in the gap can lose its recovery authority (liveness: block stranded in `deleting`, no data loss). Close here or make it an explicit G5 exit criterion | `ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` |
+| Certification-window fence, **only as far as the GC destroyers D1–D3 need it** (re-scope PC-D1B.4 §18 before implementing; the full CW-M1..M34 list is not automatically required). Includes `ISSUE-PCD1B-STALE-TOMBSTONE-DISPLAY-METADATA-01` if generation-timestamped deletes are adopted | `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01` |
 | HEAD-less ghost `libraries` row counts as canonically absent for GC/restore | `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` |
 | Repair-liveness residual (35-day `pub:` TTL): fail-closed GC health gate or equivalent decision | `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` (if not closed by W2-11) |
 | GC mapping resolver `CassandraStore.lookupBlockMapping()` reclassified from session consistency | `PCD1B3-PRE-GC-SESSION-CONSISTENCY-EXCEPTION` marker |
 | Library hard-delete lease: global SERIAL and fenced final batch | `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`, `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (current-runtime, §7) |
 | Startup check refusing `GC_ENABLED=true` while any item above is open | first A1 item |
 
+Closed by the greenfield precondition, not carried into A1: Technical Debt
+#24 (pre-migration-017 `gc_block_candidates` rows with a null `storage_key`).
+The deployment that will enable GC starts from an empty server (no legacy data
+is preserved), so it cannot contain candidate rows written before migration
+`017`. If GC is ever enabled on a deployment that ran pre-`017` code, #24
+reopens as PRE-ACTIVATION.
+
 ## 7. Current-runtime work outside the critical path
 
 The library hard-delete lease issues are current-runtime defects, not only
 PRE-GC: restore and `PermanentDeleteRepo` run through the API independently of
-`GC_ENABLED`, and the cluster configurations use `LOCAL_SERIAL`. They are
+`GC_ENABLED`. The SERIAL-domain issue is **config-dependent**: the shipped
+`configs/config.prod.yaml` uses `serial_consistency: SERIAL`, but
+`LOCAL_SERIAL` is a supported setting (used by the multi-region compose
+configurations; startup only logs a warning) and the lease LWTs inherit it. They are
 worked in parallel with W2: first the global SERIAL pin of the lease LWTs
 (`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`), then the generation-fenced
 final batch (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`). The SERIAL pin alone

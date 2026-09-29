@@ -873,10 +873,14 @@ activation it is X1 or PRE-GC work; a sequence that needs a caller, alias,
 wrapper or CQL variant that does not exist is not a finding. Existing guards
 stay; new guards cover current call sites only; decision records create
 obligations only through #201 steps, the W2 exit checklist or the PRE-GC list;
-at most two audit rounds per PR.
+a target of two planned audit rounds per PR, where the round number never
+changes a finding's severity or scope. A W2 row closes only with positive
+evidence, a fix, or an explicitly accepted operational bound — never because a
+failure was not reproduced.
 
 **Why.** #202–#215 closed W1, the pre-HEAD W2 slices, G1, G2 and G3 in about
-ten days; #216–#233 advanced no #201 step in about two weeks, because a W2
+ten days; #216–#233 spent most of about two weeks outside the #201
+progression (apart from #219/#221/#226 R31 and runtime fixes), because a W2
 question was answered with a new certification architecture and audit rounds
 promoted hypothetical future bypasses to blockers.
 

@@ -1133,7 +1133,7 @@ by this matrix.
    permits the certifier to land fail-closed before mapping promotion.
 5. Specify and audit the separate mapping-authority representation and
    cold-path promotion path (M18-M19), including its operational runbook.
-   **Implemented by PC-D1B.3 / PR #233 (pending merge).** A library with
+   **Implemented by PC-D1B.3 / PR #233 (merged).** A library with
    SHA-1-only dependencies needs successful promotion before it can be
    certified; promotion is not a prerequisite for #228 to fail closed.
 6. Specify the certification-window fence before destructive GC activation

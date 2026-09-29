@@ -21,8 +21,11 @@ PRE-GC list → A1) and for finding classification. Status changes recorded
 here: `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01` is PRE-GC only (no longer
 a productive-consumer prerequisite); `ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01`
 is frozen and re-evaluated in E1; `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`
-is CURRENT-RUNTIME as well as PRE-GC; `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`
-stays P0 PRE-GC. Boundary notes below that name PC-D1B.5 or a productive
+is CURRENT-RUNTIME (config-dependent) as well as PRE-GC; `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`
+stays P0 PRE-GC. The A1 gate is every open entry tagged `PRE-GC` or
+`PRE-ACTIVATION` in this file and in TECHNICAL-DEBT.md, plus the
+X1-CRITICAL-PATH.md §6 table (which also lists the Phase 6 execute-time TOCTOU
+and `ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01`). Boundary notes below that name PC-D1B.5 or a productive
 consumer as a PC-2 prerequisite are historical. `GC_ENABLED=false` remains
 mandatory.
 
@@ -6445,7 +6448,7 @@ separate.
 
 ### ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01: After Mapping Authority, a mutable mapping row can diverge from the authority a witness rests on
 
-**Status**: ✅ Fixed by PR #233 (implementation on branch; pending merge); PRE-CONSUMER
+**Status**: ✅ Fixed by PR #233 (merged 2026-09-26); PRE-CONSUMER
 **Severity**: High (P1) — closure required before the first productive consumer; dormant today (no SHA-1-only file can be certified on `main`, no consumer)
 **Affected**: `block_id_mappings` writers (`WriteBlockIDMapping` is a plain upsert), ordinary block resolution readers, and certification of SHA-1-only files
 **Registered**: 2026-09-23, PC-D1B.4
@@ -6561,7 +6564,7 @@ policy), with a characterization. Not part of PC-D1B.5.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01: The library hard-delete lease inherits `serial_consistency`
 
-**Status**: 🟡 Open — found 2026-09-23 (PC-D1B.4 inventory); CURRENT-RUNTIME multi-DC and PRE-GC (reclassified 2026-09-29: restore and `PermanentDeleteRepo` use the lease through the API independently of `GC_ENABLED`, and `configs/config-*.cluster.yaml` set `serial_consistency: LOCAL_SERIAL`)
+**Status**: 🟡 Open — found 2026-09-23 (PC-D1B.4 inventory); CURRENT-RUNTIME / CONFIG-DEPENDENT multi-DC and PRE-GC (reclassified 2026-09-29: restore and `PermanentDeleteRepo` use the lease through the API independently of `GC_ENABLED`; the shipped `configs/config.prod.yaml` uses `SERIAL`, but `LOCAL_SERIAL` is a supported setting — `configs/config-*.cluster.yaml` use it and startup only warns — and the lease LWTs inherit it)
 **Severity**: Medium — multi-DC lifecycle serialization
 **Affected**: `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock` (`internal/gc/store_cassandra.go`), used by restore, API permanent delete and GC library cascade
 **Registered**: 2026-09-23, PC-D1B.4
