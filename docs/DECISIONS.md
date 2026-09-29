@@ -875,8 +875,9 @@ stay; new guards cover current call sites only; decision records create
 obligations only through #201 steps, the W2 exit checklist or the PRE-GC list;
 a target of two planned audit rounds per PR, where the round number never
 changes a finding's severity or scope. A W2 row closes only with positive
-evidence, a fix, or an explicitly accepted operational bound — never because a
-failure was not reproduced.
+evidence, a fix, or a fail-closed mechanism that makes the violation
+unreachable — never because a failure was not reproduced, and never by
+accepting a residual that remains reachable.
 
 **Why.** #202–#215 closed W1, the pre-HEAD W2 slices, G1, G2 and G3 in about
 ten days; #216–#233 spent most of about two weeks outside the #201

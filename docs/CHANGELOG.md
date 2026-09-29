@@ -21,17 +21,22 @@ PRE-GC list for A1, and the finding classification rule (current runtime /
 current code under planned GC activation / nonexistent code is not a finding;
 existing guards stay; target of two planned audit rounds, round number never
 changes severity or scope). W2 rows close as `CLOSED-EVIDENCE` (positive
-unreachability evidence), `CLOSED-FIX` or `ACCEPTED-BOUNDED`. The A1 gate is
+unreachability evidence), `CLOSED-FIX` or `CLOSED-GATED` (a fail-closed
+mechanism refuses D(P1) while the premise may not hold; a reachable residual
+stays OPEN). The A1 gate is
 every PRE-GC/PRE-ACTIVATION-tagged entry plus the §6 table, which adds the
 Phase 6 execute-time TOCTOU and `ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01`;
 Technical Debt #24 is closed by the greenfield precondition. Reclassifies
 `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` as CURRENT-RUNTIME
 (config-dependent) as well as PRE-GC. Also clears stale "#233 pending merge"
-and "activation rests on X1 alone" status text. Updated: `CURRENT_WORK.md`, `docs/OPEN-WORK-INDEX.md`,
+text and every current "activation after X1 / X1 alone" status or operator
+line (CURRENT_WORK, OPEN-WORK-INDEX, KNOWN_ISSUES, DEPLOY, IMPLEMENTATION_STATUS,
+V1-PRODUCTION-ROADMAP); older documents are read through the note in §6. Updated: `CURRENT_WORK.md`, `docs/OPEN-WORK-INDEX.md`,
 `docs/KNOWN_ISSUES.md`, `docs/DECISIONS.md`, `docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md`,
 `docs/PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md`,
 `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`, `docs/R3-LIVENESS-CONTINUITY.md`,
-`docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md`, `docs/TECHNICAL-DEBT.md`.
+`docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md`, `docs/TECHNICAL-DEBT.md`,
+`docs/DEPLOY.md`, `docs/IMPLEMENTATION_STATUS.md`, `docs/V1-PRODUCTION-ROADMAP.md`.
 No runtime, schema, CQL, guard or mutation-suite change; `GC_ENABLED=false`
 remains mandatory.
 

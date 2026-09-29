@@ -31,8 +31,9 @@ Two causes, both process rather than architecture:
    published with `CONDITIONAL`/`UNKNOWN` continuity?" — with an after-the-fact
    certification architecture instead of finishing W2 at the source. On a
    greenfield server (historical backfill is a non-goal) a closed W2 leaves no
-   unproven inherited dependency; the remaining risk is the GC Phase 5 defect,
-   which is PRE-GC regardless.
+   unproven inherited dependency; the remaining risk is GC destroying content
+   HEAD still reaches (Phase 5 cascade, Phase 6 execute-time TOCTOU), which is
+   PRE-GC regardless (§6).
 2. Audit rounds turned hypothetical future bypasses into merge blockers, and
    decision records turned their own "must" lists into obligations for the next
    PR, creating a roadmap parallel to #201.
@@ -96,7 +97,11 @@ Row states:
 | `OPEN` | not closed |
 | `CLOSED-EVIDENCE` | positive, reviewable evidence that the failure sequence is unreachable under the current code/runtime contract (for example a source-level argument that an existing bound already excludes it). "We tried and did not reproduce it" is not evidence |
 | `CLOSED-FIX` | a change removes the failure sequence, with evidence |
-| `ACCEPTED-BOUNDED` | the sequence remains reachable but is bounded by a named operational mechanism (for example the fail-closed GC health gate), and the owner explicitly accepts the residual; E1 re-checks the bound |
+| `CLOSED-GATED` | a named **fail-closed** mechanism (for example the GC health gate) refuses the dangerous transition — GC does not commit D(P1) — whenever the row's continuity premise may not hold, so the W2 violation is unreachable under the operational contract; E1 re-checks the mechanism |
+
+A bound that only makes the violation rare, short-lived or operationally
+tolerable does not close a row: the violation is still reachable, so the row
+stays `OPEN`. Residual risk acceptance is not a W2 exit state.
 
 **Reopen rule:** a newly discovered funnel reopens W2 only if it exists and is
 reachable in `main` and violates the criterion. The possibility that someone
@@ -154,7 +159,10 @@ or W2-6, each starting with a demonstration of the failure; then the Sync
 
 ## 6. PRE-GC list (A1 prerequisites)
 
-X1 CLOSED does not authorize `GC_ENABLED=true`. **The A1 gate is every open
+X1 CLOSED does not authorize `GC_ENABLED=true`. Documents written before this
+reset (operational notes, config comments, dated readiness reports, analysis
+docs) that say GC may be activated "after X1 closes" mean after this gate
+closes. **The A1 gate is every open
 entry tagged `PRE-GC` or `PRE-ACTIVATION` in
 [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) and
 [TECHNICAL-DEBT.md](./TECHNICAL-DEBT.md), plus the table below.** The table
@@ -175,10 +183,10 @@ added here to count.
 | Stale-claim settle race: after `ReleaseStaleBlockClaim` reports `BlockClaimAbsent`, `settleBlockCandidate` deletes the candidate conditioned only on `candidate_at`, so a claim won by another worker in the gap can lose its recovery authority (liveness: block stranded in `deleting`, no data loss). Close here or make it an explicit G5 exit criterion | `ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` |
 | Certification-window fence, **only as far as the GC destroyers D1–D3 need it** (re-scope PC-D1B.4 §18 before implementing; the full CW-M1..M34 list is not automatically required). Includes `ISSUE-PCD1B-STALE-TOMBSTONE-DISPLAY-METADATA-01` if generation-timestamped deletes are adopted | `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01` |
 | HEAD-less ghost `libraries` row counts as canonically absent for GC/restore | `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` |
-| Repair-liveness residual (35-day `pub:` TTL): fail-closed GC health gate or equivalent decision | `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` (if not closed by W2-11) |
+| Repair-liveness residual (35-day `pub:` TTL): the fail-closed GC health gate, if W2-11 is closed as `CLOSED-GATED` through it, must exist and be enabled before activation | `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` (W2-11) |
 | GC mapping resolver `CassandraStore.lookupBlockMapping()` reclassified from session consistency | `PCD1B3-PRE-GC-SESSION-CONSISTENCY-EXCEPTION` marker |
 | Library hard-delete lease: global SERIAL and fenced final batch | `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`, `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (current-runtime, §7) |
-| Startup check refusing `GC_ENABLED=true` while any item above is open | first A1 item |
+| Startup check refusing `GC_ENABLED=true` while any A1 gate item (tagged entry or row above) is open | first A1 item |
 
 Closed by the greenfield precondition, not carried into A1: Technical Debt
 #24 (pre-migration-017 `gc_block_candidates` rows with a null `storage_key`).
@@ -194,8 +202,8 @@ PRE-GC: restore and `PermanentDeleteRepo` run through the API independently of
 `GC_ENABLED`. The SERIAL-domain issue is **config-dependent**: the shipped
 `configs/config.prod.yaml` uses `serial_consistency: SERIAL`, but
 `LOCAL_SERIAL` is a supported setting (used by the multi-region compose
-configurations; startup only logs a warning) and the lease LWTs inherit it. They are
-worked in parallel with W2: first the global SERIAL pin of the lease LWTs
+configurations; startup only logs a warning) and the lease LWTs inherit it.
+Both issues are worked in parallel with W2: first the global SERIAL pin of the lease LWTs
 (`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`), then the generation-fenced
 final batch (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`). The SERIAL pin alone
 does not close the non-fencing race.

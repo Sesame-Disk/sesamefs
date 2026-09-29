@@ -32,7 +32,7 @@ without a matching claim and divergent or partial projections still fail closed.
 <code>library_continuity_certifier_*</code> files) exist on that branch only;
 a reader on the <code>main</code> baseline will not find them.
 
-**Runtime status:** PR #230 added the schema and authority primitive. PR #231 added the scoped writer/deleter wiring and no-bypass fence. PR #228 adds read-only claim consumption to the certifier; PC-D1B.3 implements mapping promotion in PR #233 (pending merge). GC activation remains separate and prohibited.
+**Runtime status:** PR #230 added the schema and authority primitive. PR #231 added the scoped writer/deleter wiring and no-bypass fence. PR #228 adds read-only claim consumption to the certifier; PC-D1B.3 implements mapping promotion in PR #233 (merged). GC activation remains separate and prohibited.
 
 ## PR #228 implementation closure (2026-09-22)
 

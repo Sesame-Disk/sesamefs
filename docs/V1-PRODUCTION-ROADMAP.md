@@ -567,7 +567,7 @@ the launch on Glacier since it requires AWS Glacier infrastructure setup and tes
 - [#7] ✅ Enforcement Phase 2 wire-up — DONE (2026-03-28)
 
 ### Sprint 2 — Hard Blockers (CURRENT)
-- [#15] GC destructive-delete safety — lease coordination is implemented, but keep `GC_ENABLED=false` fleet-wide until X1 closes; then activate designated replicas in one DC under the lease
+- [#15] GC destructive-delete safety — lease coordination is implemented, but keep `GC_ENABLED=false` fleet-wide until X1 and the PRE-GC / A1 gate ([X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §6) close; then activate designated replicas in one DC under the lease
 - [#9] Security hardening — small effort, high impact
 - [#1] Remaining Accounts integration — formalize service-account API key auth, provisioning endpoint, idempotency/audit
 

@@ -11,7 +11,11 @@ the PublicationCoordinator and the PC-D1 line are frozen, and PC-2 is not an
 X1 prerequisite. It also adds the finding classification rule (current code +
 current runtime / current code + planned GC activation / code that does not
 exist) and reclassifies both library hard-delete lease issues as
-CURRENT-RUNTIME. No runtime, schema, CQL, guard or mutation-suite change.
+CURRENT-RUNTIME (the SERIAL-domain one config-dependent). X1 CLOSED does not
+authorize GC: activation also needs the PRE-GC / A1 gate (every open
+PRE-GC/PRE-ACTIVATION-tagged entry plus §6, including Phase 5 and the Phase 6
+execute-time TOCTOU). W2 rows close only as CLOSED-EVIDENCE, CLOSED-FIX or
+CLOSED-GATED. No runtime, schema, CQL, guard or mutation-suite change.
 `GC_ENABLED=false` remains mandatory.
 
 **Merged PR #233, PC-D1B.3 Mapping Authority (rebased onto `origin/main@cc57cd2dc`, 2026-09-25):**
@@ -1263,9 +1267,9 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 - **Sync Protocol**: 100% working, desktop clients fully compatible 🔒 FROZEN
 - **Backend API**: ~98% implemented — OIDC ✅, GC implementation present; destructive activation blocked by X1 and the PRE-GC / A1 gate (X2 closed 2026-08-14), Library Settings ✅, OnlyOffice ✅, Tags cascade ✅, Org Admin Panel ✅, Superadmin Departments ✅
 - **Frontend UI**: ~83% functional (all modals migrated, folder icons ✅, ~51 ModalPortal wrappers to clean up)
-- **Production Ready**: blocked for destructive GC until X1 closes (X2 closed 2026-08-14); keep `GC_ENABLED=false` on every replica/DC
+- **Production Ready**: blocked for destructive GC until X1 closes and then the PRE-GC / A1 gate ([docs/X1-CRITICAL-PATH.md](docs/X1-CRITICAL-PATH.md) §6) closes (X2 closed 2026-08-14); keep `GC_ENABLED=false` on every replica/DC
 - **Admin Panels**: Both superadmin and org admin at feature parity
-- **Active Bugs**: tracked canonically in `docs/KNOWN_ISSUES.md`; X1 is the sole remaining GC blocker (X2 closed)
+- **Active Bugs**: tracked canonically in `docs/KNOWN_ISSUES.md`; GC activation needs X1 and then the PRE-GC / A1 gate (X2 closed)
 
 ### Critical Facts to Remember
 
