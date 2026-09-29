@@ -13,6 +13,7 @@ func TestFileFromBlocksPublicationBarriersDefaultNop(t *testing.T) {
 	fileFromBlocksAfterVerifiedBarrier("repo")
 	fileFromBlocksAfterBorrowedLivenessBarrier("repo")
 	fileFromBlocksAfterStagedBarrier("repo")
+	uploadFileAfterMaterializedBarrier("repo")
 	if err := fileFromBlocksBeforeHeadBarrier("repo"); err != nil {
 		t.Fatalf("default beforeHead barrier = %v, want nil", err)
 	}
@@ -44,6 +45,7 @@ func TestFileFromBlocksPublicationBarriersProdAreEmpty(t *testing.T) {
 		"fileFromBlocksAfterBorrowedLivenessBarrier",
 		"fileFromBlocksAfterStagedBarrier",
 		"fileFromBlocksBeforeHeadBarrier",
+		"uploadFileAfterMaterializedBarrier",
 	} {
 		fn := productionFunc(t, file, name)
 		ast.Inspect(fn.Body, func(node ast.Node) bool {
@@ -66,6 +68,7 @@ func TestFileFromBlocksPublicationBarriersIntegrationIsTagged(t *testing.T) {
 		text := string(raw)
 		for _, forbidden := range []string{
 			"SetFileFromBlocksPublicationBarriersForTest",
+			"SetUploadFileAfterMaterializedBarrierForTest",
 			"fileFromBlocksBarrierMu",
 			"fileFromBlocksAfterVerifiedFn",
 		} {
@@ -86,8 +89,10 @@ func TestFileFromBlocksPublicationBarriersIntegrationIsTagged(t *testing.T) {
 	}
 	for _, required := range []string{
 		"SetFileFromBlocksPublicationBarriersForTest",
+		"SetUploadFileAfterMaterializedBarrierForTest",
 		"sync.Mutex",
 		"hooks.repoID != repoID",
+		"hook.repoID != repoID",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("R3 BARRIER: integration barriers missing %q", required)
@@ -124,6 +129,21 @@ func TestFileFromBlocksStageAndHeadBarriersStayOffAuthority(t *testing.T) {
 	assertFnDoesNotCall(t, fn, "finalizeStoredUploadMetadataOnce", "BlockDeleteFenceActive", "ProbeBlockReuse")
 	assertBarrierArgIsRepoID(t, fn, "finalizeStoredUploadMetadataOnce", "fileFromBlocksAfterStagedBarrier")
 	assertBarrierArgIsRepoID(t, fn, "finalizeStoredUploadMetadataOnce", "fileFromBlocksBeforeHeadBarrier")
+}
+
+// The UploadFile barrier sits after the block is materialized and before the
+// shared finalizer stages pub:, so W2-6 evidence can model a lapsed own up:
+// and a GC win before staging. It must stay off authority reads.
+func TestUploadFileAfterMaterializedBarrierIsBetweenMaterializeAndFinalize(t *testing.T) {
+	_, fn := r3ParseFunction(t, r3SourcePath("internal", "api", "v2", "files.go"), "UploadFile")
+	calls := r3CallPositions(fn)
+	materialize := barrierFirstCallPos(t, calls, "UploadFile", "RetryUploadedBlockMaterializationPhasedContext")
+	barrier := barrierFirstCallPos(t, calls, "UploadFile", "uploadFileAfterMaterializedBarrier")
+	finalize := barrierFirstCallPos(t, calls, "UploadFile", "finalizeStoredUploadMetadata")
+	if !(materialize < barrier && barrier < finalize) {
+		t.Fatal("R3 BARRIER: UploadFile's after-materialized barrier must follow materialization and precede finalizeStoredUploadMetadata")
+	}
+	assertBarrierArgIsRepoID(t, fn, "UploadFile", "uploadFileAfterMaterializedBarrier")
 }
 
 func TestFinalizeStoredUploadMetadataCleansDefinitiveCASLoserThroughProductionPath(t *testing.T) {

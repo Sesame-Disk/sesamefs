@@ -3508,8 +3508,18 @@ func (h *FileHandler) UploadFile(c *gin.Context) {
 		}
 		return
 	}
+	uploadFileAfterMaterializedBarrier(repoID)
 
-	actualFilename, storageDeltaBytes, storageDeltaFiles, err := h.finalizeStoredUploadMetadata(orgID, userID, repoID, parentDir, filename, []string{fileID}, fileSize, replace, nil)
+	// W2-6: publish only against the exact placement this request materialized.
+	// The shared finalizer stages pub: (LOCAL_QUORUM) and then re-validates this
+	// placement immediately before HEAD, so a GC delete committed while this
+	// request's own up: had lapsed rejects the publication (409) instead of
+	// letting HEAD depend on a retired placement.
+	actualFilename, storageDeltaBytes, storageDeltaFiles, err := h.finalizeStoredUploadMetadata(orgID, userID, repoID, parentDir, filename, []string{fileID}, fileSize, replace, []commitBlockPlacement{{
+		blockID:      sha256ID,
+		storageClass: materializationTarget.StorageClass,
+		storageKey:   materializationTarget.StorageKey,
+	}})
 	if err != nil {
 		// Failed publication leaves the provisional up: reference to Cassandra
 		// TTL and Phase 0 instead of deleting from block_references.

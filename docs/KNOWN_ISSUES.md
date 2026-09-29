@@ -6036,9 +6036,9 @@ Expired provenance past the 48h TTL remains unsolved (indistinguishable from tru
 
 ### ISSUE-PC0-EXACT-P-FUNNEL-GAP-01: Publication-authority/continuity before HEAD is not uniform by provenance
 
-**Status**: 🔴 Open — characterized by PC-0; not fixed in the characterization PR
+**Status**: 🟡 Open — partially fixed. `UploadFile` fixed by W2-6 (PR #W26PR, 2026-09-29): it passes its materialized exact placement to the shared finalizer, which re-validates it after `pub:` and immediately before HEAD (evidence `TestW2UploadFileExactPlacementBeforeHead`, RED on the previous code). `CreateFile`, OnlyOffice, SeafHTTP and cross-repo remain
 **Severity**: High (P1) — W2 writer protocol completeness
-**Affected**: `UploadFile` → `finalizeStoredUploadMetadataOnce` with `commitBlocks=nil`; `CreateFile`; OnlyOffice `publishEditedDocumentMetadata`; SeafHTTP commit once-paths; cross-repo `processSingleItem`
+**Affected**: ~~`UploadFile` → `finalizeStoredUploadMetadataOnce` with `commitBlocks=nil`~~ (fixed, W2-6); `CreateFile`; OnlyOffice `publishEditedDocumentMetadata`; SeafHTTP commit once-paths; cross-repo `processSingleItem`
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization
 
 #### Problem
@@ -6048,8 +6048,8 @@ W1/W2 proved that publishing against a retired or changed exact physical placeme
 - `CreateFileFromBlocks` passes `commitBlocks` into the shared finalizer.
 - Sync readiness fences the PutBlock-provenanced subset only.
 
-`UploadFile` calls `finalizeStoredUploadMetadata(..., nil)`, so
-`validateCommitBlockPublicationFences` is a no-op. CreateFile, OnlyOffice,
+`UploadFile` called `finalizeStoredUploadMetadata(..., nil)`, so
+`validateCommitBlockPublicationFences` was a no-op (fixed by W2-6, PR #W26PR). CreateFile, OnlyOffice,
 SeafHTTP, and cross-repo never call it. Those funnels can still stage `pub:`,
 queue repair, and CAS HEAD.
 
