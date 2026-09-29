@@ -1,13 +1,20 @@
 # PC-D1 - Inherited dependency continuity decision
 
+> **Frozen (2026-09-29, [X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §5):**
+> this line is not on the X1 critical path. A productive consumer and PC-2
+> are not X1 prerequisites; the certification-window fence (PC-D1B.5) is
+> PRE-GC only; E1 re-evaluates whether the certified baseline is needed once
+> W2 is closed. Statements below that order PC-D1B work before PC-2 remain
+> the contract for a future consumer, not the X1 roadmap.
+
 **Status:** DECIDED architecture freeze; PC-D1A authority foundation
 implemented; PR #228 implements the fail-closed certifier gate; PC-D1B.3
-mapping authority/cold-path promotion is implemented in PR #233 (pending merge).
+mapping authority/cold-path promotion is implemented in PR #233 (merged).
 The productive consumer remains open. Historical backfill is a greenfield
 non-goal (2026-09-20; see the note in section 5).
 **PC-D1A implementation:** canonical witness schema and HEAD-fenced/global-SERIAL
 authority primitives landed 2026-09-19. PR #228 implements the read-only certifier
-gate; PC-D1B.3 mapping promotion is implemented in PR #233 (pending merge), and
+gate; PC-D1B.3 mapping promotion is implemented in PR #233 (merged), and
 a productive consumer remains open.
 **Issue:** `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
 **Branch:** `docs/pc-d1-inherited-dependency-continuity`
@@ -520,7 +527,7 @@ The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier evidence
 
 The issue is marked **decision resolved / PC-D1A authority foundation and
 PC-D1B.1 certifier gate implemented / PC-D1B.3 mapping coverage implemented in
-PR #233 (pending merge) / lifecycle fence and productive-consumer work open**.
+PR #233 (merged) / lifecycle fence and productive-consumer work open**.
 W2, R31, X1, content resurrection, G4/G5, and
 `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` remain OPEN. No funnel is migrated,
 no publication runtime changes, and no GC activation is permitted.

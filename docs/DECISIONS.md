@@ -2,7 +2,7 @@
 
 This document tracks key development decisions and the development approach for SesameFS.
 
-**Last Updated**: 2026-09-13 (PC-D1 audit follow-up)
+**Last Updated**: 2026-09-29 (X1 critical-path reset)
 
 ---
 
@@ -847,6 +847,43 @@ in multi-DC. `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` is closed.
 GC owns negative retention/reachability and still needs the Phase 5 sharing-aware
 fix before activation. PC-2 may assume this boundary and fail-closed rule; it
 may not assume the witness schema, backfill, or atomic implementation exists.
+
+**2026-09-29 amendment:** the X1 critical-path reset
+([X1-CRITICAL-PATH.md](X1-CRITICAL-PATH.md)) freezes this line. The decision
+above stands as the owner if a productive consumer is ever built, but neither
+that consumer nor PC-2 is an X1 prerequisite, and E1 re-evaluates whether the
+certified baseline is needed once W2 is closed.
+
+---
+
+## X1 critical-path reset
+
+**Date:** 2026-09-29
+**Status:** Decided. Docs only; no runtime change.
+
+**Decision.** The order of work toward X1 returns to the #201 roadmap:
+W2 exit checklist → G4 → G5 → E1 → X1 CLOSED, then the PRE-GC list and A1
+([X1-CRITICAL-PATH.md](X1-CRITICAL-PATH.md)). PC-D1B.5 is PRE-GC only; the
+PublicationCoordinator and the PC-D1 line are frozen and are optional tools
+for W2, not prerequisites.
+
+**Finding rule.** A finding needs a concrete sequence over code that exists:
+under the current runtime it is a CURRENT-RUNTIME bug; under the planned GC
+activation it is X1 or PRE-GC work; a sequence that needs a caller, alias,
+wrapper or CQL variant that does not exist is not a finding. Existing guards
+stay; new guards cover current call sites only; decision records create
+obligations only through #201 steps, the W2 exit checklist or the PRE-GC list;
+a target of two planned audit rounds per PR, where the round number never
+changes a finding's severity or scope. A W2 row closes only with positive
+evidence, a fix, or a fail-closed mechanism that makes the violation
+unreachable — never because a failure was not reproduced, and never by
+accepting a residual that remains reachable.
+
+**Why.** #202–#215 closed W1, the pre-HEAD W2 slices, G1, G2 and G3 in about
+ten days; #216–#233 spent most of about two weeks outside the #201
+progression (apart from #219/#221/#226 R31 and runtime fixes), because a W2
+question was answered with a new certification architecture and audit rounds
+promoted hypothetical future bypasses to blockers.
 
 ---
 

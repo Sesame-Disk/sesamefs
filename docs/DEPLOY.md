@@ -725,7 +725,7 @@ instead of attempting `CREATE KEYSPACE` through the restricted app role.
 
 > `ACCOUNTS_DISABLE_ORG_USER_WRITES` should normally stay `true`. That keeps tenant org-admin user lifecycle writes disabled so Accounts remains the operational authority. Platform superadmins still bypass that tenant lock as an operational fallback, but Accounts should prefer the `/admin/...` surface.
 
-> `gc.enabled` defaults to `false` in YAML. While X1 (`ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01`) remains open, keep `GC_ENABLED=false` on **every replica in every DC**. X2 is closed under the stable-topology operational contract; changing the replication DC set or RF with existing reference state requires a separately certified migration before GC can be reconsidered. The LWT lease does not close X1. Only after X1 closes may designated replicas in one DC set `GC_ENABLED=true` and participate under the lease; all replicas in every other DC must remain false.
+> `gc.enabled` defaults to `false` in YAML. While X1 (`ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01`) remains open, keep `GC_ENABLED=false` on **every replica in every DC**. X2 is closed under the stable-topology operational contract; changing the replication DC set or RF with existing reference state requires a separately certified migration before GC can be reconsidered. The LWT lease does not close X1. X1 closure alone does not authorize activation: only after X1 closes **and** the PRE-GC / A1 gate ([X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §6) closes may designated replicas in one DC set `GC_ENABLED=true` and participate under the lease; all replicas in every other DC must remain false.
 
 > `SERVER_TRUSTED_PROXIES` should never be set to `0.0.0.0/0`, `::/0`, or another blanket range. In the supported two-nginx topology above, trust only the internal SesameFS nginx network that talks directly to Go. If you leave it unset, SesameFS ignores forwarded-IP headers and uses the direct socket peer instead.
 
@@ -1101,8 +1101,8 @@ operation across the **whole fleet** (every region/DC), not as a rolling deploy:
 4. Deploy the new image to **all** replicas in all DCs while GC stays disabled.
 5. Confirm the deployed image/commit is identical on every replica — no old
    binary remains anywhere.
-6. Keep `GC_ENABLED=false` on every replica in every DC while X1 remains open.
-   After X1 closes, designated replicas in one DC may be re-enabled under the LWT
+6. Keep `GC_ENABLED=false` on every replica in every DC while X1 or the PRE-GC / A1
+   gate (X1-CRITICAL-PATH.md §6) remains open. After both close, designated replicas in one DC may be re-enabled under the LWT
    lease; every replica in every other DC must remain disabled. A topology/RF change
    requires a separately certified migration before GC can be reconsidered.
 
@@ -1474,7 +1474,7 @@ What the stock production deploy does **not** provide by itself yet:
 - there is no built-in migration workflow for existing non-empty libraries that need to move from one storage class to another
 - org policy only affects **new library creation** in this slice; it does not relocate existing libraries
 - create-time placement is intentionally limited to hot classes; cold-tier primary placement remains future design work
-- GC has a Cassandra LWT lease (`gc_leader` row), but the lease does not close X1. While that blocker remains open, set `GC_ENABLED=false` on every replica in every DC. After X1 closes, designated replicas in one DC may participate and the lease will select one leader; all other DCs remain disabled. Lease takeover from a crashed leader is supported via the admin endpoint without waiting for TTL. X2 is closed under the stable-topology operational contract: changing the replication DC set or RF with existing reference state requires a separately certified migration before GC can be reconsidered.
+- GC has a Cassandra LWT lease (`gc_leader` row), but the lease does not close X1. While X1 or the PRE-GC / A1 gate ([X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §6) remains open, set `GC_ENABLED=false` on every replica in every DC. After both close, designated replicas in one DC may participate and the lease will select one leader; all other DCs remain disabled. Lease takeover from a crashed leader is supported via the admin endpoint without waiting for TTL. X2 is closed under the stable-topology operational contract: changing the replication DC set or RF with existing reference state requires a separately certified migration before GC can be reconsidered.
 
 For production multi-region, treat this feature as requiring operator-provided topology plus the shared config and `.env` values below.
 
@@ -1883,13 +1883,13 @@ docker compose -f docker-compose.prod.yml exec cassandra sh -lc 'cqlsh -u cassan
 
 Current production verification is that every replica in every DC reports
 `GC_ENABLED=false`; do not use the lease as permission to enable destructive GC.
-After X1 closes, if multiple designated replicas in one DC participate,
+After X1 and the PRE-GC / A1 gate close, if multiple designated replicas in one DC participate,
 confirm that the lease selects only one active leader:
 
 ```bash
 docker compose -f docker-compose.prod.yml exec cassandra sh -lc 'cqlsh -u cassandra -p "$CASSANDRA_SUPERUSER_PASSWORD" -e "SELECT role, instance_id, heartbeat, ttl(instance_id) FROM sesamefs.gc_leases WHERE role='gc';"'
-# Before X1 closes: no active GC leader is expected.
-# After X1 closes and one-DC activation: exactly one row, with a positive TTL
+# Before activation (X1 + PRE-GC / A1 gate): no active GC leader is expected.
+# After activation in one DC: exactly one row, with a positive TTL
 # and a recent heartbeat (< 90s old).
 # instance_id format is <hostname>-<pid>-<unix_nanos>. Re-run on every node —
 # the answer must be identical (it's the same Cassandra row, replicated to

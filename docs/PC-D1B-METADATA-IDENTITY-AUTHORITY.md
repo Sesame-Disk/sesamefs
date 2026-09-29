@@ -32,7 +32,7 @@ without a matching claim and divergent or partial projections still fail closed.
 <code>library_continuity_certifier_*</code> files) exist on that branch only;
 a reader on the <code>main</code> baseline will not find them.
 
-**Runtime status:** PR #230 added the schema and authority primitive. PR #231 added the scoped writer/deleter wiring and no-bypass fence. PR #228 adds read-only claim consumption to the certifier; PC-D1B.3 implements mapping promotion in PR #233 (pending merge). GC activation remains separate and prohibited.
+**Runtime status:** PR #230 added the schema and authority primitive. PR #231 added the scoped writer/deleter wiring and no-bypass fence. PR #228 adds read-only claim consumption to the certifier; PC-D1B.3 implements mapping promotion in PR #233 (merged). GC activation remains separate and prohibited.
 
 ## PR #228 implementation closure (2026-09-22)
 
@@ -1133,7 +1133,7 @@ by this matrix.
    permits the certifier to land fail-closed before mapping promotion.
 5. Specify and audit the separate mapping-authority representation and
    cold-path promotion path (M18-M19), including its operational runbook.
-   **Implemented by PC-D1B.3 / PR #233 (pending merge).** A library with
+   **Implemented by PC-D1B.3 / PR #233 (merged).** A library with
    SHA-1-only dependencies needs successful promotion before it can be
    certified; promotion is not a prerequisite for #228 to fail closed.
 6. Specify the certification-window fence before destructive GC activation

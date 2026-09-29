@@ -1,6 +1,24 @@
 # Current Work - SesameFS
 
-**Active branch — PR #233, PC-D1B.3 Mapping Authority (rebased onto `origin/main@cc57cd2dc`, 2026-09-25):**
+**Active branch — X1 critical-path reset (docs only, `docs/x1-reset-critical-path`, base `main@a5dea859a`, 2026-09-29):**
+[docs/X1-CRITICAL-PATH.md](docs/X1-CRITICAL-PATH.md) is now the source of
+record for the order of work toward X1. It restores the #201 roadmap
+(W2 exit checklist → G4 → G5 → E1 → X1 CLOSED → PRE-GC list → A1) and
+supersedes the "PC-D1B.5 → productive consumer → PC-2" ordering written in
+the entries below, which are kept as history. PC-D1B.5 is reclassified
+PRE-GC (the only destroyers that can falsify a witness, D1–D3, are GC-only);
+the PublicationCoordinator and the PC-D1 line are frozen, and PC-2 is not an
+X1 prerequisite. It also adds the finding classification rule (current code +
+current runtime / current code + planned GC activation / code that does not
+exist) and reclassifies both library hard-delete lease issues as
+CURRENT-RUNTIME (the SERIAL-domain one config-dependent). X1 CLOSED does not
+authorize GC: activation also needs the PRE-GC / A1 gate (every open
+PRE-GC/PRE-ACTIVATION-tagged entry plus §6, including Phase 5 and the Phase 6
+execute-time TOCTOU). W2 rows close only as CLOSED-EVIDENCE, CLOSED-FIX or
+CLOSED-GATED. No runtime, schema, CQL, guard or mutation-suite change.
+`GC_ENABLED=false` remains mandatory.
+
+**Merged PR #233, PC-D1B.3 Mapping Authority (rebased onto `origin/main@cc57cd2dc`, 2026-09-25):**
 This branch adds the write-once, byte-proven mapping authority and cold-path
 promotion. Productive mapping resolution pins `LOCAL_QUORUM`; the upload
 read-before-write check inherits the configured session consistency. The source
@@ -478,23 +496,27 @@ Status after PC-1 / PC-D1 / HEAD SERIAL domain:
 PC-0: CLOSED / characterization complete (#211)
 H1:   CLOSED (#214)
 PC-1: CLOSED (2026-09-11)
-PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation, the fail-closed PC-D1B.1 certifier gate, and PC-D1B.3 Mapping Authority are implemented (PR #233 pending merge); the lifecycle fence runtime (PC-D1B.5) and first productive consumer remain before PC-2 (historical backfill is a greenfield non-goal)
+PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation, the fail-closed PC-D1B.1 certifier gate, and PC-D1B.3 Mapping Authority are implemented (#227/#228/#230/#231/#233 merged); the line is FROZEN by the 2026-09-29 X1 reset and re-evaluated in E1 (historical backfill is a greenfield non-goal)
 ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01: CLOSED (2026-09-14) — global SERIAL prerequisite satisfied
-PC-2: NOT STARTED
-W2:   OPEN
-R31:  OPEN
-G4:   OPEN
-X1:   OPEN
-Next PC-D1B stages, in order:
-1. Implement the certification-window fence decided by PC-D1B.4 (PC-D1B.5,
-   docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md §18) before destructive GC and
-   before the first productive consumer.
-2. Add a productive consumer only after the lifecycle fence and required mapping
-   coverage are complete. Then PC-2 (migrate CreateFileFromBlocks / shared Once
-   preserving stage < repair < final exact-P revalidation < HEAD); H4 (GC Phase 5)
-   before any GC activation; H5 before X1. Preserve the atomic HEAD+witness CAS
-   and soft-delete guard. Coexisting HEAD writers already share the global
-   SERIAL Paxos domain. Historical backfill remains a greenfield non-goal.
+PC-D1B.5: PRE-GC (not pre-consumer); WIP parked on feat/pc-d1b5-certification-window-fence-runtime
+PC-2: NOT STARTED — not an X1 prerequisite
+W1:   CLOSED
+W2:   OPEN — exit checklist in docs/X1-CRITICAL-PATH.md §4
+R31:  OPEN — residual rows W2-11..W2-14
+G1/G2/G3: CLOSED
+G4:   OPEN — starts only after the W2 exit checklist is closed
+G5:   OPEN
+X1:   OPEN — only E1 may close it
+Next, in order (docs/X1-CRITICAL-PATH.md, supersedes the former
+"PC-D1B.5 → productive consumer → PC-2" order):
+1. W2 exit checklist rows, demonstrate-first (W2-0 cross-cutting up:→pub:
+   continuity first).
+2. G4 → G5 → E1 (X1 CLOSED).
+3. PRE-GC list (Phase 5 / former H4, minimal PC-D1B.5 for D1–D3, ghost row,
+   repair-liveness health gate, GC mapping resolver, hard-delete lease) → A1.
+   The former "H5 before X1" note is subsumed by the W2 exit checklist.
+In parallel (current runtime): hard-delete lease global SERIAL, then the
+generation-fenced final batch.
 ```
 
 **PC-0 (2026-09-09):** publication-protocol characterization on
@@ -692,15 +714,17 @@ the only blocker" turns into "X1 closed → ship it":
 
 | Gate | Blocked by | Status |
 |---|---|---|
-| **Activating destructive GC** (`GC_ENABLED=true`) | **X1 alone.** X2 closed 2026-08-14. | X1 OPEN; architecture frozen in D0, not implemented |
+| **Activating destructive GC** (`GC_ENABLED=true`) | **X1, then the PRE-GC / A1 gate** ([docs/X1-CRITICAL-PATH.md](docs/X1-CRITICAL-PATH.md) §6). X2 closed 2026-08-14. | X1 OPEN; architecture frozen in D0, not implemented; PRE-GC items open |
 | **Putting SesameFS in production at all** | **Independent security / resource findings that have nothing to do with GC** | Several open — see below |
 
-X1 is the sole blocker for the *first* row **only**. It is not the sole
-production blocker, and no status document should say that it is.
+X1 is the critical-path blocker for the *first* row **only**, and even there
+X1 CLOSED is not activation: the PRE-GC / A1 gate must also close. X1 is not
+a production blocker for the second row, and no status document should say
+that it is.
 
 **🔴 PRODUCTION BLOCKERS** (Must complete before deploy):
 1. ~~**OIDC Authentication**~~ - ✅ **COMPLETE** (Phase 1 - Basic Login)
-2. **Destructive Garbage Collection** - 🔴 **BLOCKED** by X1 physical-delete ABA — the sole blocker *for activating deletion*: X2 cross-DC reference visibility closed 2026-08-14 (destructive liveness at `EACH_QUORUM` behind a topology gate, proven on a real three-DC cluster). Keep `GC_ENABLED=false` on every replica in every DC; the implementation and lease exist but are not permission to activate deletion.
+2. **Destructive Garbage Collection** - 🔴 **BLOCKED** by X1 physical-delete ABA and then by the PRE-GC / A1 gate ([docs/X1-CRITICAL-PATH.md](docs/X1-CRITICAL-PATH.md) §6): X2 cross-DC reference visibility closed 2026-08-14 (destructive liveness at `EACH_QUORUM` behind a topology gate, proven on a real three-DC cluster). Keep `GC_ENABLED=false` on every replica in every DC; the implementation and lease exist but are not permission to activate deletion.
 3. ~~**Monitoring/Health Checks**~~ - ✅ **COMPLETE** (Structured logging, `/health`, `/ready`, `/metrics`)
 4. **Non-GC readiness findings** - 🔴 **OPEN**, independent of X1. Canonical status per id in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md), one-screen list in [docs/OPEN-WORK-INDEX.md](docs/OPEN-WORK-INDEX.md). Single-node HIGHs still open: `ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01`, `ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01`, `ISSUE-APIKEY-READ-SCOPE-UPLOADLINK-FILESHARE-01`. Multi-instance additionally requires `ISSUE-UPLOAD-CHUNK-MULTINODE-01` and `ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01`. (`ISSUE-LIBRARY-MUTATION-NO-PERMISSION-CHECK-01` closed 2026-08-22.)
 
@@ -711,11 +735,11 @@ production blocker, and no status document should say that it is.
 
 ### Quick Context
 1. **Sync Protocol**: Baseline-verified for the current desktop sync hardening scope. Do not treat it as frozen; compatibility-sensitive follow-up coverage still exists.
-2. **Backend API**: ~98% complete by surface count, which is not the same as ready — see blocker #4 for the open authorization/resource findings. OIDC ✅, GC implementation present; destructive activation blocked by X1 alone (X2 closed 2026-08-14), Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅, Tag cascade ✅, Admin Link Management ✅, Upload Links ✅, Org Admin Panel ✅, Superadmin Departments ✅, Custom Share Permissions ✅
+2. **Backend API**: ~98% complete by surface count, which is not the same as ready — see blocker #4 for the open authorization/resource findings. OIDC ✅, GC implementation present; destructive activation blocked by X1 and the PRE-GC / A1 gate (X2 closed 2026-08-14), Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅, Tag cascade ✅, Admin Link Management ✅, Upload Links ✅, Org Admin Panel ✅, Superadmin Departments ✅, Custom Share Permissions ✅
 3. **Frontend UI**: ~85% complete (all modals migrated, About modal rebranded, File History UI ✅, History Download ✅, Snapshot View ✅, Restore from History ✅, Share Dialog all 8 tabs ✅, permission UI ~75% with granular flags, ~51 ModalPortal wrappers to clean up, folder icons ✅). Plans/permissions Phase 3 is in progress, not closed.
 4. **Test flow**: Prefer Docker-first validation. `./scripts/test.sh sync` now runs the single-client sync suite plus the real active-active desktop harness; default behavior is fail-fast and `--keep-going` is opt-in.
-5. **Current risk shape**: destructive GC must remain disabled fleet-wide. Of the two confirmed live-data safety blockers, X2 is closed (fix proven on a real three-DC cluster, regression mutation-verified) and X1 remains open — so the *deletion-activation* gate genuinely rests on X1 alone. The upload-fence PR series addresses separate writer/GC races and does not close it. **Product go-live is a different gate** and is not held by X1: see the table above and blocker #4.
-6. **X1 design state:** accepted architecture is frozen in [`docs/GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md`](docs/GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md) (D0, 2026-09-02). That is a documentation freeze, not X1 closure and not GC activation. Historical option comparison remains in [`docs/GC-X1-CLOSURE-OPTIONS.md`](docs/GC-X1-CLOSURE-OPTIONS.md) and is **not** the active roadmap. #199/#200 are characterization evidence only; W1 now consumes the #200 BorrowedFS result in the writer path. `GC_ENABLED=false` is pinned explicitly in `docker-compose.prod.yml`. The current branch contains the W2/R31 post-HEAD repair slice, G1 exact `(P,D)` identity and durable recovery discovery, and G2 PREPARED-to-COMMITTED handoff; G4-G5 and X1 remain open; G3 canonical retirement is implemented by #212. This branch does not activate destructive GC.
+5. **Current risk shape**: destructive GC must remain disabled fleet-wide. Of the two confirmed live-data safety blockers, X2 is closed (fix proven on a real three-DC cluster, regression mutation-verified) and X1 remains open — the *deletion-activation* gate rests on X1 and then on the PRE-GC / A1 gate ([docs/X1-CRITICAL-PATH.md](docs/X1-CRITICAL-PATH.md) §6). The upload-fence PR series addresses separate writer/GC races and does not close it. **Product go-live is a different gate** and is not held by X1: see the table above and blocker #4.
+6. **X1 design state:** accepted architecture is frozen in [`docs/GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md`](docs/GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md) (D0, 2026-09-02). **Order of work (2026-09-29 reset):** [`docs/X1-CRITICAL-PATH.md`](docs/X1-CRITICAL-PATH.md) — W2 exit checklist → G4 → G5 → E1 → X1 CLOSED, then the PRE-GC list and A1; PC-2 and the PC-D1 line are not X1 prerequisites. That is a documentation freeze, not X1 closure and not GC activation. Historical option comparison remains in [`docs/GC-X1-CLOSURE-OPTIONS.md`](docs/GC-X1-CLOSURE-OPTIONS.md) and is **not** the active roadmap. #199/#200 are characterization evidence only; W1 now consumes the #200 BorrowedFS result in the writer path. `GC_ENABLED=false` is pinned explicitly in `docker-compose.prod.yml`. The current branch contains the W2/R31 post-HEAD repair slice, G1 exact `(P,D)` identity and durable recovery discovery, and G2 PREPARED-to-COMMITTED handoff; G4-G5 and X1 remain open; G3 canonical retirement is implemented by #212. This branch does not activate destructive GC.
 7. **Current X1/P3 key:** P1 locator authority merged 2026-08-21 (PR #181), P0/R12 landed 2026-08-23 (PR #183), and P2/R9/R24 closed 2026-08-24 after its structural prerequisite (PR #184). This branch implements the P3 writer boundary: existing-incarnation PUTs revalidate exact `(storage_class, storage_key)` authority immediately before PUT, and metadata repair is non-creating and tuple-bound. Docker evidence for R10/R13/R17 is green, including a deliberate-mutation run in which reordering the fence reads, making the repair create-capable, re-tagging a permanent failure as retryable, or restoring SERIAL to the dedup path each turns a gate red. The cross-DC half of the consistency contract is now MEASURED on the real three-datacenter fixture (`scripts/x2-multidc-validation.sh --p3`): with dc-na down neither fence publication may complete, a fence published in dc-eu blocks a dc-na writer, and both weaker publication levels turn the fail-closed leg red — the `QUORUM` mutation being what the third datacenter exists for. Fence reads pin their own consistency so the argument does not depend on `database.consistency`, which accepts `ONE`. R13's P3 writer boundary is GREEN. Strict A+ sequential-life / keep-canonical-until-delete is SUPERSEDED as the X1 closure target by D0 physical-life handoff; it is not an OPEN residual of `StartBlockDeleteOrphan`. R18/R27 are explicitly open in CURRENT production because rejected `up:` references are retained and deferred-orphan rescheduling is not implemented; D0 marks the old postpone-and-reproject design `PENDING RE-EVALUATION`. Keep `GC_ENABLED=false` on every replica in every DC.
 
 8. **Current X1/P4a key:** this branch binds the destructive claim to the exact physical incarnation and to a per-attempt owner. Migration `017` puts `storage_key` on `gc_block_candidates` and its `_by_day` projection; `EnsureBlockGCCandidate` captures it from the canonical row and refuses to write a candidate it cannot name a `P` for. The claim CAS is `IF storage_class = ? AND storage_key = ? AND gc_state = null AND gc_claim_id = null AND gc_claimed_at = null`, `claimID` is a fresh UUID per ATTEMPT (`blockDeleteClaimID` is deleted and its absence is gated), and release, stale takeover, finalize and candidate cleanup all condition on the exact tuple. `ClaimBlockDelete` returns a classified outcome, so a non-applied CAS is no longer read as completion. Evidence is green on real Cassandra under `SESAMEFS_REQUIRE_P4A_EVIDENCE=1` (four legs: exclusive ownership with exact takeover, the ABA case, retry semantics, and stale-claim release bound to the observed incarnation), with deliberate mutations red via `scripts/p4a-mutation-validation.sh` (see the count below). **P4a snapshot (historical):** R14a GREEN, R16 GREEN, R20 PARTIAL; at that merge R14b was still OPEN and the orphan path had not yet settled in the serial domain. **Current:** R14b GREEN (#194 / P4b-2). `StartBlockDeleteOrphan` is bound to exact stored `(P,D)` and is not an untouched residual keeping strict A+ non-overlap OPEN. That sequential-life target is SUPERSEDED by D0. X1 remains OPEN. Technical debt #21 and #22 are closed; #23 (GC no longer sweeps metadata-free stubs) and #24 (pre-017 candidate rows need a fresh zero-ref decision, not a backfill) are opened as follow-ups, #24 being a PRE-ACTIVATION requirement rather than a merge blocker. A second review pass found and fixed four defects in the first cut: the stale takeover re-read the row instead of CASing against the authority it observed (so a P1 worker could drop P2 fence); the same hole existed at the owner-agnostic pre-check call site, reachable with no clock skew; the orphan publication and the S3 delete took their locator from an ordinary post-claim re-read rather than from the claim; and ErrBlockCandidateTargetUnavailable was fatal at all three enqueue sites, which was self-poisoning on the fs_object path. The deliberate mutations are red — the script reports its own current total, and the evidence update below is authoritative for it; two of them earned their keep by exposing a non-compiling mutation and a store/mock mirror with neither copy protecting the other. One behavioural narrowing to be aware of: GC no longer deletes metadata-free stub rows, because it has no exact authority over a row with no locator — an unclaimed stub is not an upload fence, and the only producer of a `deleting` metadata-free stub was the old claim CAS. The writer path does claim metadata-free rows, under `gc_state='repairing_stub'`, and cleans up its own; those are not a delete fence and were never GC's to touch. A third review pass closed the last claim-side hole: `releaseBlockClaim` collapsed `BlockReleaseNotOwner` into a bare `nil`, so a late loser — an attempt whose claim was taken over while it worked — walked through the "re-referenced after claim" unwind and consumed the CURRENT owner's candidate. Nothing about the candidate changes in that race (same block, same `P`, same `candidate_at`), so the exact-`P` CAS cannot refuse it; the wrapper now returns the outcome and settlement requires `BlockReleaseReleased`. R16 is GREEN only with both entrances closed — `BlockClaimFreshOwner` at the claim and this one at the release. Landed with it: the post-claim stub branches (driven by an ordinary read the claim had already contradicted in the serial domain, and DLQ-bound with the fence up) are gone in favour of hand-back-and-postpone; `GCFailureCodeBlockAuthorityInvalid` was documented as postponing but was never in `shouldPostponeWithoutRetry`; and the grace postpone and an unnameable claim owner got their own codes. Keep `GC_ENABLED=false` on every replica in every DC.
@@ -1241,11 +1265,11 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 
 ### 📊 Current State (Updated 2026-03-05)
 - **Sync Protocol**: 100% working, desktop clients fully compatible 🔒 FROZEN
-- **Backend API**: ~98% implemented — OIDC ✅, GC implementation present; destructive activation blocked by X1 alone (X2 closed 2026-08-14), Library Settings ✅, OnlyOffice ✅, Tags cascade ✅, Org Admin Panel ✅, Superadmin Departments ✅
+- **Backend API**: ~98% implemented — OIDC ✅, GC implementation present; destructive activation blocked by X1 and the PRE-GC / A1 gate (X2 closed 2026-08-14), Library Settings ✅, OnlyOffice ✅, Tags cascade ✅, Org Admin Panel ✅, Superadmin Departments ✅
 - **Frontend UI**: ~83% functional (all modals migrated, folder icons ✅, ~51 ModalPortal wrappers to clean up)
-- **Production Ready**: blocked for destructive GC until X1 closes (X2 closed 2026-08-14); keep `GC_ENABLED=false` on every replica/DC
+- **Production Ready**: blocked for destructive GC until X1 closes and then the PRE-GC / A1 gate ([docs/X1-CRITICAL-PATH.md](docs/X1-CRITICAL-PATH.md) §6) closes (X2 closed 2026-08-14); keep `GC_ENABLED=false` on every replica/DC
 - **Admin Panels**: Both superadmin and org admin at feature parity
-- **Active Bugs**: tracked canonically in `docs/KNOWN_ISSUES.md`; X1 is the sole remaining GC blocker (X2 closed)
+- **Active Bugs**: tracked canonically in `docs/KNOWN_ISSUES.md`; GC activation needs X1 and then the PRE-GC / A1 gate (X2 closed)
 
 ### Critical Facts to Remember
 

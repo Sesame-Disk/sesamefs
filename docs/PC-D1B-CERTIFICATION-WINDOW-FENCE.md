@@ -1,5 +1,14 @@
 # PC-D1B.4 — Certification-window lifecycle fence: decision and characterization
 
+> **Superseding scope decision (2026-09-29, [X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md)):**
+> PC-D1B.5 is **PRE-GC only**. The destroyers that can falsify a witness
+> (D1–D3, §5) run only inside GC, so with `GC_ENABLED=false` no active path
+> can invalidate a witness; the fence no longer gates a productive consumer
+> (a consumer still owns CW-M17). Before implementing, §18 is re-scoped to
+> what D1–D3 need; CW-M1..M34 are not automatically required. The
+> investigation, model and characterization below stand unchanged. WIP is
+> parked on `feat/pc-d1b5-certification-window-fence-runtime`.
+
 **Status:** architecture decision + executable characterization. **Decision
 CLOSED / MERGEABLE (2026-09-24)** after both CW-M33 accepted-Paxos races and
 G21/G22 mutations passed on Cassandra 5.0.9. CW-M34's in-flight writer ordering

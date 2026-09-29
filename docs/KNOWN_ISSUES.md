@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-26 (PR #233 final cross-audit closure)
+**Last Updated**: 2026-09-29 (X1 critical-path reset)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -12,6 +12,22 @@ status. If the two disagree, this file is right about status and the audit doc
 is right about why.
 
 ---
+
+### X1 critical-path reset (2026-09-29)
+
+[X1-CRITICAL-PATH.md](X1-CRITICAL-PATH.md) is the source of record for the
+order of work toward X1 (W2 exit checklist → G4 → G5 → E1 → X1 CLOSED →
+PRE-GC list → A1) and for finding classification. Status changes recorded
+here: `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01` is PRE-GC only (no longer
+a productive-consumer prerequisite); `ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01`
+is frozen and re-evaluated in E1; `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`
+is CURRENT-RUNTIME (config-dependent) as well as PRE-GC; `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`
+stays P0 PRE-GC. The A1 gate is every open entry tagged `PRE-GC` or
+`PRE-ACTIVATION` in this file and in TECHNICAL-DEBT.md, plus the
+X1-CRITICAL-PATH.md §6 table (which also lists the Phase 6 execute-time TOCTOU
+and `ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01`). Boundary notes below that name PC-D1B.5 or a productive
+consumer as a PC-2 prerequisite are historical. `GC_ENABLED=false` remains
+mandatory.
 
 ### PC-D1B.4 boundary (2026-09-23)
 
@@ -47,7 +63,7 @@ certify. Neither closes `ISSUE-LIB-DELETED-FENCE-01`, a productive consumer, PC-
 | **API-key read scope bypasses upload-link and file-share mutations** | 🔴 Open — verified preexisting 2026-08-22 | Six authenticated mutation handlers resolve the user's underlying library authority or link ownership without applying the current credential's API-key scope. A `read` API key can create, update or delete upload links and, for an owner/admin user, create, update or delete user/group shares. Both direct API-key auth and derived sessions are affected. See ISSUE-APIKEY-READ-SCOPE-UPLOADLINK-FILESHARE-01. |
 | **Desktop SSO pending-token store** | 🔴 Open — multi-instance only | In-memory per process; poll and callback on different instances never deliver the token. See ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01. |
 | OIDC Authentication | ✅ Complete (Phase 1) | `docs/OIDC.md` |
-| Garbage Collection | 🔴 **Destructive GC disabled; X1 open** | **P10 fixed 2026-07-16 through PR-3:** physical keys, normal GC deletion, and orphan recovery are org-scoped. **New audit blockers:** an authorized physical delete can race a byte-identical re-upload (`ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01`, still open), while the cross-DC visibility blocker (`ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01`) is **closed 2026-08-14** (implemented 2026-08-13) — destructive liveness reads at `EACH_QUORUM` behind a topology gate, proven on a real three-DC cluster with the regression mutation-verified. Keep destructive GC disabled: it now rests on X1 alone. Additional retention, observability, test-hygiene and scale debt remains. See the GC audit section and `UPLOAD-FENCE-FINDINGS-REGISTRY.md`. |
+| Garbage Collection | 🔴 **Destructive GC disabled; X1 open** | **P10 fixed 2026-07-16 through PR-3:** physical keys, normal GC deletion, and orphan recovery are org-scoped. **New audit blockers:** an authorized physical delete can race a byte-identical re-upload (`ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01`, still open), while the cross-DC visibility blocker (`ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01`) is **closed 2026-08-14** (implemented 2026-08-13) — destructive liveness reads at `EACH_QUORUM` behind a topology gate, proven on a real three-DC cluster with the regression mutation-verified. Keep destructive GC disabled: it rests on X1 and then on the PRE-GC / A1 gate ([X1-CRITICAL-PATH.md](X1-CRITICAL-PATH.md) §6). Additional retention, observability, test-hygiene and scale debt remains. See the GC audit section and `UPLOAD-FENCE-FINDINGS-REGISTRY.md`. |
 | Monitoring/Health Checks | ✅ Complete | `/health`, `/ready`, `/metrics` + slog logging |
 | **Sync Protocol Permissions** | ✅ Fixed (2026-08-07) | `syncAuthMiddleware` accepted public share-link download tokens as repository credentials. Reproduced live as an unauthorized cross-library block write by an anonymous visitor, plus an escalation through `/download-info` into a full repository sync token. `isRepositorySyncToken` now validates the whole scope — `Source == ""`, `Path == "/"`, `RepoID` bound to the route — before the bearer becomes an identity; all three clauses are mutation-verified. A follow-up split `TokenTypeSync` out of `TokenTypeDownload`, so a download bearer is now refused at the store rather than by shape. See ISSUE-SYNC-LINK-TOKEN-AUTH-01. |
 | Sync Race Condition | ✅ Fixed (2026-02-18) | 7 bugs fixed: CAS HEAD updates, parent-chain validation, empty root handling |
@@ -3354,7 +3370,7 @@ destructive-GC blockers above.
 - Keep `gc.enabled=false` and `GC_ENABLED=false` on every replica in every DC while X1 remains open.
 - X2 is closed under the stable-topology operational contract. A replication DC-set or RF change with existing reference state requires a separately certified migration before GC can be reconsidered.
 - The Cassandra LWT lease (`gc_leases`) coordinates participants but does not close X1 and is not permission to enable GC.
-- Only after X1 closes may designated replicas in one DC set `GC_ENABLED=true` and participate under the lease. Every replica in every other DC remains false.
+- Only after X1 closes **and** the PRE-GC / A1 gate ([X1-CRITICAL-PATH.md](X1-CRITICAL-PATH.md) §6) closes may designated replicas in one DC set `GC_ENABLED=true` and participate under the lease. Every replica in every other DC remains false.
 
 **Leader Election via LWT:**
 - Implemented with `gc_leases` and TTL-backed heartbeats.
@@ -3362,16 +3378,16 @@ destructive-GC blockers above.
 - If the leader dies or loses its lease, another enabled replica can take over automatically after lease expiry.
 
 **Recommended future direction:**
-- After X1 closes, keep the explicit `GC_ENABLED=true` activation model so only designated replicas in one DC opt in.
+- After X1 and the PRE-GC / A1 gate close, keep the explicit `GC_ENABLED=true` activation model so only designated replicas in one DC opt in.
 - Consider exposing lease state/owner in admin status if operators want clearer observability during failover drills.
 
 **Multi-region deployment note (updated 2026-08-14):**
-While X1 remains open, running GC in even one DC is unsafe: keep it disabled in all DCs. After X1 closes, restricting participants to a single DC is **critical**. The shipped default uses `SERIAL` for LWT operations (a global serial phase relative to the effective replica set); an environment override can change that. Running GC on multiple DCs would cause:
+While X1 or the PRE-GC / A1 gate remains open, running GC in even one DC is unsafe: keep it disabled in all DCs. After both close, restricting participants to a single DC is **critical**. The shipped default uses `SERIAL` for LWT operations (a global serial phase relative to the effective replica set); an environment override can change that. Running GC on multiple DCs would cause:
 - `DequeueBatch` (non-LWT SELECT) returning the same items to workers in different DCs
 - Scanner in both DCs enqueueing duplicate orphans
 - Unnecessary cross-DC Paxos transaction contention on every LWT
 
-Post-X1 topology is `GC_ENABLED=true` only on designated replicas in one DC and `GC_ENABLED=false` everywhere else. Until X1 closes, the topology is `GC_ENABLED=false` everywhere. The lease provides failover only among designated replicas in that one DC.
+Post-activation (X1 + PRE-GC / A1) topology is `GC_ENABLED=true` only on designated replicas in one DC and `GC_ENABLED=false` everywhere else. Until both close, the topology is `GC_ENABLED=false` everywhere. The lease provides failover only among designated replicas in that one DC.
 
 Block-level conditional operations include first-writer metadata creation, GC claim,
 claim release/finalize, and orphan lifecycle transitions; production defaults these
@@ -6065,7 +6081,7 @@ substitute for that pin. Migrating funnels is later PCs. W2 remains OPEN.
 
 ### ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01: PublishableInput is scoped to newly-live dependencies only, not R3's full work set
 
-**Status**: Decision resolved by PC-D1 (2026-09-12); PC-D1A authority foundation landed 2026-09-19; PR #228 completed the fail-closed certifier gate; PC-D1B.3 mapping authority/M18-M19 is implemented in PR #233 (pending merge). The certification-window runtime and first productive consumer remain OPEN before PC-2
+**Status**: Decision resolved by PC-D1 (2026-09-12); PC-D1A authority foundation landed 2026-09-19; PR #228 completed the fail-closed certifier gate; PC-D1B.3 mapping authority/M18-M19 is implemented in PR #233 (merged). The certification-window runtime and first productive consumer remain OPEN before PC-2 (2026-09-29: frozen by the X1 critical-path reset; neither is an X1 prerequisite and the fence is PRE-GC only, see [X1-CRITICAL-PATH.md](X1-CRITICAL-PATH.md) §5)
 **Severity**: High (P1) — candidate coordinator boundary completeness
 **Affected**: the publication authority/continuity definitions and candidate coordinator boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14), plus the implemented PR #228 certifier gate, PC-D1B.3 mapping authority in PR #233, the certification-window lifecycle fence, and the first productive consumer (historical backfill is a greenfield non-goal). PC-D1A now provides the canonical witness/HEAD authority foundation; no productive funnel is affected and no productive runtime behavior or GC activation is in this issue closure.
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization audit
@@ -6117,7 +6133,7 @@ W2/R31 remain OPEN either way; this finding does not change their status.
 
 ### ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01: Durable inherited-continuity witness and atomic HEAD frontier (PC-D1A + PC-D1B.1 certifier landed)
 
-**Status**: Open - PC-D1 architecture and PC-D1A foundation landed; PR #228 closes the fail-closed certifier gate on 2026-09-22 and PC-D1B.3 adds mapping authority/M18-M19 on 2026-09-23. Lifecycle fencing, and the first productive consumer remain required before PC-2; historical backfill is a greenfield non-goal
+**Status**: Open - PC-D1 architecture and PC-D1A foundation landed; PR #228 closes the fail-closed certifier gate on 2026-09-22 and PC-D1B.3 adds mapping authority/M18-M19 on 2026-09-23. Lifecycle fencing, and the first productive consumer remain required before PC-2; historical backfill is a greenfield non-goal. **2026-09-29:** frozen by the X1 critical-path reset ([X1-CRITICAL-PATH.md](X1-CRITICAL-PATH.md) §5); neither the consumer nor PC-2 is an X1 prerequisite, and E1 re-evaluates whether the certified baseline is needed once W2 is closed
 **Severity**: High (P1) - publication continuity prerequisite
 **Affected**: future coordinator adoption and every library whose inherited
 dependencies have not been certified through its current HEAD
@@ -6306,7 +6322,7 @@ retirement mechanism, and it is not a merge precondition for PR #228 or #229.
 
 ### ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01: A witness can be born over, or survive, the destruction of the state it certifies
 
-**Status**: 🟢 Decision CLOSED / MERGEABLE 2026-09-24 (CW-M33 accepted-Paxos barrier and post-barrier proof-issuance races + G21/G22 RED, CW-M34 in-flight materialization contract/evidence); PC-D1B.5 runtime OPEN and mandatory before destructive GC activation and before the first productive consumer
+**Status**: 🟢 Decision CLOSED / MERGEABLE 2026-09-24 (CW-M33 accepted-Paxos barrier and post-barrier proof-issuance races + G21/G22 RED, CW-M34 in-flight materialization contract/evidence); PC-D1B.5 runtime OPEN and mandatory before destructive GC activation. Reclassified PRE-GC only on 2026-09-29 ([X1-CRITICAL-PATH.md](X1-CRITICAL-PATH.md) §6): the destroyers that can falsify a witness (D1–D3) are GC-only, so it no longer gates a productive consumer; re-scope §18 to what D1–D3 need before implementing. WIP parked on `feat/pc-d1b5-certification-window-fence-runtime`
 **Severity**: High (P1) — certified-baseline correctness; dormant today (no production caller of the certifier or the witness, `GC_ENABLED=false`)
 **Affected**: `CertifyLibraryBaseline` witness settlement, `CommitLibraryContinuityWitness*`, `AdvanceLibraryCertifiedFrontier`, the identity-gateway source deletes and the GC `fs:` reference removal
 **Registered**: 2026-09-23, PC-D1B.4
@@ -6432,7 +6448,7 @@ separate.
 
 ### ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01: After Mapping Authority, a mutable mapping row can diverge from the authority a witness rests on
 
-**Status**: ✅ Fixed by PR #233 (implementation on branch; pending merge); PRE-CONSUMER
+**Status**: ✅ Fixed by PR #233 (merged 2026-09-26); PRE-CONSUMER
 **Severity**: High (P1) — closure required before the first productive consumer; dormant today (no SHA-1-only file can be certified on `main`, no consumer)
 **Affected**: `block_id_mappings` writers (`WriteBlockIDMapping` is a plain upsert), ordinary block resolution readers, and certification of SHA-1-only files
 **Registered**: 2026-09-23, PC-D1B.4
@@ -6548,7 +6564,7 @@ policy), with a characterization. Not part of PC-D1B.5.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01: The library hard-delete lease inherits `serial_consistency`
 
-**Status**: 🟡 Open — found 2026-09-23 (PC-D1B.4 inventory); PRE-GC multi-DC
+**Status**: 🟡 Open — found 2026-09-23 (PC-D1B.4 inventory); CURRENT-RUNTIME / CONFIG-DEPENDENT multi-DC and PRE-GC (reclassified 2026-09-29: restore and `PermanentDeleteRepo` use the lease through the API independently of `GC_ENABLED`; the shipped `configs/config.prod.yaml` uses `SERIAL`, but `LOCAL_SERIAL` is a supported setting — `configs/config-*.cluster.yaml` use it and startup only warns — and the lease LWTs inherit it)
 **Severity**: Medium — multi-DC lifecycle serialization
 **Affected**: `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock` (`internal/gc/store_cassandra.go`), used by restore, API permanent delete and GC library cascade
 **Registered**: 2026-09-23, PC-D1B.4

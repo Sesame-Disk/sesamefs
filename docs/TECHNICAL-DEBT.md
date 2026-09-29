@@ -2547,6 +2547,12 @@ refusal in both directions: nothing destructive happens, and the work item survi
 
 ## 24. Pre-migration-017 candidate rows need a reconcile before GC activation (PRE-ACTIVATION)
 
+> **Closed by the greenfield precondition (2026-09-29,
+> [X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §6):** the deployment that will
+> enable GC starts from an empty server, so it cannot hold candidate rows
+> written before migration `017`. Reopen as PRE-ACTIVATION only if GC is ever
+> enabled on a deployment that ran pre-`017` code.
+
 ### Current State
 Migration `017` adds the `storage_key` column to `gc_block_candidates` and its `_by_day`
 projection. It adds the COLUMN only; it backfills no values, so any candidate row written
