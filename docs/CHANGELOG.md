@@ -6,6 +6,28 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-29 - X1 critical-path reset (docs only)
+
+New source of record for the order of work toward X1:
+`docs/X1-CRITICAL-PATH.md`. It restores the #201 roadmap (W2 exit checklist →
+G4 → G5 → E1 → X1 CLOSED → PRE-GC list → A1) and supersedes the
+"PC-D1B.5 → productive consumer → PC-2" ordering. Reason: #202–#215 closed
+W1, the pre-HEAD W2 slices, G1, G2 and G3 in about ten days, while #216–#233
+advanced no #201 step in about two weeks. PC-D1B.5 is reclassified PRE-GC
+only (D1–D3 are GC-only destroyers); the PublicationCoordinator and the PC-D1
+line are frozen and PC-2 is not an X1 prerequisite. Adds the W2 exit checklist
+derived from `R3-LIVENESS-CONTINUITY.md` and the #201 §16 R31 residuals, the
+PRE-GC list for A1, and the finding classification rule (current runtime /
+current code under planned GC activation / nonexistent code is not a finding;
+existing guards stay; at most two audit rounds per PR). Reclassifies
+`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` as CURRENT-RUNTIME as well as
+PRE-GC. Updated: `CURRENT_WORK.md`, `docs/OPEN-WORK-INDEX.md`,
+`docs/KNOWN_ISSUES.md`, `docs/DECISIONS.md`, `docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md`,
+`docs/PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md`,
+`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`, `docs/R3-LIVENESS-CONTINUITY.md`.
+No runtime, schema, CQL, guard or mutation-suite change; `GC_ENABLED=false`
+remains mandatory.
+
 ## 2026-09-24 - PR #232 stable-absence and in-flight writer contracts
 
 Fourth cross-audit correction. CW-M33 distinguishes EACH_QUORUM cross-DC

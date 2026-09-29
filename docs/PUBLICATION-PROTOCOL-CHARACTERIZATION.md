@@ -1333,6 +1333,12 @@ the coordinator, before PC-1.
 
 ### Recommended next PR sequence (not frozen, not implemented)
 
+> **Superseded as a roadmap (2026-09-29):** the order of work toward X1 is
+> [X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md). PC-2 and the PC-D1B stages
+> below are not X1 prerequisites; the coordinator may be used when migrating a
+> funnel is the minimal way to close a W2 exit row. The sequence is kept as
+> the coordinator's own evolution plan.
+
 ```text
 PC-0  this PR (characterization)
   → H1 follow-up (separate, small, prioritized): conditional HEAD initializer

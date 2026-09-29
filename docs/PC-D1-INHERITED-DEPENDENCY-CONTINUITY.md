@@ -1,5 +1,12 @@
 # PC-D1 - Inherited dependency continuity decision
 
+> **Frozen (2026-09-29, [X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §5):**
+> this line is not on the X1 critical path. A productive consumer and PC-2
+> are not X1 prerequisites; the certification-window fence (PC-D1B.5) is
+> PRE-GC only; E1 re-evaluates whether the certified baseline is needed once
+> W2 is closed. Statements below that order PC-D1B work before PC-2 remain
+> the contract for a future consumer, not the X1 roadmap.
+
 **Status:** DECIDED architecture freeze; PC-D1A authority foundation
 implemented; PR #228 implements the fail-closed certifier gate; PC-D1B.3
 mapping authority/cold-path promotion is implemented in PR #233 (pending merge).

@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-26 (PR #233 final cross-audit closure)
+**Last Updated**: 2026-09-29 (X1 critical-path reset)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -12,6 +12,19 @@ status. If the two disagree, this file is right about status and the audit doc
 is right about why.
 
 ---
+
+### X1 critical-path reset (2026-09-29)
+
+[X1-CRITICAL-PATH.md](X1-CRITICAL-PATH.md) is the source of record for the
+order of work toward X1 (W2 exit checklist → G4 → G5 → E1 → X1 CLOSED →
+PRE-GC list → A1) and for finding classification. Status changes recorded
+here: `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01` is PRE-GC only (no longer
+a productive-consumer prerequisite); `ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01`
+is frozen and re-evaluated in E1; `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`
+is CURRENT-RUNTIME as well as PRE-GC; `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`
+stays P0 PRE-GC. Boundary notes below that name PC-D1B.5 or a productive
+consumer as a PC-2 prerequisite are historical. `GC_ENABLED=false` remains
+mandatory.
 
 ### PC-D1B.4 boundary (2026-09-23)
 
@@ -6117,7 +6130,7 @@ W2/R31 remain OPEN either way; this finding does not change their status.
 
 ### ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01: Durable inherited-continuity witness and atomic HEAD frontier (PC-D1A + PC-D1B.1 certifier landed)
 
-**Status**: Open - PC-D1 architecture and PC-D1A foundation landed; PR #228 closes the fail-closed certifier gate on 2026-09-22 and PC-D1B.3 adds mapping authority/M18-M19 on 2026-09-23. Lifecycle fencing, and the first productive consumer remain required before PC-2; historical backfill is a greenfield non-goal
+**Status**: Open - PC-D1 architecture and PC-D1A foundation landed; PR #228 closes the fail-closed certifier gate on 2026-09-22 and PC-D1B.3 adds mapping authority/M18-M19 on 2026-09-23. Lifecycle fencing, and the first productive consumer remain required before PC-2; historical backfill is a greenfield non-goal. **2026-09-29:** frozen by the X1 critical-path reset ([X1-CRITICAL-PATH.md](X1-CRITICAL-PATH.md) §5); neither the consumer nor PC-2 is an X1 prerequisite, and E1 re-evaluates whether the certified baseline is needed once W2 is closed
 **Severity**: High (P1) - publication continuity prerequisite
 **Affected**: future coordinator adoption and every library whose inherited
 dependencies have not been certified through its current HEAD
@@ -6306,7 +6319,7 @@ retirement mechanism, and it is not a merge precondition for PR #228 or #229.
 
 ### ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01: A witness can be born over, or survive, the destruction of the state it certifies
 
-**Status**: 🟢 Decision CLOSED / MERGEABLE 2026-09-24 (CW-M33 accepted-Paxos barrier and post-barrier proof-issuance races + G21/G22 RED, CW-M34 in-flight materialization contract/evidence); PC-D1B.5 runtime OPEN and mandatory before destructive GC activation and before the first productive consumer
+**Status**: 🟢 Decision CLOSED / MERGEABLE 2026-09-24 (CW-M33 accepted-Paxos barrier and post-barrier proof-issuance races + G21/G22 RED, CW-M34 in-flight materialization contract/evidence); PC-D1B.5 runtime OPEN and mandatory before destructive GC activation. Reclassified PRE-GC only on 2026-09-29 ([X1-CRITICAL-PATH.md](X1-CRITICAL-PATH.md) §6): the destroyers that can falsify a witness (D1–D3) are GC-only, so it no longer gates a productive consumer; re-scope §18 to what D1–D3 need before implementing. WIP parked on `feat/pc-d1b5-certification-window-fence-runtime`
 **Severity**: High (P1) — certified-baseline correctness; dormant today (no production caller of the certifier or the witness, `GC_ENABLED=false`)
 **Affected**: `CertifyLibraryBaseline` witness settlement, `CommitLibraryContinuityWitness*`, `AdvanceLibraryCertifiedFrontier`, the identity-gateway source deletes and the GC `fs:` reference removal
 **Registered**: 2026-09-23, PC-D1B.4
@@ -6548,7 +6561,7 @@ policy), with a characterization. Not part of PC-D1B.5.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01: The library hard-delete lease inherits `serial_consistency`
 
-**Status**: 🟡 Open — found 2026-09-23 (PC-D1B.4 inventory); PRE-GC multi-DC
+**Status**: 🟡 Open — found 2026-09-23 (PC-D1B.4 inventory); CURRENT-RUNTIME multi-DC and PRE-GC (reclassified 2026-09-29: restore and `PermanentDeleteRepo` use the lease through the API independently of `GC_ENABLED`, and `configs/config-*.cluster.yaml` set `serial_consistency: LOCAL_SERIAL`)
 **Severity**: Medium — multi-DC lifecycle serialization
 **Affected**: `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock` (`internal/gc/store_cassandra.go`), used by restore, API permanent delete and GC library cascade
 **Registered**: 2026-09-23, PC-D1B.4

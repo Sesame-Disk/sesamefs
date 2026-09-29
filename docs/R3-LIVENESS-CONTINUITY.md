@@ -1,6 +1,9 @@
 # R3 liveness-continuity characterization
 
 **Accepted architecture (2026-09-02):** funnel inventory for writer W2 / R31.
+**W2 exit checklist (2026-09-29):** the `CONDITIONAL`/`UNKNOWN` rows below are
+tracked row by row in [`docs/X1-CRITICAL-PATH.md`](./X1-CRITICAL-PATH.md) §4;
+that checklist, not a new inventory, decides when G4 may start.
 This file does not close R3. X1 closure architecture:
 [`docs/GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md`](./GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md).
 The reconstructed `up → pub → HEAD → fs` protocol, HEAD-publisher inventory,
