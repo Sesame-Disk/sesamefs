@@ -87,6 +87,42 @@ func fileFromBlocksAfterStagedBarrier(repoID string) {
 	hooks.afterStaged()
 }
 
+// uploadFileAfterMaterializedHook is the UploadFile counterpart of the
+// CreateFileFromBlocks barriers: it runs after the block is materialized
+// (up: written, metadata installed) and before the shared finalizer stages
+// pub:. Guarded by fileFromBlocksBarrierMu like the other hooks.
+type uploadFileAfterMaterializedHook struct {
+	repoID string
+	fn     func()
+}
+
+var uploadFileAfterMaterializedInstalled *uploadFileAfterMaterializedHook
+
+// SetUploadFileAfterMaterializedBarrierForTest installs a process-local hook
+// for in-process UploadFile characterization. It runs only when the request
+// repoID matches. The returned restore function must run from t.Cleanup.
+func SetUploadFileAfterMaterializedBarrierForTest(repoID string, afterMaterialized func()) func() {
+	fileFromBlocksBarrierMu.Lock()
+	previous := uploadFileAfterMaterializedInstalled
+	uploadFileAfterMaterializedInstalled = &uploadFileAfterMaterializedHook{repoID: repoID, fn: afterMaterialized}
+	fileFromBlocksBarrierMu.Unlock()
+	return func() {
+		fileFromBlocksBarrierMu.Lock()
+		uploadFileAfterMaterializedInstalled = previous
+		fileFromBlocksBarrierMu.Unlock()
+	}
+}
+
+func uploadFileAfterMaterializedBarrier(repoID string) {
+	fileFromBlocksBarrierMu.Lock()
+	hook := uploadFileAfterMaterializedInstalled
+	fileFromBlocksBarrierMu.Unlock()
+	if hook == nil || hook.repoID == "" || hook.repoID != repoID || hook.fn == nil {
+		return
+	}
+	hook.fn()
+}
+
 func fileFromBlocksBeforeHeadBarrier(repoID string) error {
 	hooks := fileFromBlocksPublicationHooksForRepo(repoID)
 	if hooks == nil || hooks.beforeHead == nil {

@@ -123,6 +123,22 @@ m_fence_before_stage() {
   expect_red '^TestPC0ObservedRepairReadinessPartialOrder$' 'stage then repair then fence then HEAD' 'exact-P fence moved before stage'
 }
 
+m_uploadfile_passes_nil_placement() {
+  restore
+  # W2-6: UploadFile handing nil to the shared finalizer disables the final
+  # exact-P revalidation and reopens HEAD over a GC-retired placement.
+  mutate "$FILES" 's@replace, \[\]commitBlockPlacement\{\{[\s\S]*?\}\}\)@replace, nil)@'
+  expect_red '^TestPC0StoredUploadRevalidatesMaterializedExactPlacement$' 'nil disables validateCommitBlockPublicationFences' 'UploadFile passes nil commit placement'
+}
+
+m_uploadfile_placement_drops_materialized_key() {
+  restore
+  # The revalidated placement must be the one this request materialized; any
+  # other storage key would authorize HEAD against the wrong incarnation.
+  mutate "$FILES" 's@(storageKey:\s+)materializationTarget\.StorageKey,@$1"",@'
+  expect_red '^TestPC0StoredUploadRevalidatesMaterializedExactPlacement$' 'materializationTarget.StorageKey' 'UploadFile placement not built from the materialized storage key'
+}
+
 m_initializer_loses_its_condition() {
   restore
   # Reintroducing the unconditional initializer (ISSUE-LIBRARY-INITIAL-HEAD-
@@ -301,6 +317,8 @@ m_downgrade_sync_provenance_cl
 m_raw_cql_head_writer
 m_resurrection_path_starts_staging
 m_fence_before_stage
+m_uploadfile_passes_nil_placement
+m_uploadfile_placement_drops_materialized_key
 m_initializer_loses_its_condition
 m_initializer_loses_null_head_clause
 m_initializer_loses_created_at_clause
@@ -323,4 +341,4 @@ m_attempt_identity_gains_function_field
 m_untyped_work_set_scope_is_added
 m_candidate_work_set_scope_value_changes
 restore
-green "PC-0/PC-1 inventory mutations are red (30/30)"
+green "PC-0/PC-1 inventory mutations are red (32/32)"

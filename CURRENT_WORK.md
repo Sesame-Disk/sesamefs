@@ -1,6 +1,19 @@
 # Current Work - SesameFS
 
-**Active branch — X1 critical-path reset (docs only, `docs/x1-reset-critical-path`, base `main@a5dea859a`, 2026-09-29):**
+**Active branch — W2-6 UploadFile exact placement (`fix/w2-6-uploadfile-exact-p`, base `main@163a8c60b`, 2026-09-29):**
+First W2 exit row after the X1 reset. `UploadFile` now passes its materialized
+exact placement to the shared finalizer, so `pub:` is staged and the placement
+is re-validated immediately before HEAD (the W2-0 shared mechanism, already
+used by CreateFileFromBlocks). Demonstrated RED first on real Cassandra (GC
+committed / fully retired the placement while the own `up:` had lapsed → HEAD
+published anyway), GREEN after the fix (409, HEAD unchanged, `pub:` dropped).
+W2-6 `CLOSED-FIX` pre-HEAD. The PR #237 cross-audit found the existing
+`CreateFile` Office-template funnel missing from the canonical W2 checklist;
+it is now tracked as W2-6a and remains `OPEN` (the empty-file path has no
+blocks). That is the next scoped W2 row, followed by SeafHTTP and OnlyOffice.
+`GC_ENABLED=false` remains mandatory.
+
+**Merged #236 — X1 critical-path reset (docs only, `docs/x1-reset-critical-path`, base `main@a5dea859a`, 2026-09-29):**
 [docs/X1-CRITICAL-PATH.md](docs/X1-CRITICAL-PATH.md) is now the source of
 record for the order of work toward X1. It restores the #201 roadmap
 (W2 exit checklist → G4 → G5 → E1 → X1 CLOSED → PRE-GC list → A1) and

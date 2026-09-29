@@ -1472,6 +1472,28 @@ docker compose --profile test run --rm --build \
   go test -tags integration -run '^TestSessionUploadOwnLiveness|^TestSessionUploadOwnLivenessEvidenceRequiresEveryNamedLeg$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v -count=1 -timeout 15m ./internal/integration
 ```
 
+Directed W2-6 UploadFile exact-placement run (`docs/X1-CRITICAL-PATH.md` §4;
+three named legs: `writerFirst`, `gcCommittedBeforeStage`,
+`gcFullyRetiredBeforeStage`; uses the integration-only
+`SetUploadFileAfterMaterializedBarrierForTest` hook):
+
+```bash
+docker compose --profile test run --rm --build \
+  -e SESAMEFS_REQUIRE_P2_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_P3_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_P4A_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_P4B_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_G1_ORPHAN_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_R26_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_R3_CHARACTERIZATION= \
+  -e SESAMEFS_REQUIRE_X1_NONOVERLAP_CHARACTERIZATION= \
+  -e SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_SESSIONUPLOAD_OWN_LIVENESS_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_W2_UPLOADFILE_EXACT_P_EVIDENCE=1 \
+  go-integration-test \
+  go test -tags integration -run '^TestW2UploadFileExactPlacementBeforeHead$|^TestW2UploadFileExactPEvidenceRequiresEveryNamedLeg$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v -count=1 -timeout 15m ./internal/integration
+```
+
 Directed W2 post-HEAD run (the W2 gate is explicit here; all unrelated gates are
 unset):
 

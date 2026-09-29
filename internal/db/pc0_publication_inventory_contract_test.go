@@ -1154,7 +1154,10 @@ func TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams(t *testing.T
 	}
 }
 
-func TestPC0StoredUploadExactPFenceIsNoOpWhenCommitBlocksNil(t *testing.T) {
+// W2-6 (docs/X1-CRITICAL-PATH.md §4) closed ISSUE-PC0-EXACT-P-FUNNEL-GAP-01 for
+// UploadFile: it must hand the shared finalizer the exact placement it just
+// materialized, so validateCommitBlockPublicationFences runs before HEAD.
+func TestPC0StoredUploadRevalidatesMaterializedExactPlacement(t *testing.T) {
 	root := r3RepositoryRoot(t)
 	file := r3ParseProductionFile(t, filepath.Join(root, "internal", "api", "v2", "files.go"))
 	upload := r3FindProductionFunction(t, file, "UploadFile")
@@ -1166,8 +1169,27 @@ func TestPC0StoredUploadExactPFenceIsNoOpWhenCommitBlocksNil(t *testing.T) {
 	if len(call.Args) < 9 {
 		t.Fatalf("PC0 FINDING: UploadFile finalizeStoredUploadMetadata has %d args, want at least 9 so commitBlocks can be inspected", len(call.Args))
 	}
-	ident, ok := call.Args[8].(*ast.Ident)
-	if !ok || ident.Name != "nil" {
-		t.Fatalf("PC0 FINDING: UploadFile no longer passes nil commitBlocks; update ISSUE-PC0-EXACT-P-FUNNEL-GAP-01 and the characterization matrix")
+	lit, ok := call.Args[8].(*ast.CompositeLit)
+	if !ok {
+		t.Fatalf("W2-6: UploadFile must pass its materialized exact placement as a composite literal to finalizeStoredUploadMetadata; nil disables validateCommitBlockPublicationFences")
+	}
+	seen := map[string]bool{}
+	ast.Inspect(lit, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.SelectorExpr:
+			if x, ok := n.X.(*ast.Ident); ok && x.Name == "materializationTarget" {
+				seen["materializationTarget."+n.Sel.Name] = true
+			}
+		case *ast.Ident:
+			if n.Name == "sha256ID" {
+				seen["sha256ID"] = true
+			}
+		}
+		return true
+	})
+	for _, want := range []string{"sha256ID", "materializationTarget.StorageClass", "materializationTarget.StorageKey"} {
+		if !seen[want] {
+			t.Fatalf("W2-6: UploadFile's publication placement must be built from %s (the exact materialized placement)", want)
+		}
 	}
 }
