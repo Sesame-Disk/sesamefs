@@ -752,8 +752,10 @@ func (h *FileHandler) ensureCommitBlockOwnLiveness(ctx context.Context, orgID, l
 // This reads at LOCAL_QUORUM (BlockAuthorityAdvisory), not SERIAL: unlike the
 // pre-PUT repair boundary (ValidateBlockRepairAuthority), safety here does not
 // come from a downstream CAS -- it comes from the caller having already
-// durably written (or, for SessionUpload, renewed) its own up:<session> pin
-// before this runs. See db.ValidateBorrowedFSPublicationAuthority for the
+// durably written a reference of its own before this runs: the staged
+// pub:<attempt> (always, via stagePendingPublishedFiles) and, for
+// CreateFileFromBlocks, the renewed up:<session> pin. UploadFile relies on
+// pub: alone because its up:<operation> may have lapsed (W2-6). See db.ValidateBorrowedFSPublicationAuthority for the
 // full four-case ordering proof -- do not duplicate it here. Paying a
 // Paxos round trip per block on this dedup hot path would buy nothing that
 // ordering does not already give.

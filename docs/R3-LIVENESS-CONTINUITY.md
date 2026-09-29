@@ -192,8 +192,11 @@ W2-6 (PR #237) activates the already-reachable
 `validateCommitBlockPublicationFences` seam for `UploadFile` by passing its
 materialized placement instead of `nil`: no new CQL source callsite and no
 static budget change. Declared runtime cost: two `LOCAL_QUORUM` point reads
-(canonical `blocks` row, then `gc_s3_orphans`) per `UploadFile` request, the
-same per-block cost `CreateFileFromBlocks` already pays.
+(canonical `blocks` row, then `gc_s3_orphans`) per finalize attempt, the
+same per-block cost `CreateFileFromBlocks` already pays. An uncontended
+`UploadFile` pays two reads; each `ErrLibraryHeadConflict` retry repeats
+stage, validation and HEAD CAS, bounded by the existing
+`uploadMetadataRetryAttempts` (20) finalize limit, so at most 40 reads.
 
 `TestR3PublicationHotPathHasNoPerBlockAuthorityReads` retains the lightweight
 local source check. `TestR3PublicationHotPathIsFailClosed` indexes the db, v2,

@@ -87,7 +87,8 @@ var validateBlockRepairAuthorityFn = func(database *db.DB, orgID, blockID string
 // one is the pre-PUT repair boundary and always pays SERIAL because it has no
 // downstream CAS to fall back on and no prior own-reference ordering to lean
 // on either. This one is safe at LOCAL_QUORUM because the caller has already
-// durably written its own up:<session> pin before calling it -- see
+// durably written a reference of its own (up:<session>, or the staged
+// pub:<attempt>) at LOCAL_QUORUM before calling it -- see
 // db.ValidateBorrowedFSPublicationAuthority's doc comment for the full
 // argument. Do not point this at ValidateBlockRepairAuthority: that would pay
 // a Paxos round trip per BorrowedFS block on the dedup hot path for a property

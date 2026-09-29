@@ -803,7 +803,7 @@ func (db *DB) ValidateBlockRepairAuthority(orgID, blockID string, expected Block
 
 // ValidateBorrowedFSPublicationAuthority re-validates that blocks(L) still
 // names the exact physical placement `expected` immediately before a
-// BorrowedFS writer may publish HEAD. It shares BlockRepairAuthorityOutcome's
+// writer may publish HEAD (BorrowedFS, SessionUpload and UploadFile callers). It shares BlockRepairAuthorityOutcome's
 // classification (Authorized / Blocked / Changed / Permanent / Unknown) with
 // ValidateBlockRepairAuthority, but reads at BlockAuthorityAdvisory
 // (LOCAL_QUORUM), not BlockAuthorityStrong (SERIAL).
@@ -812,12 +812,15 @@ func (db *DB) ValidateBlockRepairAuthority(orgID, blockID string, expected Block
 // downstream CAS: this call has no downstream mutation on the block to fall
 // back on -- once it says Authorized, HEAD publishes unconditionally. What
 // makes Advisory safe here is ORDERING plus the shape of the two possible
-// staleness directions, not a CAS. By the time this runs, the caller has
-// ALREADY durably written its own up:<session> reference
-// (BlockReferenceWriteConsistency = LOCAL_QUORUM: acknowledged by a quorum of
-// replicas in the writer's own datacenter; propagation to other DCs is not
-// guaranteed by the time the write returns). Four cases cover every
-// interleaving with GC:
+// staleness directions, not a CAS. The premise is caller-owned durable
+// liveness: by the time this runs, the caller has ALREADY durably written a
+// reference of its own to this block -- its up:<session> pin, or the
+// pub:<attempt> reference the shared finalizer stages before this read (the
+// only one UploadFile can rely on once its up:<operation> may have lapsed) --
+// at BlockReferenceWriteConsistency = LOCAL_QUORUM (acknowledged by a quorum
+// of replicas in the writer's own datacenter; propagation to other DCs is
+// not guaranteed by the time the write returns). "The pin" below means that
+// reference. Four cases cover every interleaving with GC:
 //
 //  1. GC's zero-proof read (BlockHasReferencesGlobal, EACH_QUORUM) happens
 //     after that pin is durable. EACH_QUORUM queries a quorum of replicas in

@@ -16,15 +16,18 @@ published a file whose block was condemned or already deleted. Demonstrated
 first on real Cassandra (both GC legs returned 200 and advanced HEAD), then
 fixed: UploadFile passes `[]commitBlockPlacement{{sha256ID, materialized
 class/key}}`, and the finalizer rejects with 409, drops `pub:` and leaves HEAD
-unchanged. W2-0's shared mechanism is identified (stage `pub:` → final exact-P
-revalidation → HEAD); W2-6 is `CLOSED-FIX` pre-HEAD. Adds the integration-only
+unchanged. W2-0's shared mechanism is identified and proven (stage `pub:` →
+final exact-P revalidation → HEAD); W2-6 is `CLOSED-FIX` pre-HEAD. Adds the integration-only
 `SetUploadFileAfterMaterializedBarrierForTest` hook, the
 `SESAMEFS_REQUIRE_W2_UPLOADFILE_EXACT_P_EVIDENCE` gate (three named legs),
 inverts `TestPC0StoredUploadExactPFenceIsNoOpWhenCommitBlocksNil` into
 `TestPC0StoredUploadRevalidatesMaterializedExactPlacement`, and adds two PC-0
 mutations (32/32). No new CQL callsite; declared runtime cost: two
-`LOCAL_QUORUM` point reads per UploadFile request. `GC_ENABLED=false` remains
-mandatory.
+`LOCAL_QUORUM` point reads per finalize attempt (two for an uncontended
+upload; HEAD-conflict retries repeat it, at most 20 attempts). W2-0 stays
+`OPEN` as a failure sequence until every funnel adopts the mechanism; the
+four-case proof premise is documented as caller-owned durable liveness
+(`up:` or staged `pub:`). `GC_ENABLED=false` remains mandatory.
 
 ## 2026-09-29 - X1 critical-path reset (docs only)
 
