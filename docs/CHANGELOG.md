@@ -6,6 +6,16 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-29 - Cross-audit: track CreateFile in the W2 exit gate
+
+Confirmed that the Office-template path in `CreateFile` materializes a block,
+stages `pub:`, then publishes HEAD without a final exact-placement check. Added
+W2-6a as an explicit `OPEN` row in the X1 checklist and aligned the R3, PC-0,
+open-work and current-work inventories; the CreateFile runtime fix remains a
+separate follow-up. Also corrected the W2-6 integration fixture cleanup order:
+the exact S3 object cleanup now runs while the canonical `blocks` row still
+provides its storage key.
+
 ## 2026-09-29 - W2-6: UploadFile re-validates its materialized placement before HEAD
 
 First W2 exit row after the X1 reset (`docs/X1-CRITICAL-PATH.md` §4).

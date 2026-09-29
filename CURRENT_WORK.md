@@ -7,8 +7,11 @@ is re-validated immediately before HEAD (the W2-0 shared mechanism, already
 used by CreateFileFromBlocks). Demonstrated RED first on real Cassandra (GC
 committed / fully retired the placement while the own `up:` had lapsed → HEAD
 published anyway), GREEN after the fix (409, HEAD unchanged, `pub:` dropped).
-W2-6 `CLOSED-FIX` pre-HEAD; W2-7/W2-8 (SeafHTTP, OnlyOffice) are the natural
-next rows. `GC_ENABLED=false` remains mandatory.
+W2-6 `CLOSED-FIX` pre-HEAD. The PR #237 cross-audit found the existing
+`CreateFile` Office-template funnel missing from the canonical W2 checklist;
+it is now tracked as W2-6a and remains `OPEN` (the empty-file path has no
+blocks). That is the next scoped W2 row, followed by SeafHTTP and OnlyOffice.
+`GC_ENABLED=false` remains mandatory.
 
 **Merged #236 — X1 critical-path reset (docs only, `docs/x1-reset-critical-path`, base `main@a5dea859a`, 2026-09-29):**
 [docs/X1-CRITICAL-PATH.md](docs/X1-CRITICAL-PATH.md) is now the source of

@@ -173,8 +173,10 @@ func newW2UploadFileFixture(t *testing.T, database *dbpkg.DB, handler *v2pkg.Fil
 	if inner.headBefore == "" {
 		t.Fatal("library has empty HEAD before upload")
 	}
-	cleanupUploadedBlockArtifactsForTest(t, orgID, repoID, blockID, sha1ID)
 	x1Cleanup(t, database, orgUUID, blockID)
+	// Cleanup callbacks run in LIFO order. Register the exact-object cleanup
+	// after x1Cleanup so it runs first, while blocks.storage_key is still present.
+	cleanupUploadedBlockArtifactsForTest(t, orgID, repoID, blockID, sha1ID)
 	return &w2UploadFileFixture{borrowedFSHeadFixture: inner}
 }
 
