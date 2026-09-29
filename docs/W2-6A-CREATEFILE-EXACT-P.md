@@ -147,3 +147,17 @@ requires pin liveness through HEAD. Post-HEAD R31 also remains OPEN.
 | Empty CreateFile preserved | 201, size zero, no block IDs, no materialization hook |
 | W2-6a full closure | **NOT MET**: own pub: expires after 35d; validator-to-HEAD continuity unresolved. X1 W2-6a and W2-0 remain OPEN |
 | Final audit | Source/scope checks passed; this PR delivers the verified branch against main |
+
+## Cross-audit revalidation (2026-09-29)
+
+- Docker `go test -short -count=1 -timeout 5m ./internal/api/v2 ./internal/db`
+  passed (0.993s / 10.923s); `go vet` for both packages passed.
+- Required real Cassandra/MinIO CreateFile matrix reran GREEN: all nine Office
+  legs and emptyFile passed (test 6.27s, integration package 10.899s).
+- Docker contract audit passed: W2-0/W2-6a OPEN, correct canonical order and F2,
+  shared TTL issue indexed, and the full-closure requirement explicitly NOT MET.
+- This review changes only docs. Runtime and fixture bytes in the Docker image
+  match the branch; no runtime or test source changed since f3077b4.
+- The shared P1 is confirmed by source inspection, not by a new 35-day race test.
+  P2 CreateFile ordering is corrected; pre-existing P2 F2 drift is corrected in
+  a separate documentation commit. The PR remains blocked for full W2-6a closure.

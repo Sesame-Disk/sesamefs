@@ -111,6 +111,12 @@ reached.
 
 ## Provenance inventory
 
+**PR #238 cross-audit caveat:** historical pre-HEAD closure language in other
+rows does not prove survival of TTL-bound own references through HEAD.
+The shared exact-P ordering proof assumes a live pin at the GC zero-proof read;
+W2-0 tracks that unresolved premise and W2-6a remains OPEN. The other funnels
+require a separate continuity audit; their runtime is unchanged here.
+
 | Funnel / provenance | Liveness owner and TTL | Post-pin fence | `pub:` handoff | Concrete interleaving / missing premise | Evidence | Result |
 |---|---|---|---|---|---|---|
 | Materialization primitive, fresh target | Exact `up:<operation>`, 48h | `BlockDeleteFenceActive`, then single-use install | Outside this primitive | Active deleting/orphan returns before install; however `up -> fence clear -> stall >48h -> up expires -> install` is not excluded | `RegisterUploadedBlockTarget`; unit order/mutation contracts; real Cassandra race | `CONDITIONAL`; ordering and active-GC exclusion proven, TTL continuity unproven |
