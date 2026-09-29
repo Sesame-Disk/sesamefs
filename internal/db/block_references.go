@@ -803,7 +803,10 @@ func (db *DB) ValidateBlockRepairAuthority(orgID, blockID string, expected Block
 
 // ValidateBorrowedFSPublicationAuthority re-validates that blocks(L) still
 // names the exact physical placement `expected` immediately before a
-// writer may publish HEAD (BorrowedFS, SessionUpload and UploadFile callers). It shares BlockRepairAuthorityOutcome's
+// writer may publish HEAD. Writer-side publication callers must have already
+// established caller-owned durable liveness before this advisory read (for
+// example BorrowedFS, SessionUpload, UploadFile and CreateFile Office).
+// It shares BlockRepairAuthorityOutcome's
 // classification (Authorized / Blocked / Changed / Permanent / Unknown) with
 // ValidateBlockRepairAuthority, but reads at BlockAuthorityAdvisory
 // (LOCAL_QUORUM), not BlockAuthorityStrong (SERIAL).
@@ -820,7 +823,12 @@ func (db *DB) ValidateBlockRepairAuthority(orgID, blockID string, expected Block
 // at BlockReferenceWriteConsistency = LOCAL_QUORUM (acknowledged by a quorum
 // of replicas in the writer's own datacenter; propagation to other DCs is
 // not guaranteed by the time the write returns). "The pin" below means that
-// reference. Four cases cover every interleaving with GC:
+// reference, which must remain live through HEAD. The four cases below are
+// conditional on that continuity premise: a completed TTL-bound write alone
+// does not establish it. This helper neither checks nor renews pin liveness
+// nor couples it to HEAD CAS. Pin expiry before HEAD remains OPEN under W2-0
+// (ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01), including CreateFile W2-6a.
+// Under the live-pin premise, four cases cover the GC ordering:
 //
 //  1. GC's zero-proof read (BlockHasReferencesGlobal, EACH_QUORUM) happens
 //     after that pin is durable. EACH_QUORUM queries a quorum of replicas in

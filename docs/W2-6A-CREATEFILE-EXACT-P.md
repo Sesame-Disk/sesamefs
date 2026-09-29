@@ -161,3 +161,18 @@ requires pin liveness through HEAD. Post-HEAD R31 also remains OPEN.
 - The shared P1 is confirmed by source inspection, not by a new 35-day race test.
   P2 CreateFile ordering is corrected; pre-existing P2 F2 drift is corrected in
   a separate documentation commit. The PR remains blocked for full W2-6a closure.
+
+## Second cross-audit: contract drift corrected (2026-09-29)
+
+- Corrected the primary F1 matrix, the exclusive commitBlocks caller claim,
+  PUBL-2 and M7 in PC-0. F1 Office/F2/F3 and Sync provenanced blocks have
+  exact-P; OnlyOffice, SeafHTTP and cross-repo lack an equivalent final check.
+- Corrected the helper caller contract to include CreateFile Office and qualify
+  the four-case proof with pin liveness through HEAD. No runtime change.
+- Docker scanner audit: Go token stream identical to the previous HEAD after
+  excluding comments. API/DB short suites passed (0.490s / 5.530s), DB vet
+  passed, and all targeted documentation assertions passed.
+- Both reported THIS-PR P2 findings are resolved. No remaining blocker was
+  identified for reviewing #238 as partial exact-P hardening. The pre-existing
+  P1 is PRE-X1/W2-0 follow-up; W2-0 and W2-6a remain OPEN and G4 stays blocked.
+  This does not satisfy the full-closure requirement above. No merge performed.
