@@ -21,6 +21,8 @@ empty files. No new CQL, table, protocol, coordinator or GC activation. Only
 W2-6a remains OPEN: this fixes GC-before-validation races, while the 35d pub:
 TTL leaves validator-to-HEAD continuity unresolved. W2-0 and R31 stay open.
 Cross-audit also corrected the PC-0 canonical CreateFile ordering.
+Separate contractual cleanup updates F2/UploadFile to the actual placement and
+final exact-P check shipped in #237. This pre-existing P2 changes no runtime.
 Plan and verification: [W2-6A-CREATEFILE-EXACT-P.md](W2-6A-CREATEFILE-EXACT-P.md).
 
 ## 2026-09-29 - Cross-audit: track CreateFile in the W2 exit gate

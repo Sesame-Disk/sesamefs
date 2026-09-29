@@ -467,9 +467,12 @@ PC-0 does not shorten this to a three-value scheme and does not rename
 
 ### F2 — stored v2 upload (`UploadFile` / `finalizeStoredUploadMetadataOnce`)
 
-Same finalizer as F3, but `commitBlocks == nil`, so
-`validateCommitBlockPublicationFences` returns immediately. Exact-P is
-**implemented in the shared function and unused by this caller**.
+Since PR #237, UploadFile passes the actual materialized SHA-256, storage class
+and storage key to the same finalizer as F3. It stages `pub:`, queues repair,
+inserts the commit and calls `validateCommitBlockPublicationFences` immediately
+before HEAD. The old nil-placement characterization was pre-existing doc drift.
+This authority check does not prove continuous pin liveness through HEAD:
+`pub:` is TTL-bound (35d), as tracked under W2-0.
 
 | Dimension | Observed |
 |---|---|
@@ -478,11 +481,11 @@ Same finalizer as F3, but `commitBlocks == nil`, so
 | Block identity | SHA-256 at PUT; fs_object may hold SHA-1 |
 | Provenance | `RegisterUploadedBlockTarget` `up:<operation>` |
 | Own liveness | 48h `up:`; not renewed at finalize |
-| Exact P / fence | **absent at finalize** |
+| Exact P / fence | actual materialized SHA-256/class/key validated after pub:/repair, immediately before HEAD (#237) |
 | Repair / HEAD / settle | same as F3's finalizer |
-| W2 | `CONDITIONAL` (R3); publication-authority/continuity at finalize is **UNKNOWN/absent** |
+| W2 | `CONDITIONAL` (R3): final authority check present; own-pin continuity under 35d pub: expiry remains unresolved (W2-0) |
 | Common | stage, repair, HEAD, settle |
-| Specific | upload materialize; nil placements |
+| Specific | upload materialize; actual confirmed placement passed to finalizer |
 
 Finding: `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` (publication-readiness/authority gap
 by provenance; not a prescription that every funnel must run exact-P).
