@@ -13,3 +13,5 @@ func fileFromBlocksAfterStagedBarrier(string) {}
 func fileFromBlocksBeforeHeadBarrier(string) error { return nil }
 
 func uploadFileAfterMaterializedBarrier(string) {}
+
+func createFileAfterMaterializedBarrier(string) {}

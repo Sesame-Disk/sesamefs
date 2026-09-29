@@ -109,14 +109,14 @@ adds a funnel later does not.
 
 | # | Row (R3 source) | Today | Tracking | State |
 |---|---|---|---|---|
-| W2-0 | **Cross-cutting:** continuous `up: → pub:` overlap under the 48h `up:` TTL (materialization primitive fresh/reuse rows: `up → fence clear → stall >48h → up expires → install` is not excluded; every `CONDITIONAL` row below repeats it) | **Shared mechanism identified (W2-6, PR #237):** stage `pub:` at `LOCAL_QUORUM`, then re-validate the exact placement the request uses (`validateCommitBlockPublicationFences` → `db.ValidateBorrowedFSPublicationAuthority`, four-case ordering proof) immediately before HEAD. A stall past the `up:` TTL then ends in a rejected publication (409), not a W2 violation. A funnel row closes pre-HEAD by adopting it; post-HEAD continuity stays with W2-11…W2-14 | R3 table; R31 | `OPEN` as a failure sequence — still reachable in funnels that have not adopted the mechanism. The mechanism itself is identified and proven (ordering proof plus real-Cassandra legs in #202/#204/W2-6); W2-0 closes only when every funnel row does (adopted: W2-1, W2-2, W2-6; pending: W2-6a, W2-7, W2-8, W2-9) |
+| W2-0 | **Cross-cutting:** continuous `up: → pub:` overlap under the 48h `up:` TTL (materialization primitive fresh/reuse rows: `up → fence clear → stall >48h → up expires → install` is not excluded; every `CONDITIONAL` row below repeats it) | **Shared mechanism identified (W2-6, PR #237):** stage `pub:` at `LOCAL_QUORUM`, then re-validate the exact placement the request uses (`validateCommitBlockPublicationFences` → `db.ValidateBorrowedFSPublicationAuthority`, four-case ordering proof) immediately before HEAD. A stall past the `up:` TTL then ends in a rejected publication (409), not a W2 violation. A funnel row closes pre-HEAD by adopting it; post-HEAD continuity stays with W2-11…W2-14 | R3 table; R31 | `OPEN` as a failure sequence — still reachable in funnels that have not adopted the mechanism. The mechanism itself is identified and proven (ordering proof plus real-Cassandra legs in #202/#204/W2-6); W2-0 closes only when every funnel row does (adopted: W2-1, W2-2, W2-6, W2-6a; pending: W2-7, W2-8, W2-9) |
 | W2-1 | `CreateFileFromBlocks`, exact session `up:` | pre-HEAD proven with the W2-0 mechanism (#204/#205) | — | OPEN only through R31 (W2-11…W2-14) |
 | W2-2 | `CreateFileFromBlocks`, foreign `fs:` reuse / dedup | W1 proven through HEAD with the W2-0 mechanism (#202) | — | OPEN only through R31 (W2-11…W2-14) |
 | W2-3 | Sync `PutBlock` → HEAD, and Sync retry from another pod | pre-HEAD proven for the PutBlock-provenanced subset, incl. cross-DC (#206/#210) | `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01` | OPEN |
 | W2-4 | Sync commit whose block had no associated PutBlock | `UNKNOWN` | R3 table | OPEN |
 | W2-5 | `recv-fs-before-put` | `UNKNOWN` | R3 table | OPEN |
 | W2-6 | v2 stored upload (`UploadFile`), materialized and reusable target | Adopts the W2-0 mechanism: passes its materialized placement to the shared finalizer (PR #237). Real-Cassandra evidence `TestW2UploadFileExactPlacementBeforeHead` (GC-committed and fully-retired placement before stage → 409, HEAD unchanged, `pub:` dropped); RED on the previous code | `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` (UploadFile part) | `CLOSED-FIX` pre-HEAD; post-HEAD through W2-11…W2-14 |
-| W2-6a | v2 `CreateFile`, Office-template block publication (empty-file path has no blocks) | `CONDITIONAL`: template placement is known after materialization and an `up:<uuid>` is registered, but there is no final exact-P check before HEAD. If that pin lapses and GC retires the placement before publication, `CreateFile` can still advance HEAD | `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` (CreateFile part; PC-0 F1) | OPEN |
+| W2-6a | v2 `CreateFile`, Office-template block publication (empty-file path has no blocks) | Adopts the W2-0/#237 mechanism: carries the actual materialized SHA-256/class/key through fresh/reused template publication; durable `pub:` precedes `validateCommitBlockPublicationFences` immediately before HEAD. Condemned, retired or changed exact P fails closed with 409, HEAD unchanged and staged `pub:` cleaned | `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` (CreateFile part; PC-0 F1); [plan/evidence](./W2-6A-CREATEFILE-EXACT-P.md); real Cassandra/MinIO `TestW2CreateFileOfficeTemplateExactPlacementBeforeHead` (three legs per `.docx/.xlsx/.pptx`, reuse + empty controls) and scoped mutations | `CLOSED-FIX` pre-HEAD; post-HEAD R31 remains OPEN |
 | W2-7 | SeafHTTP normal/streaming finalize | `CONDITIONAL` | R3 table | OPEN |
 | W2-8 | OnlyOffice callback | `CONDITIONAL` | R3 table | OPEN |
 | W2-9 | Cross-repo copy/move | `UNKNOWN`; borrowed source `fs:` with no destination fence | R3 table | OPEN |
@@ -133,8 +133,8 @@ Not W2 exit rows (follow-ups, may be reclassified in E1):
 `ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`,
 `ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01`.
 
-Suggested order: W2-0 is identified and W2-6 adopted it; next W2-6a
-(`CreateFile` Office template), W2-7/W2-8 or W2-10, each starting with a
+Suggested order: W2-0 is identified; W2-6 and W2-6a adopted it. Next:
+W2-7/W2-8 or W2-10, each starting with a
 demonstration of the failure; then the Sync `UNKNOWN` rows, W2-9 and the R31
 rows.
 

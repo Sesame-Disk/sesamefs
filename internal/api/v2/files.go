@@ -1300,6 +1300,7 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 	var templateStorageKey string
 	var templateBlockStored bool
 	var templateTarget BlockMaterializationTarget
+	var commitBlocks []commitBlockPlacement
 
 	if len(templateContent) > 0 {
 		fileSize = int64(len(templateContent))
@@ -1433,6 +1434,14 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 			}); err != nil {
 				return err
 			}
+			// Keep the actual confirmed placement, including reuse and HEAD
+			// retries, for the W2-6a final authority check after durable pub:.
+			commitBlocks = []commitBlockPlacement{{
+				blockID:      templateBlockData.Hash,
+				storageClass: templateMaterializedStorageClass,
+				storageKey:   templateStorageKey,
+			}}
+			createFileAfterMaterializedBarrier(repoID)
 		}
 
 		pendingFile, err := fsHelper.prepareFileFSObjectForPublish(repoID, fileName, fileSize, blockIDs)
@@ -1500,6 +1509,7 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 			}
 			return fmt.Errorf("failed to stage publish-attempt block references for commit %s: %w", commitID, err)
 		}
+		fileFromBlocksAfterStagedBarrier(repoID)
 		if err := queuePendingPublishedFileRepairs(h.db, orgID, repoID, commitID, pendingFiles); err != nil {
 			cleanupErr := CleanupFailedPublishAttempt(h.db, orgID, repoID, commitID, commitID, pendingFiles)
 			clearErr := clearPendingPublishedFileRepairs(h.db, orgID, repoID, commitID, pendingFiles)
@@ -1517,6 +1527,15 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 				cleanupErr,
 				clearErr,
 			)
+		}
+
+		// The request's own up: may have expired before staging. As in W2-6,
+		// pub: is already durable; validate the exact materialized P immediately
+		// before HEAD. Empty CreateFile has no placements and remains blockless.
+		if err := h.validateCommitBlockPublicationFences(orgID, commitBlocks); err != nil {
+			cleanupErr := CleanupFailedPublishAttempt(h.db, orgID, repoID, commitID, commitID, pendingFiles)
+			clearErr := clearPendingPublishedFileRepairs(h.db, orgID, repoID, commitID, pendingFiles)
+			return errors.Join(err, cleanupErr, clearErr)
 		}
 
 		if err := fsHelper.UpdateLibraryHeadFromSnapshot(snapshot, repoID, commitID, snapshot.HeadCommitID); err != nil {

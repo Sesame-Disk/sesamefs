@@ -6,6 +6,21 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-29 - W2-6a: CreateFile Office-template exact placement before HEAD
+
+Reproduced the bug first on real Cassandra/MinIO for `.docx`, `.xlsx` and
+`.pptx`: after the own `up:` lapsed, both committed-D and fully-retired-P races
+returned 201 and advanced HEAD. `CreateFile` now transports the actual confirmed
+SHA-256/class/key and calls the existing W2-0/#237 exact-P validator after durable
+`pub:` immediately before HEAD. Both races return 409, retain HEAD, clean `pub:`
+and preserve D or terminal absence. The empty-file path has no placements.
+Adds scoped integration barriers, nine named Office evidence legs (including
+fresh/reused templates), an empty-file control, and mutations of placement/key/hash.
+Cost: two LOCAL_QUORUM point reads per Office-template HEAD attempt, zero for
+empty files. No new CQL, table, protocol, coordinator or GC activation. Only
+W2-6a closes pre-HEAD; W2-0 and the remaining funnel/R31 rows stay open.
+Plan and verification: [W2-6A-CREATEFILE-EXACT-P.md](W2-6A-CREATEFILE-EXACT-P.md).
+
 ## 2026-09-29 - Cross-audit: track CreateFile in the W2 exit gate
 
 Confirmed that the Office-template path in `CreateFile` materializes a block,
