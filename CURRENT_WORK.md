@@ -1,12 +1,25 @@
 # Current Work - SesameFS
 
-## Active branch: codex/w2-0-wire-crash-rollout
+## Active branch: docs/x1-greenfield-w2-reset
 
-W2-0 evidence follow-up to main@76d68c928f. Real wire ambiguity and SIGKILL
-strengthen the six covered current-version chains. Both mixed deployments
-reproduce D(P)+HEAD; W2-0 stays OPEN pending rollout exclusion. GC remains
-disabled. See [evidence and limits](./docs/W2-0-WIRE-CRASH-ROLLOUT.md).
+Docs-only reconciliation after merged #241, based initially on
+main@302d3418e6596774d48eb7ac98b6be170803ab83.
+The existing greenfield first-production contract excludes incompatible
+pre-#239 writer/GC skew. W2-0 is CLOSED-EVIDENCE for the covered current-version
+mechanism; both real mixed-version D(P)+HEAD counterexamples remain P1
+FOLLOW-UP / GENERAL. W2-1/2/6a remain OPEN through R31. Runtime, CQL, schema,
+guards and tests are unchanged; GC remains disabled.
 
+#240 is being completed separately. This branch awaits the user's merge
+notification, then a safe rebase onto updated main and final audit before PR
+creation. Do not treat #240 as merged or alter its branch.
+Audit record: [greenfield reconciliation](./docs/W2-0-GREENFIELD-RECONCILIATION.md).
+Next critical-path work: finish remaining real W2 funnels and R31, then
+G4 -> G5 -> E1 -> X1 CLOSED -> PRE-GC -> A1 -> GC ON.
+
+The dated merged-PR entries below are historical snapshots. Their old W2-0
+OPEN statements are superseded by the current [X1 source of record](./docs/X1-CRITICAL-PATH.md);
+they preserve the evidence and limits recorded at the time.
 
 **Merged PR #234, `fix/library-hard-delete-lease-global-serial` (rebased onto `main@cd591709c`, 2026-09-30; originally 2026-09-26):**
 Every hard-delete lease LWT (library, user and org) now pins global `SERIAL`

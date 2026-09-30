@@ -1,5 +1,24 @@
 # Known Issues - SesameFS
 
+## Greenfield first-production reconciliation (2026-09-30)
+
+W2-0 is **CLOSED-EVIDENCE for the covered current-version mechanism** under
+the [first-production contract](./X1-CRITICAL-PATH.md#first-production-deployment-contract).
+The #239 durable repair / final exact-P ordering and #241 native wire loss,
+real SIGKILL, independent recovery and three-DC evidence are preserved.
+Both incompatible mixed-version combinations still reproduce D(P)+HEAD;
+ISSUE-W2-INCOMPATIBLE-MIXED-ROLLOUT-01 tracks them as P1 FOLLOW-UP / GENERAL,
+outside v1 first activation. No compatibility gate is inferred or added.
+W2-1, W2-2 and W2-6a remain OPEN through the separately tracked R31 residuals.
+Other W2 rows are unchanged. W2 completion -> G4 -> G5 -> E1 -> X1 CLOSED ->
+PRE-GC -> A1 -> GC ON remains the #201/#236 path; GC stays disabled.
+
+The dated #238/#239 entries and characterization tables below are historical
+evidence snapshots. Their old W2-0 OPEN / pending-evidence statements are
+superseded by this reconciliation and the current X1 checklist; they do not
+define today's closure state.
+
+
 ### PR #239 crossed audit correction (2026-09-30)
 
 Pre-D GC now distinguishes real references, repair-only protection and zero.
@@ -23,7 +42,7 @@ are pending. Older GC readers must be upgraded; cold-path cost is up to 32
 organization range reads plus a ref probe, proportional to pending rows.
 See [plan, evidence, individual re-audit and limits](./W2-0-PUBLICATION-CONTINUITY.md).
 
-**Last Updated**: 2026-09-29 (X1 critical-path reset)
+**Last Updated**: 2026-09-30 (greenfield W2-0 scope reconciliation)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -6059,9 +6078,9 @@ Expired provenance past the 48h TTL remains unsolved (indistinguishable from tru
 
 ### ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01: TTL-bound own pin does not prove continuity through HEAD
 
-**Status**: Open — current-version wire/crash evidence added; mixed rollout remains unsafe; W2-6a remains OPEN.
+**Status**: CLOSED-EVIDENCE — covered current-version W2-0 mechanism under the supported greenfield first-production contract; W2-6a remains OPEN through R31.
 **Severity**: High (P1).
-**Scope**: Shared pre-existing mechanism; blocks the full-closure claim in #238.
+**Scope**: Shared pre-HEAD mechanism, covered F1/F2/F3 and PutBlock-provenanced Sync. Historical #238 full-closure blocker; v1 scope reconciled after #239/#241.
 **Registered**: 2026-09-29, PR #238 cross-audit.
 
 Baseline at #238: `PublishAttemptReferenceTTLSeconds` is 35 days; own `up:` is 48 hours.
@@ -6076,19 +6095,45 @@ does not exclude a pause between that operation and HEAD.
 
 Closure requires a demonstrated continuity or fail-closed mechanism excluding
 GC commitment between authority validation and HEAD, including pin-expiry
-interleavings. The current follow-up implements a durable repair gate but does not claim full closure.
+interleavings. The #239 durable repair gate plus final exact-P and #241 wire/SIGKILL/recovery/3-DC evidence meet this requirement for the covered current-version chains. UNKNOWN and definitely-not-reachable repair outcomes retain the guard; a reachable outcome promotes real refs before deleting repair. No independent current-version W2-0 residual was identified. R31 settlement/liveness remains separately OPEN in W2-11..14.
 See [W2-6a evidence limits](./W2-6A-CREATEFILE-EXACT-P.md) and W2-0 in X1.
 
-See [real wire/crash/rollout audit](./W2-0-WIRE-CRASH-ROLLOUT.md): both pinned
-mixed-version combinations reproduce D(P)+HEAD. Fleet-wide GC disablement
-and draining old attempts are required; no version-aware fail-closed rollout
-gate exists. This is the concrete residual, not pending wire/OS evidence.
+See [real wire/crash/rollout audit](./W2-0-WIRE-CRASH-ROLLOUT.md) and the
+[first-production contract](./X1-CRITICAL-PATH.md#first-production-deployment-contract).
+The mixed-version limitation is preserved separately below.
+
+### ISSUE-W2-INCOMPATIBLE-MIXED-ROLLOUT-01: incompatible rolling upgrade can publish HEAD after D
+
+**Status**: Open — unsupported future incompatible rolling upgrade; both counterexamples preserved.
+**Severity**: High (P1).
+**Scope**: FOLLOW-UP / GENERAL. Outside the v1 X1 and first-GC-activation prerequisites.
+**Registered**: 2026-09-30, scope reconciliation of merged #241 evidence.
+
+The pinned pre-#239 binary (50c50903e7ac49c04ef36f460dccc35ce122dfd6)
+reproduces D(P)+HEAD in both combinations: a new writer with old productive
+GC, and an old writer with current productive Worker.ProcessOrgOnce.
+The first GC does not observe repair protection; the second writer lacks the
+repair-before-final-exact-P ordering. Real candidates, destructive retirement
+and durable HEAD publication are required by the unchanged tests.
+
+The supported v1 contract starts clean, with compatible audited components
+before first traffic and no old attempts/processes or inherited dataset.
+Therefore neither mixed-version sequence is a v1 first-activation blocker.
+This is a scope correction, not a fix or acceptance of either unsafe sequence.
+If incompatible rolling upgrades with active GC are supported later, a
+reviewable compatibility/drain protocol and evidence are required; simply
+upgrading readers first is insufficient. No registry, version gate or new
+machinery is introduced here. Existing current-version PRE-GC/A1 obligations
+remain unchanged.
+
+Evidence: [#241 mixed-version counterexamples](./W2-0-WIRE-CRASH-ROLLOUT.md#mixed-version-counterexamples).
+Deployment contract: [X1 source of record](./X1-CRITICAL-PATH.md#first-production-deployment-contract).
 
 ### ISSUE-PC0-EXACT-P-FUNNEL-GAP-01: Publication-authority/continuity before HEAD is not uniform by provenance
 
-**Status**: 🟡 Open — partially fixed. `UploadFile` fixed by W2-6 (PR #237, 2026-09-29): it passes its materialized exact placement to the shared finalizer, which re-validates it after `pub:` and immediately before HEAD (evidence `TestW2UploadFileExactPlacementBeforeHead`, RED on the previous code). W2-6a adds the missing exact-P check for `CreateFile` Office templates by carrying the actual SHA-256/class/key into the same final check after durable `pub:` (nine real Cassandra/MinIO legs plus reuse and empty-file controls). OnlyOffice, SeafHTTP and cross-repo remain open; W2-0 and R31 remain OPEN.
+**Status**: 🟡 Open — partially fixed. `UploadFile` fixed by W2-6 (PR #237, 2026-09-29): it passes its materialized exact placement to the shared finalizer, which re-validates it after `pub:` and immediately before HEAD (evidence `TestW2UploadFileExactPlacementBeforeHead`, RED on the previous code). W2-6a adds the missing exact-P check for `CreateFile` Office templates by carrying the actual SHA-256/class/key into the same final check after durable `pub:` (nine real Cassandra/MinIO legs plus reuse and empty-file controls). OnlyOffice, SeafHTTP and cross-repo remain open; covered current-version W2-0 is CLOSED-EVIDENCE under the first-production contract and R31 remains OPEN.
 **Severity**: High (P1) — W2 writer protocol completeness
-**Affected**: ~~`UploadFile` → `finalizeStoredUploadMetadataOnce` with `commitBlocks=nil`~~ (fixed, W2-6); `CreateFile` Office-template publication (partial exact-P fix, W2-6a OPEN; pin-expiry continuity unresolved); OnlyOffice `publishEditedDocumentMetadata`; SeafHTTP commit once-paths; cross-repo `processSingleItem`
+**Affected**: ~~`UploadFile` → `finalizeStoredUploadMetadataOnce` with `commitBlocks=nil`~~ (fixed, W2-6); `CreateFile` Office-template publication (partial exact-P fix, W2-6a OPEN through R31; covered pre-HEAD pin-expiry continuity proved); OnlyOffice `publishEditedDocumentMetadata`; SeafHTTP commit once-paths; cross-repo `processSingleItem`
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization
 
 #### Problem

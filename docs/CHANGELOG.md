@@ -6,6 +6,8 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
+
 ## 2026-09-29 - PR #234 hard-delete lease global SERIAL domain (rebased onto the X1 reset / W2-6a)
 
 Closed `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`. Every hard-delete lease

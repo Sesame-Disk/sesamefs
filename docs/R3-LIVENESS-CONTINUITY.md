@@ -1,16 +1,22 @@
 # R3 liveness-continuity characterization
 
-## W2-0 real wire/crash/rollout audit (2026-09-30)
+## Greenfield first-production reconciliation (2026-09-30)
 
-[Native wire, OS SIGKILL and rollout evidence](./W2-0-WIRE-CRASH-ROLLOUT.md)
-strengthens the shared current-version premise for F1/F2/F3 and provenanced
-Sync. Both pinned mixed-version configurations reproduce D(P)+HEAD.
-W2-0 remains OPEN: fleet-wide GC disablement and draining old attempts are
-required; a version-aware fail-closed rollout exclusion is not implemented.
-Do not upgrade W2-1/2/6a or R31 closure claims from these tests. The #201/#236
-W2 -> G4 -> G5 -> E1 -> X1 -> PRE-GC/A1 order remains unchanged.
-Historical partial-proof entries below describe their original evidence.
+W2-0 is **CLOSED-EVIDENCE for the covered current-version mechanism** under
+the [first-production contract](./X1-CRITICAL-PATH.md#first-production-deployment-contract).
+The #239 durable repair / final exact-P ordering and #241 native wire loss,
+real SIGKILL, independent recovery and three-DC evidence are preserved.
+Both incompatible mixed-version combinations still reproduce D(P)+HEAD;
+ISSUE-W2-INCOMPATIBLE-MIXED-ROLLOUT-01 tracks them as P1 FOLLOW-UP / GENERAL,
+outside v1 first activation. No compatibility gate is inferred or added.
+W2-1, W2-2 and W2-6a remain OPEN through the separately tracked R31 residuals.
+Other W2 rows are unchanged. W2 completion -> G4 -> G5 -> E1 -> X1 CLOSED ->
+PRE-GC -> A1 -> GC ON remains the #201/#236 path; GC stays disabled.
 
+The dated #238/#239 entries and characterization tables below are historical
+evidence snapshots. Their old W2-0 OPEN / pending-evidence statements are
+superseded by this reconciliation and the current X1 checklist; they do not
+define today's closure state.
 
 ### PR #239 crossed audit correction (2026-09-30)
 
@@ -146,7 +152,13 @@ reached.
 
 ## Provenance inventory
 
-**PR #238 cross-audit caveat:** historical pre-HEAD closure language in other
+The table preserves characterization-era evidence and classifications, not
+today's W2 exit states. For the current individual re-audit, W2-1/2/6a have
+proved covered pre-HEAD continuity under the first-production contract and
+remain OPEN through R31 W2-11..14. Other funnel rows are unchanged; consult
+[X1 §4](./X1-CRITICAL-PATH.md#4-w2-exit-checklist) for current closure states.
+
+**Historical PR #238 cross-audit caveat (superseded for covered W2-0 by #239/#241 and the reconciliation above):** historical pre-HEAD closure language in other
 rows does not prove survival of TTL-bound own references through HEAD.
 The shared exact-P ordering proof assumes a live pin at the GC zero-proof read;
 W2-0 tracks that unresolved premise and W2-6a remains OPEN. The other funnels

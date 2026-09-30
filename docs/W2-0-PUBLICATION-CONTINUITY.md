@@ -1,5 +1,24 @@
 # W2-0 — publication continuity through HEAD
 
+## Greenfield first-production reconciliation (2026-09-30)
+
+W2-0 is **CLOSED-EVIDENCE for the covered current-version mechanism** under
+the [first-production contract](./X1-CRITICAL-PATH.md#first-production-deployment-contract).
+The #239 durable repair / final exact-P ordering and #241 native wire loss,
+real SIGKILL, independent recovery and three-DC evidence are preserved.
+Both incompatible mixed-version combinations still reproduce D(P)+HEAD;
+ISSUE-W2-INCOMPATIBLE-MIXED-ROLLOUT-01 tracks them as P1 FOLLOW-UP / GENERAL,
+outside v1 first activation. No compatibility gate is inferred or added.
+W2-1, W2-2 and W2-6a remain OPEN through the separately tracked R31 residuals.
+Other W2 rows are unchanged. W2 completion -> G4 -> G5 -> E1 -> X1 CLOSED ->
+PRE-GC -> A1 -> GC ON remains the #201/#236 path; GC stays disabled.
+
+The dated #238/#239 entries and characterization tables below are historical
+evidence snapshots. Their old W2-0 OPEN / pending-evidence statements are
+superseded by this reconciliation and the current X1 checklist; they do not
+define today's closure state.
+
+
 Base: main@50c50903e7ac49c04ef36f460dccc35ce122dfd6.
 Branch: fix/w2-0-publish-liveness-through-head.
 
