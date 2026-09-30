@@ -22,6 +22,8 @@ const (
 	// yet because a delete claim on its block is too young to hand back safely. The
 	// item is postponed, not retried and not failed.
 	GCFailureCodeBlockClaimNotYetStale = "block_claim_not_yet_stale"
+	// Pending publication guards postpone pre-D work while preserving the candidate.
+	GCFailureCodeBlockPublicationPending = "block_publication_pending"
 	// GCFailureCodeBlockAuthorityInvalid marks a candidate whose physical identity is
 	// unusable as destructive authority. Postponed, never retried and never consumed.
 	GCFailureCodeBlockAuthorityInvalid = "block_authority_invalid"
@@ -200,6 +202,10 @@ type GCStore interface {
 	// (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01). An unreachable DC makes it fail;
 	// callers must fail closed rather than treat the error as "no references".
 	BlockHasReferencesGlobal(orgID uuid.UUID, blockID string) (bool, error)
+	// BlockPublicationLivenessGlobal is pre-D only: real refs may settle work;
+	// repair-only must preserve candidate and queue. ZERO permits a new handoff.
+	// Committed and physical-delete readers use BlockHasReferencesGlobal instead.
+	BlockPublicationLivenessGlobal(orgID uuid.UUID, blockID string) (db.BlockPublicationLiveness, error)
 	// ValidateDestructiveGCTopology reports whether the live keyspace replication
 	// still supports the per-datacenter EACH_QUORUM argument that authorizes
 	// physical deletes. It is part of this interface rather than an optional
@@ -222,7 +228,8 @@ type GCStore interface {
 	// tests columns for null applies against a MISSING partition, while an IF that names
 	// storage_class cannot.
 	//
-	// Callers MUST re-check BlockHasReferencesGlobal — the EACH_QUORUM form, never the
+	// Callers MUST re-check BlockPublicationLivenessGlobal before a new D, including real references and repairs.
+	// Post-COMMITTED readers use BlockHasReferencesGlobal — the EACH_QUORUM form, never the
 	// session-consistency one — after a successful claim before deleting from S3
 	// (claim-then-verify). Verifying with the local read reopens
 	// ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01.

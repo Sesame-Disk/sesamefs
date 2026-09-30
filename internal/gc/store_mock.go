@@ -2367,6 +2367,18 @@ func (m *MockStore) BlockHasReferencesGlobal(orgID uuid.UUID, blockID string) (b
 	return m.blockHasReferencesShared(orgID, blockID)
 }
 
+// No repairs are modeled by this reference-only mock. Guard-only worker tests
+// override this typed method while all existing real-ref/error hooks are retained.
+func (m *MockStore) BlockPublicationLivenessGlobal(orgID uuid.UUID, blockID string) (db.BlockPublicationLiveness, error) {
+	refs, err := m.BlockHasReferencesGlobal(orgID, blockID)
+	if err != nil {
+		return db.BlockPublicationUnknown, err
+	}
+	if refs {
+		return db.BlockPublicationRealReference, nil
+	}
+	return db.BlockPublicationZero, nil
+}
 func (m *MockStore) blockHasReferencesShared(orgID uuid.UUID, blockID string) (bool, error) {
 	m.mu.RLock()
 	current := len(m.blockReferences[fmt.Sprintf("%s:%s", orgID, blockID)]) > 0

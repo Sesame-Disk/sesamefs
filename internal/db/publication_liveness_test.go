@@ -13,12 +13,12 @@ func TestW2PublicationGuardHandoffAndFailures(t *testing.T) {
 		refs             []bool
 		pending          bool
 		refErr, guardErr error
-		want             bool
+		want             BlockPublicationLiveness
 	}{
-		{name: "live", refs: []bool{true}, want: true},
-		{name: "repair", refs: []bool{false}, pending: true, want: true},
-		{name: "settledToFS", refs: []bool{false, true}, want: true},
-		{name: "actualZero", refs: []bool{false, false}},
+		{name: "live", refs: []bool{true}, want: BlockPublicationRealReference},
+		{name: "repair", refs: []bool{false}, pending: true, want: BlockPublicationRepairGuardOnly},
+		{name: "settledToFS", refs: []bool{false, true}, want: BlockPublicationRealReference},
+		{name: "actualZero", refs: []bool{false, false}, want: BlockPublicationZero},
 		{name: "refUnavailable", refErr: errors.New("unavailable")},
 		{name: "repairUnavailable", refs: []bool{false}, guardErr: errors.New("unavailable")},
 	} {

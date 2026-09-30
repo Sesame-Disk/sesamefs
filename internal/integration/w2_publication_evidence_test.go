@@ -8,6 +8,8 @@ const w2PublicationContinuityEnv = "SESAMEFS_REQUIRE_W2_PUBLICATION_CONTINUITY_E
 
 var w2PublicationContinuityObserved = map[string]bool{}
 var w2PublicationContinuityRequired = []string{
+	"TestW2WorkerRepairLifecycle/repairBeforeCommitPreservesCandidate",
+	"TestW2WorkerRepairLifecycle/lateRepairDoesNotStallCommittedDelete",
 	"TestW2PublicationLivenessThroughHEAD/expiryBeforeAuthority",
 	"TestW2PublicationLivenessThroughHEAD/expiryAfterAuthority",
 	"TestW2PublicationSettlementAndRecovery/normalWriter",
@@ -44,8 +46,8 @@ func w2PublicationContinuityMissing(observed map[string]bool) []string {
 }
 func TestW2PublicationContinuityEvidenceCompleteness(t *testing.T) {
 	observed := map[string]bool{}
-	if len(w2PublicationContinuityMissing(observed)) != 15 {
-		t.Fatal("must require all 15 named legs")
+	if len(w2PublicationContinuityMissing(observed)) != 17 {
+		t.Fatal("must require all 17 named legs")
 	}
 	for _, name := range w2PublicationContinuityRequired {
 		observed[name] = true

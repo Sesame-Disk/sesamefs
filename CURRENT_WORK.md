@@ -1,5 +1,16 @@
 # Current Work - SesameFS
 
+### PR #239 crossed audit correction (2026-09-30)
+
+Pre-D GC now distinguishes real references, repair-only protection and zero.
+Repair-only releases the exact claim and preserves candidate/discovery/queue,
+postponing without retry. After COMMITTED, only actual references retain the
+existing contradiction policy; a late repair cannot veto D. Both worker
+regressions are included in 17 mandatory continuity legs. G2/G3 retirement and
+durable physical continuation are proved; the future physical executor remains
+outside this PR. W2-0/W2-6a remain OPEN and GC_ENABLED=false.
+See [crossed audit evidence](./docs/W2-0-PUBLICATION-CONTINUITY.md).
+
 ## Active branch: fix/w2-0-publish-liveness-through-head (base main@50c50903e, 2026-09-29)
 
 The current branch adds a fail-closed GC guard using the existing non-expiring

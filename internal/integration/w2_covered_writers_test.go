@@ -4,6 +4,7 @@ package integration
 
 import (
 	v2pkg "github.com/Sesame-Disk/sesamefs/internal/api/v2"
+	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 	gcpkg "github.com/Sesame-Disk/sesamefs/internal/gc"
 	"net/http"
 	"testing"
@@ -22,7 +23,7 @@ func w2TryDeleteAfterExpiry(t *testing.T, fx *w2CreateFileFixture) bool {
 	store := gcpkg.NewCassandraStore(fx.database)
 	a := x1Attempt(fx.target, "w2-covered-writer")
 	x1ClaimAcquired(t, store, fx.orgUUID, fx.blockID, a)
-	live, err := store.BlockHasReferencesGlobal(fx.orgUUID, fx.blockID)
+	live, err := store.BlockPublicationLivenessGlobal(fx.orgUUID, fx.blockID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +31,7 @@ func w2TryDeleteAfterExpiry(t *testing.T, fx *w2CreateFileFixture) bool {
 	if err != nil || outcome != gcpkg.BlockReleaseReleased {
 		t.Fatalf("release=%v %v", outcome, err)
 	}
-	if live {
+	if live != dbpkg.BlockPublicationZero {
 		return true
 	}
 	committed := x1CommitHandoffAfterZeroRefs(t, store, fx.orgUUID, fx.blockID, a)

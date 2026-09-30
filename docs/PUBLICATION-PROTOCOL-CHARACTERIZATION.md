@@ -1,5 +1,16 @@
 # PC-0 — Multi-DC Publication Protocol Characterization
 
+### PR #239 crossed audit correction (2026-09-30)
+
+Pre-D GC now distinguishes real references, repair-only protection and zero.
+Repair-only releases the exact claim and preserves candidate/discovery/queue,
+postponing without retry. After COMMITTED, only actual references retain the
+existing contradiction policy; a late repair cannot veto D. Both worker
+regressions are included in 17 mandatory continuity legs. G2/G3 retirement and
+durable physical continuation are proved; the future physical executor remains
+outside this PR. W2-0/W2-6a remain OPEN and GC_ENABLED=false.
+See [crossed audit evidence](./W2-0-PUBLICATION-CONTINUITY.md).
+
 ## W2-0 follow-up — durable repair gate (2026-09-29)
 
 Covered F1/F2/F3 and Sync-provenanced writers now acquire a non-expiring repair
@@ -410,7 +421,7 @@ CreateFileFromBlocks / shared Once (when commitBlocks is populated):
   own up:<session>  →  claim session  →  stage pub  →  queue repair  →  exact-P  →  HEAD
 
 Sync direct HEAD / auto-merge:
-  stage pub  →  readiness (renew up + exact-P, provenanced only)  →  queue repair  →  HEAD
+  stage pub  →  readiness (renew up + capture exact-P, provenanced only)  →  queue repair  →  captured exact-P  →  HEAD
 
 CreateFile Office / stored UploadFile (W2-6a / #237):
   stage pub → queue repair → insert commit → exact-P → HEAD
@@ -433,7 +444,7 @@ stage pub ────────┤                           ├→ HEAD
 
 An empty-file path with no physical dependencies may skip the repair row. Do
 not freeze readiness-before-repair as the coordinator spine: CFFB requires
-repair-before-fence, while Sync requires readiness-before-repair. CreateFile Office
+repair-before-fence, while Sync requires initial readiness-before-repair and a final captured exact-P check after repair. CreateFile Office
 and stored UploadFile validate exact-P after repair; OnlyOffice, SeafHTTP and
 cross-repo use stage → repair → HEAD. Any future unification
 must preserve the observed orders unless a separate PR provides evidence.
@@ -591,7 +602,7 @@ spine once files are copied.
 | Own liveness | renewed/acquired only for the provenanced subset; a clean global miss never fabricates liveness |
 | TTL | 48h; expiry ⇒ treated as unprovenanced (`ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`) |
 | Dedup | CheckBlocks can skip PutBlock entirely ⇒ no `up:` |
-| Exact P | only provenanced subset; `ProbeBlockReuse` + advisory fence |
+| Exact P | only provenanced subset; readiness captures placement; after repair queue, final validation checks that same placement without re-scoping expired provenance |
 | `pub:` | staged **before** readiness |
 | Durable repair | after readiness; shared by `commit_id` for direct HEAD |
 | HEAD | `updateLibraryHeadWithStats` (not `UpdateLibraryHead`) |
@@ -606,7 +617,7 @@ spine once files are copied.
 | Paxos | HEAD CAS; not per-block |
 | Cost | scope gate: O(all distinct candidate blocks) LQ plus one EQ for each clean local miss; remaining readiness is O(provenanced blocks); O(added files) repair; O(1) HEAD |
 | W2 | `CONDITIONAL` for PutBlock-visible subset; `UNKNOWN` without PutBlock |
-| Common | stage, readiness, repair, HEAD, classify, settle |
+| Common | stage, readiness/capture, repair, captured exact-P, HEAD, classify, settle |
 | Specific | commit parent/ancestry, auto-merge, RecvFS, CheckBlocks, stats/counters |
 
 ### I1/I2 — HEAD initializers (`InitializeLibraryFS`, `createInitialCommit`)

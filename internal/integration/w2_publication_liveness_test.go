@@ -3,6 +3,7 @@
 package integration
 
 import (
+	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 	"net/http"
 	"strings"
 	"testing"
@@ -55,11 +56,11 @@ func TestW2PublicationLivenessThroughHEAD(t *testing.T) {
 				if leg == "expiryAfterAuthority" {
 					candidate := x1Attempt(fx.target, "w2-0-"+leg)
 					x1ClaimAcquired(t, store, fx.orgUUID, fx.blockID, candidate)
-					live, err := store.BlockHasReferencesGlobal(fx.orgUUID, fx.blockID)
+					live, err := store.BlockPublicationLivenessGlobal(fx.orgUUID, fx.blockID)
 					if err != nil {
 						t.Fatal(err)
 					}
-					if live {
+					if live != dbpkg.BlockPublicationZero {
 						protected = true
 						if _, err := store.ReleaseBlockClaim(fx.orgUUID, fx.blockID, candidate); err != nil {
 							t.Fatal(err)

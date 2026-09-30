@@ -1,5 +1,16 @@
 # Open Work Index
 
+### PR #239 crossed audit correction (2026-09-30)
+
+Pre-D GC now distinguishes real references, repair-only protection and zero.
+Repair-only releases the exact claim and preserves candidate/discovery/queue,
+postponing without retry. After COMMITTED, only actual references retain the
+existing contradiction policy; a late repair cannot veto D. Both worker
+regressions are included in 17 mandatory continuity legs. G2/G3 retirement and
+durable physical continuation are proved; the future physical executor remains
+outside this PR. W2-0/W2-6a remain OPEN and GC_ENABLED=false.
+See [crossed audit evidence](./W2-0-PUBLICATION-CONTINUITY.md).
+
 ## W2-0 follow-up — durable repair gate (2026-09-29)
 
 Covered F1/F2/F3 and Sync-provenanced writers now acquire a non-expiring repair

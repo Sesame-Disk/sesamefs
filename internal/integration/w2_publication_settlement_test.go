@@ -83,9 +83,9 @@ func w2AssertGuardOnly(t *testing.T, fx *w2CreateFileFixture) {
 		t.Fatalf("must have zero actual refs, got %v err=%v", refs, err)
 	}
 	start := time.Now()
-	live, err := fx.database.BlockHasReferencesGlobal(fx.orgID, fx.blockID)
-	if err != nil || !live {
-		t.Fatalf("durable repair must block destructive absence: live=%v err=%v", live, err)
+	live, err := fx.database.BlockPublicationLivenessGlobal(fx.orgID, fx.blockID)
+	if err != nil || live != dbpkg.BlockPublicationRepairGuardOnly {
+		t.Fatalf("durable repair must block destructive absence: liveness=%v err=%v", live, err)
 	}
 	t.Logf("guard probe with zero refs took %s", time.Since(start))
 }
@@ -250,8 +250,8 @@ func TestW2PublicationGuardPagingAndOrganizationIsolation(t *testing.T) {
 	w2AssertGuardOnly(t, fx)
 	other := w2RepairFixture(t)
 	start := time.Now()
-	live, err := other.database.BlockHasReferencesGlobal(other.orgID, fx.blockID)
-	if err != nil || live {
+	live, err := other.database.BlockPublicationLivenessGlobal(other.orgID, fx.blockID)
+	if err != nil || live != dbpkg.BlockPublicationZero {
 		t.Fatalf("other organization cannot supply authority: %v %v", live, err)
 	}
 	t.Logf("32 empty organization ranges + final zero probe took %s", time.Since(start))

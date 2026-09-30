@@ -38,16 +38,47 @@ func (db *DB) blockHasPendingPublicationGlobal(orgID, blockID string) (bool, err
 	return false, nil
 }
 
-// Re-read refs after the guard scan: permanent fs: is written before repair
-// settlement deletes the guard. Acquisition after a scanned bucket is safe
-// because GC's settled claim precedes zero-proof and final exact-P follows
-// repair acquisition. A pause between any of these calls is allowed.
-func publicationLivenessBeforeDestruction(readRefs, readPending func() (bool, error)) (bool, error) {
-	if live, err := readRefs(); err != nil || live {
-		return live, err
+// BlockPublicationLiveness distinguishes real references from a pending writer.
+// Unknown is never destructive authority. RepairGuardOnly vetoes a NEW D, but
+// is neither a real reference nor a contradiction against an already committed D.
+type BlockPublicationLiveness uint8
+
+const (
+	BlockPublicationUnknown BlockPublicationLiveness = iota
+	BlockPublicationZero
+	BlockPublicationRealReference
+	BlockPublicationRepairGuardOnly
+)
+
+// BlockPublicationLivenessGlobal is the pre-handoff decision, after GC's settled
+// claim. Errors fail closed. It must not be used as a post-COMMITTED contradiction
+// read: a late repair has no authority to revoke the irreversible handoff.
+func (db *DB) BlockPublicationLivenessGlobal(orgID, blockID string) (BlockPublicationLiveness, error) {
+	return publicationLivenessBeforeDestruction(func() (bool, error) {
+		return db.BlockHasReferencesGlobal(orgID, blockID)
+	}, func() (bool, error) {
+		return db.blockHasPendingPublicationGlobal(orgID, blockID)
+	})
+}
+
+// Re-read real refs after a negative repair scan: promotion writes permanent fs:
+// before settlement deletes the guard. Late acquisition after a scanned bucket
+// must observe GC's settled claim in the writer's final exact-P check.
+func publicationLivenessBeforeDestruction(readRefs, readPending func() (bool, error)) (BlockPublicationLiveness, error) {
+	if live, err := readRefs(); err != nil {
+		return BlockPublicationUnknown, err
+	} else if live {
+		return BlockPublicationRealReference, nil
 	}
-	if pending, err := readPending(); err != nil || pending {
-		return pending, err
+	if pending, err := readPending(); err != nil {
+		return BlockPublicationUnknown, err
+	} else if pending {
+		return BlockPublicationRepairGuardOnly, nil
 	}
-	return readRefs()
+	if live, err := readRefs(); err != nil {
+		return BlockPublicationUnknown, err
+	} else if live {
+		return BlockPublicationRealReference, nil
+	}
+	return BlockPublicationZero, nil
 }

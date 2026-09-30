@@ -256,10 +256,22 @@ func TestMain(m *testing.M) {
 }
 
 func verifyNoOrphanAdminLibraryProjectionsWithRetry(timeout, interval time.Duration) error {
+	return settleAdminProjectionCleanup(timeout, interval, verifyNoOrphanAdminLibraryProjections, cleanupOrphanAdminLibraryProjectionsWithoutTesting)
+}
+
+// A GC pass can retire a canonical library after the cleanup snapshot. Retry
+// the existing orphan-only cleanup, then require the same zero-orphan verifier.
+// Persistent corruption or cleanup/read errors still fail the entire profile.
+func settleAdminProjectionCleanup(timeout, interval time.Duration, verify func() error, cleanup func() (int, error)) error {
 	deadline := time.Now().Add(timeout)
-	var lastErr error
 	for {
-		lastErr = verifyNoOrphanAdminLibraryProjections()
+		if err := verify(); err == nil {
+			return nil
+		}
+		if _, err := cleanup(); err != nil {
+			return fmt.Errorf("settle admin projection cleanup: %w", err)
+		}
+		lastErr := verify()
 		if lastErr == nil {
 			return nil
 		}

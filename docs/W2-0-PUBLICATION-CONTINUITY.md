@@ -125,9 +125,9 @@ strategy gate remains mandatory.
 
 No schema, new coordinator, lease, TTL or GC activation change is included.
 Older readers must be upgraded before relying on this guard. A stranded existing
-repair may now prevent physical GC indefinitely; this conservative availability
+repair may prevent a new GC handoff indefinitely; this conservative availability
 cost is intentional pending R31, and is not a newly invented reaping policy.
-## Docker evidence (current audit)
+## Docker evidence (previous f6d93e3 audit)
 
 - Pre-fix semantic RED: `tmp/w2-0-red.log`, real Cassandra/MinIO,
   `expiryAfterAuthority`: D committed and HEAD advanced.
@@ -157,3 +157,84 @@ Both passed isolated recheck; the final full profile ran without concurrent
 mutation cleanup and passed. Do not run these integration runners concurrently
 against one shared fixture: TestMain cleanup is process-local. GC is restored
 to false on all three local backends after the audit.
+
+## PR #239 crossed audit corrections (2026-09-30)
+
+Both reported P1s are confirmed on f6d93e3 and corrected.
+
+| Decision | Before new D | After D COMMITTED |
+|---|---|---|
+| REAL_REF | Exact release; existing candidate settlement | Existing real-reference contradiction policy |
+| REPAIR_GUARD_ONLY | Exact release; preserve candidate, discovery and queue; postpone without retry | Cannot veto or revoke D |
+| ZERO | May prepare and commit exact D | Continue existing committed authority |
+| UNKNOWN/error | Fail closed; ownership rules govern release/queue | Preserve existing fail-closed behavior |
+
+The mandatory GCStore pre-handoff primitive is now
+`BlockPublicationLivenessGlobal`; `BlockHasReferencesGlobal` again reports
+actual `block_references` only. The 32 bucket/page scan, LQ acquisition,
+EACH_QUORUM reads and final real-reference handoff probe remain intact.
+No TTL, schema, coordinator or repair-cleanup authority changes.
+
+Actual Cassandra/MinIO worker regressions are mandatory evidence (17 named legs):
+
+- Repair before D: candidate and discovery survive, exact claim releases,
+  retries stay zero; removing the repair lets the next pass commit and retire.
+- Sync passes initial readiness; exact PREPARED recovery state and D are
+  committed before repair acquisition; final captured-P check rejects HEAD.
+  Late repair remains present while the actual worker resumes that same D and
+  retires canonical metadata. The discovery recovery pass retains COMMITTED
+  continuation, its published lifecycle and exact physical bytes.
+
+Scope boundary: this branch deliberately lacks the future physical executor.
+These tests prove G2/G3 continuation and retained physical authority; they do
+not claim terminal physical DELETE. PC-D1B.5/#234 remain separate. Existing
+R31 UNKNOWN/abandoned repairs can block a NEW D indefinitely; they cannot
+newly veto an already committed D. W2-0 and W2-6a remain OPEN; GC stays disabled.
+
+Semantic pre-fix evidence: `tmp/w2-p1-worker-red.log`. Corrected directed
+evidence: `tmp/w2-p1-green.log`. The mutation script adds actual worker
+candidate-consumption and post-D repair-veto mutations to the three existing
+D+HEAD mutations; incomplete/unavailable evidence must fail closed.
+
+
+### Integration cleanup settlement
+
+The first full run failed the existing scanner trigger with GC disabled.
+With the supported local scanner enabled, every test passed, but TestMain's
+final verifier found 17 orphan admin projection rows after the single cleanup
+snapshot. Canonical library retirement can occur after that snapshot.
+
+The test harness now retries its existing orphan-only cleanup within the
+existing verification timeout and requires the same zero-orphan invariant.
+It does not skip verification, ignore rows, change runtime cleanup or add
+new reaping authority. Two focused tests prove late-orphan settlement and
+failure on persistent corruption/cleanup outage. Real Cassandra worker
+regressions and cleanup recovery passed: `tmp/w2-p1-cleanup-recovery.log`.
+
+
+### Final Docker audit results (2026-09-30)
+
+- `go test -short -count=1 ./...`: PASS.
+- `go vet ./...`: PASS.
+- Race detector for db/api/api-v2/gc: PASS.
+- Final directed baseline: all 17 mandatory legs PASS.
+- Five mechanism mutations: semantic RED (three D+HEAD, two actual worker
+  candidate-consumption/late-repair-veto failures); both evidence gates fail closed.
+- Focused cleanup settlement/persistent-failure controls: PASS.
+- Full supported Compose integration profile: PASS, exit 0; integration package
+  309.372s, including all mandatory evidence and the unchanged zero-orphan check.
+  Optional three-DC, process-kill and cgroup drills remain environment gated.
+- GC_ENABLED=false restored and inspected on all three local backends.
+
+Final logs: `tmp/w2-p1-unit-vet-race.log`,
+`tmp/w2-p1-unit-vet-final.log`, `tmp/w2-p1-contract-final.log`,
+`tmp/w2-p1-mutations-final.log`, `tmp/w2-p1-cleanup-recovery.log`,
+`tmp/w2-p1-integration-final-settled.log`.
+The failed configuration/cleanup runs are retained; they are not counted as
+GREEN. Integration runners were serialized against the shared fixture.
+
+Final scope audit: both confirmed P1 regressions corrected; no further merge
+blocker found in this partial correction. PC-0 now also records Sync's captured-P
+check after repair acquisition. No schema, new coordinator, lease, TTL, repair
+revocation authority or GC activation change. W2-0/W2-6a/X1 remain OPEN, with
+physical executor and full crash/ambiguity/rollout proof explicitly pending.
