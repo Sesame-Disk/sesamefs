@@ -1,6 +1,22 @@
 # Current Work - SesameFS
 
-**Active branch — W2-6 UploadFile exact placement (`fix/w2-6-uploadfile-exact-p`, base `main@163a8c60b`, 2026-09-29):**
+**Active branch - W2-6a CreateFile Office-template exact placement (`fix/w2-6a-createfile-office-exact-p`, base `main@63aa84573`, 2026-09-29):**
+Scoped follow-up after merged #237. `CreateFile` carries the actual materialized
+SHA-256/class/key to the existing final exact-P validator after durable `pub:`
+and immediately before HEAD. Real Cassandra/MinIO RED: all six GC races (two
+for each Office extension) returned 201 and advanced HEAD. GREEN after the fix:
+409, HEAD unchanged, `pub:` cleaned, D unrevoked or fully retired P still absent.
+The nine Office legs also cover fresh/reused templates; empty CreateFile remains
+blockless. Plan and evidence: [docs/W2-6A-CREATEFILE-EXACT-P.md](docs/W2-6A-CREATEFILE-EXACT-P.md).
+Cross-audit correction: W2-6a remains `OPEN`. The fix rejects GC that wins before
+exact-P validation; TTL-bound `pub:` (35d) does not prove continuity until HEAD.
+W2-0 remains OPEN even for adopting callers; historical closure claims require
+re-audit. R31, PC-D1B.5, G4 and PRE-GC remain unchanged.
+`GC_ENABLED=false` remains mandatory in production. Directed Docker races use
+a local override disabling GC on all three nodes; the full development suite
+uses the documented primary-node worker/scanner exception for its scanner test.
+
+**Merged PR #237 - W2-6 UploadFile exact placement (`fix/w2-6-uploadfile-exact-p`, base `main@163a8c60b`, 2026-09-29):**
 First W2 exit row after the X1 reset. `UploadFile` now passes its materialized
 exact placement to the shared finalizer, so `pub:` is staged and the placement
 is re-validated immediately before HEAD (the W2-0 shared mechanism, already

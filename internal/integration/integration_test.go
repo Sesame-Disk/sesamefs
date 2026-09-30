@@ -47,7 +47,8 @@ func TestMain(m *testing.M) {
 	// comment could not: R26 was added to docker-compose and missed here, and the
 	// omission was invisible in the standard run only because P4A happens to be set
 	// alongside it.
-	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_P2_EVIDENCE") == "1" ||
+	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_W2_CREATEFILE_EXACT_P_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_P2_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P3_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P4A_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P4B_EVIDENCE") == "1" ||
@@ -120,6 +121,14 @@ func TestMain(m *testing.M) {
 	}()
 
 	code := m.Run()
+	if os.Getenv(w2CreateFileExactPEnv) == "1" {
+		if missing := w2CreateFileExactPMissing(w2CreateFileExactPEvidence); len(missing) > 0 {
+			fmt.Printf("%s=1 requires all named W2-6a legs; missing=%s (check -run filters)\n", w2CreateFileExactPEnv, strings.Join(missing, ","))
+			if code == 0 {
+				code = 1
+			}
+		}
+	}
 	if os.Getenv(r3CharacterizationEvidenceEnv) == "1" && !r3CharacterizationEvidence.complete() {
 		fmt.Printf("%s=1 requires all R3 Cassandra legs; missing=%s (check -run filters)\n", r3CharacterizationEvidenceEnv, strings.Join(r3CharacterizationEvidence.missing(), ","))
 		if code == 0 {

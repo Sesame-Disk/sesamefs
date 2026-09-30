@@ -6034,11 +6034,33 @@ This real measurement materially raises that follow-up's priority: it is no long
 
 Expired provenance past the 48h TTL remains unsolved (indistinguishable from true absence at either consistency level) and stays `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`.
 
+### ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01: TTL-bound own pin does not prove continuity through HEAD
+
+**Status**: Open — W2-0 shared continuity; W2-6a remains OPEN.
+**Severity**: High (P1).
+**Scope**: Shared pre-existing mechanism; blocks the full-closure claim in #238.
+**Registered**: 2026-09-29, PR #238 cross-audit.
+
+`PublishAttemptReferenceTTLSeconds` is 35 days; own `up:` is 48 hours.
+`ValidateBorrowedFSPublicationAuthority` checks placement and GC fences, not
+reference liveness. If both pins expire, the validator can authorize still-valid
+P, then GC can prove zero refs and commit D before the separate HEAD CAS.
+Expiry during a pause after validation has the same consequence. Repair intent
+does not guarantee a live pin at the destructive zero-proof read. The shared
+four-case proof is conditional on pin survival; historical adopter closure
+claims require re-audit. Renewing a TTL or adding another advisory check alone
+does not exclude a pause between that operation and HEAD.
+
+Closure requires a demonstrated continuity or fail-closed mechanism excluding
+GC commitment between authority validation and HEAD, including pin-expiry
+interleavings. No runtime protocol change is included in this docs correction.
+See [W2-6a evidence limits](./W2-6A-CREATEFILE-EXACT-P.md) and W2-0 in X1.
+
 ### ISSUE-PC0-EXACT-P-FUNNEL-GAP-01: Publication-authority/continuity before HEAD is not uniform by provenance
 
-**Status**: 🟡 Open — partially fixed. `UploadFile` fixed by W2-6 (PR #237, 2026-09-29): it passes its materialized exact placement to the shared finalizer, which re-validates it after `pub:` and immediately before HEAD (evidence `TestW2UploadFileExactPlacementBeforeHead`, RED on the previous code). `CreateFile`, OnlyOffice, SeafHTTP and cross-repo remain
+**Status**: 🟡 Open — partially fixed. `UploadFile` fixed by W2-6 (PR #237, 2026-09-29): it passes its materialized exact placement to the shared finalizer, which re-validates it after `pub:` and immediately before HEAD (evidence `TestW2UploadFileExactPlacementBeforeHead`, RED on the previous code). W2-6a adds the missing exact-P check for `CreateFile` Office templates by carrying the actual SHA-256/class/key into the same final check after durable `pub:` (nine real Cassandra/MinIO legs plus reuse and empty-file controls). OnlyOffice, SeafHTTP and cross-repo remain open; W2-0 and R31 remain OPEN.
 **Severity**: High (P1) — W2 writer protocol completeness
-**Affected**: ~~`UploadFile` → `finalizeStoredUploadMetadataOnce` with `commitBlocks=nil`~~ (fixed, W2-6); `CreateFile`; OnlyOffice `publishEditedDocumentMetadata`; SeafHTTP commit once-paths; cross-repo `processSingleItem`
+**Affected**: ~~`UploadFile` → `finalizeStoredUploadMetadataOnce` with `commitBlocks=nil`~~ (fixed, W2-6); `CreateFile` Office-template publication (partial exact-P fix, W2-6a OPEN; pin-expiry continuity unresolved); OnlyOffice `publishEditedDocumentMetadata`; SeafHTTP commit once-paths; cross-repo `processSingleItem`
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization
 
 #### Problem
@@ -6046,11 +6068,12 @@ Expired provenance past the 48h TTL remains unsolved (indistinguishable from tru
 W1/W2 proved that publishing against a retired or changed exact physical placement `(storage_class, storage_key)` is unsafe for some provenances. Today's pre-HEAD exact-P fence exists only when the caller supplies placements:
 
 - `CreateFileFromBlocks` passes `commitBlocks` into the shared finalizer.
+- `CreateFile` Office templates pass their actual materialized placement to the same validator after durable `pub:` (W2-6a); empty CreateFile has no block.
 - Sync readiness fences the PutBlock-provenanced subset only.
 
 `UploadFile` called `finalizeStoredUploadMetadata(..., nil)`, so
-`validateCommitBlockPublicationFences` was a no-op (fixed by W2-6, PR #237). CreateFile, OnlyOffice,
-SeafHTTP, and cross-repo never call it. Those funnels can still stage `pub:`,
+`validateCommitBlockPublicationFences` was a no-op (fixed by W2-6, PR #237). `CreateFile` Office templates now call it too (W2-6a). OnlyOffice,
+SeafHTTP, and cross-repo remain outside that final exact-P mechanism. Those funnels can still stage `pub:`,
 queue repair, and CAS HEAD.
 
 This is a **publication-readiness/authority gap by provenance**, not a

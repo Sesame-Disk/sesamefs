@@ -130,3 +130,30 @@ func fileFromBlocksBeforeHeadBarrier(repoID string) error {
 	}
 	return hooks.beforeHead()
 }
+
+var createFileAfterMaterializedInstalled *uploadFileAfterMaterializedHook
+
+// SetCreateFileAfterMaterializedBarrierForTest pauses the Office-template
+// funnel after canonical install + own up: and before pub: staging.
+// Only the matching in-process library is affected; restore from t.Cleanup.
+func SetCreateFileAfterMaterializedBarrierForTest(repoID string, fn func()) func() {
+	fileFromBlocksBarrierMu.Lock()
+	previous := createFileAfterMaterializedInstalled
+	createFileAfterMaterializedInstalled = &uploadFileAfterMaterializedHook{repoID: repoID, fn: fn}
+	fileFromBlocksBarrierMu.Unlock()
+	return func() {
+		fileFromBlocksBarrierMu.Lock()
+		createFileAfterMaterializedInstalled = previous
+		fileFromBlocksBarrierMu.Unlock()
+	}
+}
+
+func createFileAfterMaterializedBarrier(repoID string) {
+	fileFromBlocksBarrierMu.Lock()
+	hook := createFileAfterMaterializedInstalled
+	fileFromBlocksBarrierMu.Unlock()
+	if hook == nil || hook.repoID == "" || hook.repoID != repoID || hook.fn == nil {
+		return
+	}
+	hook.fn()
+}

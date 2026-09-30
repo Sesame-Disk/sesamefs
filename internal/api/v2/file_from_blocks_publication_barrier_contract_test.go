@@ -14,6 +14,7 @@ func TestFileFromBlocksPublicationBarriersDefaultNop(t *testing.T) {
 	fileFromBlocksAfterBorrowedLivenessBarrier("repo")
 	fileFromBlocksAfterStagedBarrier("repo")
 	uploadFileAfterMaterializedBarrier("repo")
+	createFileAfterMaterializedBarrier("repo")
 	if err := fileFromBlocksBeforeHeadBarrier("repo"); err != nil {
 		t.Fatalf("default beforeHead barrier = %v, want nil", err)
 	}
@@ -46,6 +47,7 @@ func TestFileFromBlocksPublicationBarriersProdAreEmpty(t *testing.T) {
 		"fileFromBlocksAfterStagedBarrier",
 		"fileFromBlocksBeforeHeadBarrier",
 		"uploadFileAfterMaterializedBarrier",
+		"createFileAfterMaterializedBarrier",
 	} {
 		fn := productionFunc(t, file, name)
 		ast.Inspect(fn.Body, func(node ast.Node) bool {
@@ -69,6 +71,7 @@ func TestFileFromBlocksPublicationBarriersIntegrationIsTagged(t *testing.T) {
 		for _, forbidden := range []string{
 			"SetFileFromBlocksPublicationBarriersForTest",
 			"SetUploadFileAfterMaterializedBarrierForTest",
+			"SetCreateFileAfterMaterializedBarrierForTest",
 			"fileFromBlocksBarrierMu",
 			"fileFromBlocksAfterVerifiedFn",
 		} {
@@ -90,6 +93,7 @@ func TestFileFromBlocksPublicationBarriersIntegrationIsTagged(t *testing.T) {
 	for _, required := range []string{
 		"SetFileFromBlocksPublicationBarriersForTest",
 		"SetUploadFileAfterMaterializedBarrierForTest",
+		"SetCreateFileAfterMaterializedBarrierForTest",
 		"sync.Mutex",
 		"hooks.repoID != repoID",
 		"hook.repoID != repoID",
@@ -303,4 +307,22 @@ func assertBarrierArgIsRepoID(t *testing.T, fn *ast.FuncDecl, scope, name string
 	if !found {
 		t.Fatalf("R3 BARRIER: %s must call %s(repoID)", scope, name)
 	}
+}
+
+// Pin the ordering premise of W2-6a, not merely the existence of a validator:
+// materialization -> test pause -> pub: -> exact-P -> HEAD, in this funnel only.
+func TestCreateFileOfficeTemplatePublicationBarriersOrder(t *testing.T) {
+	_, fn := r3ParseFunction(t, r3SourcePath("internal", "api", "v2", "files.go"), "CreateFile")
+	calls := r3CallPositions(fn)
+	materialize := barrierFirstCallPos(t, calls, "CreateFile", "RegisterUploadedBlockTargetAndMapping")
+	pause := barrierFirstCallPos(t, calls, "CreateFile", "createFileAfterMaterializedBarrier")
+	stage := barrierFirstCallPos(t, calls, "CreateFile", "stagePendingPublishedFiles")
+	afterStage := barrierFirstCallPos(t, calls, "CreateFile", "fileFromBlocksAfterStagedBarrier")
+	validate := barrierFirstCallPos(t, calls, "CreateFile", "validateCommitBlockPublicationFences")
+	head := barrierFirstCallPos(t, calls, "CreateFile", "UpdateLibraryHeadFromSnapshot")
+	if !(materialize < pause && pause < stage && stage < afterStage && afterStage < validate && validate < head) {
+		t.Fatal("W2-6a: materialize -> pause -> durable pub: -> exact-P -> HEAD ordering required")
+	}
+	assertBarrierArgIsRepoID(t, fn, "CreateFile", "createFileAfterMaterializedBarrier")
+	assertBarrierArgIsRepoID(t, fn, "CreateFile", "fileFromBlocksAfterStagedBarrier")
 }
