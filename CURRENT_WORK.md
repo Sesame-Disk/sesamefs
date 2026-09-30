@@ -1,29 +1,27 @@
 # Current Work - SesameFS
 
-**Active branch — `fix/gc-hard-delete-lease-nonfencing` (base `main@76d68c928`, 2026-09-30):**
+**Active branch — PR #240, `fix/gc-hard-delete-lease-nonfencing` (base `main@76d68c928`, 2026-09-30):**
 Closes `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` only. PR #234 gave the library
 hard-delete lease one global SERIAL owner at a time; this closes the remaining
 stale-owner window: an owner that renewed, paused past the stale threshold and
 lost the lease could still run its unconditional final batch. Reproduced RED on
-`main` with real Cassandra and the production helpers (stale permanent delete
-removed a restored library; stale restore resurrected a permanently deleted
-library or restored a newer trash generation). Fix, with no schema change: the
-final canonical mutation is itself conditioned on the `deleted_at` generation
-the owner verified — `DELETE FROM libraries ... IF deleted_at = ?` for the API
-permanent delete and the GC library cascade, and for restore
-`UPDATE libraries SET deleted_at = null ... IF deleted_at = ?` followed by a
-generation-conditioned removal of its soft-delete marker — all global SERIAL
-(the `libraries` LWTs use the existing `LibraryHeadSerialConsistency` domain).
-Completion writes (lookup, read model, markers, reconciliation) run only after
-the canonical transition applied; a marker left on an active library is cleared
-by the GC cascade instead of being acted on. The completion writes' loss of
-atomicity with the canonical transition, the unfenced post-restore projection
-writes and the LWT/client timestamp mix are recorded residuals, not lifecycle
-defects. A code-review pass during the audit moved the restore to
-canonical-first (marker-first could strand a trashed library without a marker). Evidence: RED→GREEN integration legs T1–T7, directed
-mutations RED, and a directed 3-DC leg with `LOCAL_SERIAL` sessions; details in
+`main` with real Cassandra and the production helpers. Fix, with no schema
+change: every canonical lifecycle transition — soft delete, restore, API
+permanent delete and GC library cascade — is a global-SERIAL LWT conditioned on
+the `deleted_at` generation (`LibraryHeadSerialConsistency` domain), so a stale
+owner cannot undo or destroy another owner's transition and no later transition
+can lose to an earlier one by timestamp. Derived rows (marker, read model,
+lookup, reconciliation) keep client timestamps, stamped before their transition
+so a late completion never overwrites a newer generation; half-committed
+permanent and soft deletes are completed by a repeated request with
+`GC_ENABLED=false`. The cross-audit round 2 findings (LWT/client timestamp mix
+with soft delete, unrecoverable half-committed permanent delete, late restore
+completion over a newer generation) were reproduced RED on the audited head and
+fixed. Evidence: RED→GREEN integration legs, 14 directed mutations RED, a 3-DC
+leg with `LOCAL_SERIAL` sessions; details in
 [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md#issue-gc-hard-delete-lease-nonfencing-01).
-Not in scope: W2, PC-D1B.5, user restore serialization
+Registered follow-up: `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`
+(pre-existing). Not in scope: W2, PC-D1B.5, user restore serialization
 (`ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`, still open PRE-GC), GC
 activation. `GC_ENABLED=false` remains mandatory.
 

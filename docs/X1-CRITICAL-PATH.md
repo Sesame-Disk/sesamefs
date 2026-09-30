@@ -258,7 +258,7 @@ added here to count.
 | HEAD-less ghost `libraries` row counts as canonically absent for GC/restore | `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` |
 | Repair-liveness residual (35-day `pub:` TTL): the fail-closed GC health gate, if W2-11 is closed as `CLOSED-GATED` through it, must exist and be enabled before activation | `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` (W2-11) |
 | GC mapping resolver `CassandraStore.lookupBlockMapping()` reclassified from session consistency | `PCD1B3-PRE-GC-SESSION-CONSISTENCY-EXCEPTION` marker |
-| Library hard-delete lease: global SERIAL (✅ closed by PR #234) and stale-owner final-mutation fencing (✅ closed by `fix/gc-hard-delete-lease-nonfencing`, including the GC library cascade) | `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` (closed), `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (closed; §7) |
+| Library hard-delete lease: global SERIAL (✅ closed by PR #234) and stale-owner final-mutation fencing (✅ closed by PR #240, including the GC library cascade) | `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` (closed), `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (closed; §7) |
 | Startup check refusing `GC_ENABLED=true` while any A1 gate item (tagged entry or row above) is open | first A1 item |
 
 Closed by the greenfield precondition, not carried into A1: Technical Debt
@@ -286,11 +286,15 @@ Status:
 - Hard-delete library lease:
   - ✅ global SERIAL — PR #234 (library, user and org leases;
     `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` closed)
-  - ✅ stale-owner final mutation fencing — `fix/gc-hard-delete-lease-nonfencing`
-    (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` closed): restore, API permanent
-    delete and the GC library cascade condition their final canonical mutation
-    on the captured `deleted_at` generation (global-SERIAL LWT), so an owner
-    that lost the lease cannot undo or destroy another owner's transition.
+  - ✅ stale-owner final mutation fencing — PR #240
+    (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` closed): soft delete, restore,
+    API permanent delete and the GC library cascade move the canonical
+    lifecycle only through global-SERIAL LWTs conditioned on the `deleted_at`
+    generation, so an owner that lost the lease cannot undo or destroy another
+    owner's transition. Half-committed permanent/soft deletes complete on a
+    repeated request with `GC_ENABLED=false`.
+  - Follow-up (pre-existing): `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`
+    (link cleanup of a stale permanent delete).
 
 This does not make GC ready or close A1: the user lease
 (`ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`) and the rest of the §6
