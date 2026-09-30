@@ -1,6 +1,6 @@
 # Current Work - SesameFS
 
-**Active branch — PR #240, `fix/gc-hard-delete-lease-nonfencing` (base `main@76d68c928`, 2026-09-30):**
+**Active branch — PR #240, `fix/gc-hard-delete-lease-nonfencing` (rebased onto `main@302d3418e`, 2026-09-30; originally based on `main@76d68c928`):**
 Closes `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` only. PR #234 gave the library
 hard-delete lease one global SERIAL owner at a time; this closes the remaining
 stale-owner window: an owner that renewed, paused past the stale threshold and

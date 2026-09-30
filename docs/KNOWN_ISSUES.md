@@ -6750,7 +6750,7 @@ readiness.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01: A stale lease owner can resume its final lifecycle batch
 
-**Status**: ✅ Closed on 2026-09-30 (branch `fix/gc-hard-delete-lease-nonfencing`) — the final lifecycle mutation of restore, API permanent delete and the GC library cascade is a global-SERIAL LWT conditioned on the `deleted_at` generation the owner verified, so an owner that lost the lease cannot change the canonical lifecycle state another owner committed. Found in the PR #232 final cross-audit (2026-09-24)
+**Status**: ✅ Closed on 2026-09-30 (PR #240) — every canonical lifecycle transition (soft delete, restore, API permanent delete, GC library cascade) is a global-SERIAL LWT conditioned on the `deleted_at` generation the owner verified, so an owner that lost the lease cannot change the canonical lifecycle state another owner committed. Found in the PR #232 final cross-audit (2026-09-24)
 **Severity**: High (P1)
 **Scope**: CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC (both discharged for the library lease; the user lease is the separate, open `ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`)
 **Introduced by #232**: No
