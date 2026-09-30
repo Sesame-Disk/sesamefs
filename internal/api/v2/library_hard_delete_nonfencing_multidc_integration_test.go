@@ -7,9 +7,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/google/uuid"
 )
 
 // Directed 3-DC legs for ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01. The old
@@ -60,9 +62,37 @@ func nonfencing3DCReady(t *testing.T) (na, eu, observer *dbpkg.DB) {
 		}
 		t.Skip(nonfencing3DCHostsEnv + " is not set")
 	}
-	return nonfencing3DCConnect(t, "dc-na", "LOCAL_QUORUM", "LOCAL_SERIAL"),
+	na, eu, observer = nonfencing3DCConnect(t, "dc-na", "LOCAL_QUORUM", "LOCAL_SERIAL"),
 		nonfencing3DCConnect(t, "dc-eu", "LOCAL_QUORUM", "LOCAL_SERIAL"),
 		nonfencing3DCConnect(t, "dc-asia", "ALL", "SERIAL")
+	nonfencing3DCWarmUp(t, observer)
+	return na, eu, observer
+}
+
+// nonfencing3DCWarmUp waits until an ALL-consistency write to the lifecycle
+// tables succeeds: right after the migrations a replica can still time out, and
+// the legs seed at ALL so that every DC starts from the same state.
+func nonfencing3DCWarmUp(t *testing.T, observer *dbpkg.DB) {
+	t.Helper()
+	probeOrg, probeLib := uuid.NewString(), uuid.NewString()
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		err := observer.Session().Query(`INSERT INTO libraries (org_id, library_id, name, created_at) VALUES (?, ?, ?, ?)`,
+			probeOrg, probeLib, "nonfencing-3dc-warmup", time.Now().UTC()).Exec()
+		if err == nil {
+			err = observer.Session().Query(`INSERT INTO deleted_libraries (library_id, org_id, deleted_at) VALUES (?, ?, ?)`,
+				probeLib, probeOrg, time.Now().UTC()).Exec()
+		}
+		if err == nil {
+			_ = observer.Session().Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, probeLib).Exec()
+			_ = observer.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, probeOrg, probeLib).Exec()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("3-DC fixture did not accept ALL-consistency writes: %v", err)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // Race A across DCs: a permanent delete in dc-na renews, pauses, loses the
