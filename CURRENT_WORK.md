@@ -13,9 +13,12 @@ and still returns the error; a failed release is reported as such, and the
 remaining single-owner liveness residual is recorded in the known issue. The
 lease token, TTL, stale takeover, renewal and release semantics are otherwise
 unchanged; no caller flow changed. Residual:
-renew/release can also see an unknown outcome under contention; renew fails
-closed (the operation aborts and the deferred release drops the lease) and an
-unknown release is only logged. A bounded retry is a liveness follow-up
+renew/release can also see an unknown outcome under contention. Renew fails
+closed before the final mutation; the deferred release then only attempts to
+drop the lease. API restore/permanent delete log a failed release, while the GC
+cascades record it inside `hardDeleteLease` after their last `Check()` (and the
+child-item guard discards it), so it is not surfaced. Either way the lease may
+remain until stale takeover or TTL. A bounded retry is a liveness follow-up
 documented in the known issue. The cross-audit also registered the pre-existing
 `ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01` (P1, PRE-GC / A1; not
 fixed here).

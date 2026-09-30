@@ -6654,13 +6654,25 @@ error fails closed on every path: the GC cascade heartbeat
 (`newHardDeleteLease`) records the error and the cascade aborts, and the restore
 (`restoreDeletedLibrary`) and permanent-delete (`permanentlyDeleteTrashedLibraryCandidate`,
 including its link-cleanup heartbeat) fences return an error before their final
-batch. Their deferred release then drops the lease by token, so it is not
-stranded; the cost is an aborted operation that the user or the next GC cycle
-retries. A release with an unknown outcome is only logged; if the delete did not
-commit, the lease waits for stale takeover (~90 min) or its TTL. Both
-operations are idempotent under the caller's own token, so a bounded retry on
-an unknown outcome would be safe; that is a liveness follow-up, not a safety
-issue, and does not block this closure.
+batch. The deferred release then **attempts** to drop the lease by token; that
+release can itself have an unknown outcome or fail. How that error is surfaced
+depends on the path:
+
+- API restore and permanent delete log the release error from their deferred
+  release.
+- The GC user, library and org cascades release through
+  `hardDeleteLease.Close()`, which only records the error in the lease
+  (`setErr`). Close runs deferred, after the caller's final `Check()`, so the
+  error is neither logged nor returned.
+- The GC library child-item guard (`acquireLibraryDeleteGuard` release closure)
+  discards the release error (`_ =`).
+
+In every case, if the delete did not commit, the lease may remain until stale
+takeover (~90 min) or its 6 h TTL; the cost is a delayed retry of the same
+operation, never a second owner. Renew and release are idempotent under the
+caller's own token, so a bounded retry on an unknown outcome (and surfacing a
+deferred release error from the GC paths) would be safe; that is a liveness
+follow-up, not a safety issue, and does not block this closure.
 
 Evidence: `internal/gc/store_cassandra_serial_domain_test.go` checks that every
 `session.Query` in the three helpers is pinned to `gocql.Serial`, that all three
