@@ -228,7 +228,8 @@ rows.
   `feat/pc-d1b5-certification-window-fence-runtime` (`8a731e6bc`: migration
   `028`, E/P/S capture/intent/completion primitives, certifier capture and
   epoch predicate, `DestructionTokenV1`). It is reference material, not
-  scheduled work.
+  scheduled work; if revived, its migration must be renumbered to `029`
+  (`028_library_lifecycle_at.cql` belongs to PR #240).
 
 ## 6. PRE-GC list (A1 prerequisites)
 
@@ -289,10 +290,11 @@ Status:
   - ✅ stale-owner final mutation fencing — PR #240
     (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` closed): soft delete, restore,
     API permanent delete and the GC library cascade move the canonical
-    lifecycle only through global-SERIAL LWTs conditioned on the `deleted_at`
-    generation, so an owner that lost the lease cannot undo or destroy another
-    owner's transition. Half-committed permanent/soft deletes complete on a
-    repeated request with `GC_ENABLED=false`.
+    lifecycle only through global-SERIAL LWTs conditioned on a per-library
+    unique trash generation (`lifecycle_at` clock, migration 028), so an owner
+    that lost the lease cannot undo or destroy another owner's transition;
+    derived writes follow the same clock, and half-committed transitions
+    complete on a repeated single or bulk request with `GC_ENABLED=false`.
   - Follow-up (pre-existing): `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`
     (link cleanup of a stale permanent delete).
 

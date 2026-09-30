@@ -200,9 +200,9 @@ which is the structural boundary. The inventory is defense in depth.
 
 | # | Operation | Source | Tables | CL | LWT / serial | Conditional | Races certification | Races stored witness | Modifies authority | Invalidates identity |
 |---|---|---|---|---|---|---|---|---|---|---|
-| L1 | User/admin soft-delete | `db/library_lifecycle.go` `SoftDeleteLibraryGeneration`, called by `api/v2/write_helpers.go` `softDeleteLibrary` | libraries.deleted_at (LWT), then deleted_libraries, aggregates, admin read models | LWT + session (LOCAL_QUORUM) | LWT, global SERIAL | `IF deleted_at = null AND created_at != null` | yes (R1, R12) | yes (R8) | no | no |
+| L1 | User/admin soft-delete | `db/library_lifecycle.go` `SoftDeleteLibraryGeneration`, called by `api/v2/write_helpers.go` `softDeleteLibrary` | libraries.deleted_at / lifecycle_at (LWT), then deleted_libraries, aggregates, admin read models | LWT + session (LOCAL_QUORUM) | LWT, global SERIAL | `IF deleted_at = null AND created_at != null AND lifecycle_at = <read>` | yes (R1, R12) | yes (R8) | no | no |
 | L2 | GC user/org cascade soft-delete | same primitive, called by `gc/store_cassandra.go` `SoftDeleteLibrary` | same as L1 | LWT + session | LWT, global SERIAL | same as L1 | yes | yes | no | no |
-| L3 | Restore from trash | `db/library_lifecycle.go` `RestoreTrashedLibraryGeneration` (+ `ClearSoftDeleteMarkerGeneration`), called by `api/v2/write_helpers.go` `restoreDeletedLibrary` | libraries (updated_at, deleted_at/deleted_by = null), deleted_libraries | LWT + session | LWT, global SERIAL (`LibraryHeadSerialConsistency`; marker: `DeletedLibraryMarkerSerialConsistency`) | `IF deleted_at = <captured generation>` (marker also `purge_requested_at = null`) | yes (R3) | yes (R10) | no | no |
+| L3 | Restore from trash | `db/library_lifecycle.go` `RestoreTrashedLibraryGeneration`, called by `api/v2/write_helpers.go` `restoreDeletedLibrary` | libraries (updated_at, lifecycle_at, deleted_at/deleted_by = null), then deleted_libraries | LWT + session | LWT, global SERIAL (`LibraryHeadSerialConsistency`) | `IF deleted_at = <captured generation>` | yes (R3) | yes (R10) | no | no |
 | L4 | Permanent delete (API) | `db/library_lifecycle.go` `DeleteTrashedLibraryGeneration`, called by `api/v2/library_delete_helpers.go` `hardDeleteLibraryRowsFn` | DELETE libraries row (LWT), then a plain row delete, libraries_by_id, read models, marker | LWT + session | LWT, global SERIAL | `IF deleted_at = <captured generation>` | yes (R9, R9g) | yes | no | no (row + witness removed) |
 | L5 | GC cascade hard delete | same primitive, called by `gc/store_cassandra.go` `HardDeleteLibrary` | same as L4 + policy rows | LWT + session | LWT, global SERIAL | `IF deleted_at = <cascade identity>` | yes | yes | no | no |
 | L6 | Unpublished-library rollback | `api/v2/write_helpers.go:896` + `library_rollback.go` batch | libraries row (LWT), then whole commits/fs_objects partitions | LWT + session | LWT, global SERIAL | `IF head_commit_id = null` | no (no HEAD ⇒ no witness) | no | no | only of a never-published library |
@@ -977,7 +977,7 @@ implements the frozen contract afterward; it is required before destructive GC
 activation or a productive consumer.
 
 **Scope (exact):**
-1. Next available migration (`028` if #233's `027_block_mapping_authority_claims.cql` lands first): the three fence columns.
+1. Next available migration (`029`: `028_library_lifecycle_at.cql` is taken by PR #240): the three fence columns.
 2. `internal/db`: intent/completion/capture primitives (global SERIAL,
     observed E/P/S plus the canonical non-null `created_at` existence
     predicate, tri-state outcomes); typed intent capability; mint

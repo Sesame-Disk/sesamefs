@@ -3,25 +3,23 @@
 **Active branch — PR #240, `fix/gc-hard-delete-lease-nonfencing` (rebased onto `main@302d3418e`, 2026-09-30; originally based on `main@76d68c928`):**
 Closes `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` only. PR #234 gave the library
 hard-delete lease one global SERIAL owner at a time; this closes the remaining
-stale-owner window: an owner that renewed, paused past the stale threshold and
-lost the lease could still run its unconditional final batch. Reproduced RED on
-`main` with real Cassandra and the production helpers. Fix, with no schema
-change: every canonical lifecycle transition — soft delete, restore, API
-permanent delete and GC library cascade — is a global-SERIAL LWT conditioned on
-the `deleted_at` generation (`LibraryHeadSerialConsistency` domain), so a stale
-owner cannot undo or destroy another owner's transition and no later transition
-can lose to an earlier one by timestamp. Derived rows (marker, read model,
-lookup, reconciliation) keep client timestamps, stamped before their transition
-so a late completion never overwrites a newer generation; half-committed
-permanent and soft deletes are completed by a repeated request with
-`GC_ENABLED=false`. The cross-audit round 2 findings (LWT/client timestamp mix
-with soft delete, unrecoverable half-committed permanent delete, late restore
-completion over a newer generation) were reproduced RED on the audited head and
-fixed. Evidence: RED→GREEN integration legs, 14 directed mutations RED, a 3-DC
-leg with `LOCAL_SERIAL` sessions; details in
+stale-owner window. Every canonical lifecycle transition — soft delete, restore,
+API permanent delete, GC library cascade — is a global-SERIAL LWT conditioned
+on a trash generation that is unique per library: migration 028 adds
+`libraries.lifecycle_at`, a per-library lifecycle clock advanced strictly
+inside each soft-delete/restore LWT and used as `deleted_at`. Derived writes
+(marker, read model, lookup) carry the transition's lifecycle value, so they are
+ordered like the canonical transitions. The reconciliation request and the
+permanent-delete continuation marker are durable before the canonical
+transition; half-committed transitions complete on a repeated single or bulk
+request (or the GC retry) with `GC_ENABLED=false`. Three cross-audit rounds;
+every confirmed finding was reproduced RED on the audited head and fixed.
+Evidence: RED→GREEN integration legs (T1–T7, G1–G9), 20 directed mutations RED,
+a 3-DC leg with `LOCAL_SERIAL` sessions; details in
 [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md#issue-gc-hard-delete-lease-nonfencing-01).
 Registered follow-up: `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`
-(pre-existing). Not in scope: W2, PC-D1B.5, user restore serialization
+(pre-existing). Not in scope: W2, PC-D1B.5 (its parked migration must move to
+029), user restore serialization
 (`ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`, still open PRE-GC), GC
 activation. `GC_ENABLED=false` remains mandatory.
 
