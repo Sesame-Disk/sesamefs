@@ -38,7 +38,7 @@ env_args=()
 docker run -d --name "$RUNNER" --network "$NETWORK" "${env_args[@]}" -e CASSANDRA_HOSTS=cassandra:9042 -e GOFLAGS=-buildvcs=false "$IMAGE" sleep 3600 >/dev/null ||
 	fail "could not start Docker Go test runner"
 
-INTEGRATION_TESTS='^(TestNonfencingT[0-9].*|TestNonfencingGCHardDeleteLibraryIsGenerationFenced)$'
+INTEGRATION_TESTS='^(TestNonfencingT[0-9].*|TestNonfencingGCHardDeleteLibraryIsGenerationFenced|TestNonfencingSoftDelete.*|TestNonfencingPermanentDelete.*)$'
 STATIC_TESTS='^(TestLibraryLifecycleFencePinsGlobalSerial|TestPC0HeadSerialDomainPinsGlobalSerial)$'
 
 run_tests() {
@@ -92,16 +92,6 @@ mutate 'M3a canonical delete predicate accepts any trash generation' "$LIFECYCLE
 	./internal/api/v2 '^TestNonfencingT5StaleDeleteAgainstNewerGeneration$' '-tags integration' \
 	'NONFENCING RED: stale generation'
 
-mutate 'M3b restore marker cleanup drops the generation' "$LIFECYCLE" \
-	's{(DELETE FROM deleted_libraries WHERE library_id = \?\s*)IF deleted_at = \? AND purge_requested_at = null(\s*`, libraryID), deletedAt\)}{$1IF EXISTS$2)}' \
-	./internal/api/v2 '^TestNonfencingT5StaleRestoreCompletionAgainstNewerGeneration$' '-tags integration' \
-	'stale restore completion (err=<nil>) removed the generation'
-
-mutate 'M4a marker fence downgraded to LOCAL_SERIAL' "$LIFECYCLE" \
-	's{const DeletedLibraryMarkerSerialConsistency = gocql\.Serial}{const DeletedLibraryMarkerSerialConsistency = gocql.LocalSerial}' \
-	./internal/db '^TestLibraryLifecycleFencePinsGlobalSerial$' '' \
-	'library lifecycle fence no longer pins global SERIAL'
-
 mutate 'M4b canonical delete fence downgraded to LOCAL_SERIAL' "$LIFECYCLE" \
 	's{(IF deleted_at = \?\s*`, orgID, libraryID, deletedAt\)\.\s*)SerialConsistency\(LibraryHeadSerialConsistency\)}{$1SerialConsistency(gocql.LocalSerial)}' \
 	./internal/db '^(TestLibraryLifecycleFencePinsGlobalSerial|TestPC0HeadSerialDomainPinsGlobalSerial)$' '' \
@@ -123,8 +113,41 @@ mutate 'M6 GC worker ignores a rejected hard delete' internal/gc/worker.go \
 	'want errLibraryCascadeGenerationChanged'
 
 mutate 'M7 GC no longer clears the marker a stopped restore left' internal/gc/store_cassandra.go \
-	's{\t\tif err := db\.ClearSoftDeleteMarkerOfActiveLibrary\([^\n]*\n\t\t\treturn false, err\n\t\t\}\n}{}' \
+	's{\t\tif err := db\.ClearStaleSoftDeleteMarker\([^\n]*\n\t\t\treturn false, err\n\t\t\}\n}{}' \
 	./internal/api/v2 '^TestNonfencingGCHardDeleteLibraryIsGenerationFenced$' '-tags integration' \
 	"GC left the restored library's stale marker behind"
+
+WH=internal/api/v2/write_helpers.go
+DH=internal/api/v2/library_delete_helpers.go
+
+mutate 'M8 soft delete reverted to a plain client-timestamp write' "$WH" \
+	's{outcome, err := dbpkg\.SoftDeleteLibraryGeneration\(db\.Session\(\), orgID, libraryID, now, deletedBy\)}{outcome, err := dbpkg.LibraryLifecycleApplied, db.Session().Query(`UPDATE libraries USING TIMESTAMP ? SET deleted_at = ?, deleted_by = ?, updated_at = ? WHERE org_id = ? AND library_id = ?`, now.UnixMicro(), now, deletedBy, now, orgID, libraryID).Exec()}' \
+	./internal/api/v2 '^TestNonfencingSoftDeleteAfterRestoreWithClientClockBehind$' '-tags integration' \
+	'soft delete after a restore lost with the client clock behind'
+
+mutate 'M9 completion stamp without the read-model floor' internal/db/library_lifecycle.go \
+	's{(func LibraryLifecycleCompletionStamp\([^\n]*\n\tstamp := now\.UnixMicro\(\)\n)}{$1\treturn stamp\n}' \
+	./internal/api/v2 '^TestNonfencingSoftDeleteAfterRestoreWithClientClockBehind$' '-tags integration' \
+	"soft delete marker lost to the restore's marker removal"
+
+mutate 'M10 restore completion stamped after its transition' "$WH" \
+	's{batch := db\.Session\(\)\.Batch\(gocql\.LoggedBatch\)\.WithTimestamp\(stamp\)\n\tbatch\.Query\(`DELETE FROM deleted_libraries WHERE library_id = \?`, libraryID\)}{batch := db.Session().Batch(gocql.LoggedBatch).WithTimestamp(stamp - stamp + time.Now().UnixMicro())\n\tbatch.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, libraryID)}' \
+	./internal/api/v2 '^TestNonfencingT5StaleRestoreCompletionAgainstNewerGeneration$' '-tags integration' \
+	'stale restore completion (err=<nil>) removed the generation'
+
+mutate 'M11 permanent delete cannot be resumed' "$DH" \
+	's{(func resumeCommittedPermanentDelete\([^\n]*\n)}{$1\treturn trashLibraryCandidate{}, "", false, nil\n}' \
+	./internal/api/v2 '^TestNonfencingPermanentDeleteCompletionFailureResumes$' '-tags integration' \
+	'resume: resumed=false'
+
+mutate 'M12 repeated delete no longer repairs a trashed library' "$WH" \
+	's{(func repairTrashedLibraryDerivedState\([^\n]*\n)}{$1\treturn nil\n}' \
+	./internal/api/v2 '^TestNonfencingSoftDeleteCompletionFailureRepairedOnRepeat$' '-tags integration' \
+	'repair marker ='
+
+mutate 'M4d soft-delete fence downgraded to LOCAL_SERIAL' internal/db/library_lifecycle.go \
+	's{(IF deleted_at = null AND created_at != null\s*`, deletedAt, deletedBy, deletedAt, orgID, libraryID\)\.\s*)SerialConsistency\(LibraryHeadSerialConsistency\)}{$1SerialConsistency(gocql.LocalSerial)}' \
+	./internal/db '^TestLibraryLifecycleFencePinsGlobalSerial$' '' \
+	'library lifecycle fence no longer pins global SERIAL'
 
 green "All $count NONFENCING mutations went RED for their own reason."
