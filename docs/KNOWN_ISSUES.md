@@ -1,5 +1,17 @@
 # Known Issues - SesameFS
 
+## W2-0 follow-up — durable repair gate (2026-09-29)
+
+Covered F1/F2/F3 and Sync-provenanced writers now acquire a non-expiring repair
+before final exact-P. GC reads every organization repair page at EACH_QUORUM
+and repeats the reference probe after a negative scan; acquisition pins LQ.
+Sync preserves its captured placement through queueing. UNKNOWN/unreachable
+rows retain existing R31 behavior, so stranded repairs can inhibit collection.
+W2-0/W2-6a remain OPEN: network ambiguity, OS process-kill and rollout evidence
+are pending. Older GC readers must be upgraded; cold-path cost is up to 32
+organization range reads plus a ref probe, proportional to pending rows.
+See [plan, evidence, individual re-audit and limits](./W2-0-PUBLICATION-CONTINUITY.md).
+
 **Last Updated**: 2026-09-29 (X1 critical-path reset)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
@@ -6053,7 +6065,7 @@ does not exclude a pause between that operation and HEAD.
 
 Closure requires a demonstrated continuity or fail-closed mechanism excluding
 GC commitment between authority validation and HEAD, including pin-expiry
-interleavings. No runtime protocol change is included in this docs correction.
+interleavings. The current follow-up implements a durable repair gate but does not claim full closure.
 See [W2-6a evidence limits](./W2-6A-CREATEFILE-EXACT-P.md) and W2-0 in X1.
 
 ### ISSUE-PC0-EXACT-P-FUNNEL-GAP-01: Publication-authority/continuity before HEAD is not uniform by provenance

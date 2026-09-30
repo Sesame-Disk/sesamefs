@@ -1,5 +1,17 @@
 # R3 liveness-continuity characterization
 
+## W2-0 follow-up — durable repair gate (2026-09-29)
+
+Covered F1/F2/F3 and Sync-provenanced writers now acquire a non-expiring repair
+before final exact-P. GC reads every organization repair page at EACH_QUORUM
+and repeats the reference probe after a negative scan; acquisition pins LQ.
+Sync preserves its captured placement through queueing. UNKNOWN/unreachable
+rows retain existing R31 behavior, so stranded repairs can inhibit collection.
+W2-0/W2-6a remain OPEN: network ambiguity, OS process-kill and rollout evidence
+are pending. Older GC readers must be upgraded; cold-path cost is up to 32
+organization range reads plus a ref probe, proportional to pending rows.
+See [plan, evidence, individual re-audit and limits](./W2-0-PUBLICATION-CONTINUITY.md).
+
 **Accepted architecture (2026-09-02):** funnel inventory for writer W2 / R31.
 **W2 exit checklist (2026-09-29):** the `CONDITIONAL`/`UNKNOWN` rows below are
 tracked row by row in [`docs/X1-CRITICAL-PATH.md`](./X1-CRITICAL-PATH.md) §4;

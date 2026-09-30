@@ -4904,21 +4904,33 @@ func (h *SyncHandler) validateSyncCommitBlockPublicationFences(orgID string, pla
 // not been attempted yet, so callers can always safely release their own
 // pub:<attempt> stage on error.
 func (h *SyncHandler) ensureSyncCommitBlockPublicationReadiness(orgID, repoID string, canonicalByFile map[string][]string) error {
+	_, err := h.prepareSyncCommitBlockPublicationReadiness(orgID, repoID, canonicalByFile)
+	return err
+}
+
+// prepareSyncCommitBlockPublicationReadiness retains the provenanced exact
+// placements for a second authority check AFTER durable repair acquisition.
+// Do not rerun the provenance scope gate after queue: a paused request's up:
+// can expire, but that cannot turn a once-provenanced block into an unchecked one.
+func (h *SyncHandler) prepareSyncCommitBlockPublicationReadiness(orgID, repoID string, canonicalByFile map[string][]string) ([]syncCommitBlockPlacement, error) {
 	provenanced, err := h.syncCommitProvenancedBlockIDs(orgID, repoID, canonicalByFile)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(provenanced) == 0 {
-		return nil
+		return nil, nil
 	}
 	placements, err := h.resolveSyncCommitBlockPlacements(orgID, provenanced)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := h.ensureSyncCommitBlockOwnLiveness(orgID, repoID, placements); err != nil {
-		return fmt.Errorf("renew own liveness: %w", err)
+		return nil, fmt.Errorf("renew own liveness: %w", err)
 	}
-	return h.validateSyncCommitBlockPublicationFences(orgID, placements)
+	if err := h.validateSyncCommitBlockPublicationFences(orgID, placements); err != nil {
+		return nil, err
+	}
+	return placements, nil
 }
 
 // renewSyncCommitBlockOwnLivenessBestEffort is the post-HEAD analog used only
@@ -5136,10 +5148,15 @@ func (e *syncAutoMergeRepairQueueError) Unwrap() error {
 // queue error from a readiness error so partial durable inserts are handled
 // conservatively.
 func (h *SyncHandler) ensureAndQueueAutoMergeSyncPublication(orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
-	if err := h.ensureSyncCommitBlockPublicationReadiness(orgID, repoID, canonicalByFile); err != nil {
+	placements, err := h.prepareSyncCommitBlockPublicationReadiness(orgID, repoID, canonicalByFile)
+	if err != nil {
 		return err
 	}
+	v2.W2PublicationBeforeRepairBarrier(repoID)
 	if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, commitID, canonicalByFile); err != nil {
+		return &syncAutoMergeRepairQueueError{err: err}
+	}
+	if err := h.validateSyncCommitBlockPublicationFences(orgID, placements); err != nil {
 		return &syncAutoMergeRepairQueueError{err: err}
 	}
 	return nil
@@ -5230,6 +5247,7 @@ func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userI
 	}
 	repairQueued = true
 
+	v2.W2PublicationAfterAuthorityBarrier(repoID)
 	if err := h.updateLibraryHeadWithStats(orgID, repoID, mergedCommitID, userID, currentHead); err != nil {
 		if errors.Is(err, errSyncHeadRepairPending) || errors.Is(err, errSyncHeadPostCAS) {
 			cleanupStaged = false
@@ -5380,7 +5398,8 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 
 		canonicalByFile := delta.canonicalAddedBlockIDsByFile
 
-		if err := h.ensureSyncCommitBlockPublicationReadiness(orgID, repoID, canonicalByFile); err != nil {
+		placements, readinessErr := h.prepareSyncCommitBlockPublicationReadiness(orgID, repoID, canonicalByFile)
+		if err := readinessErr; err != nil {
 			cleanupAttempt()
 			log.Printf("%s: publication readiness check failed for repo %s head %s: %v", operation, repoID, targetHead, err)
 			c.Header("Retry-After", "1")
@@ -5394,6 +5413,7 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 		// one request retain it, and only successful settlement may clear it. A
 		// same-target success may belong to another writer, while auto-merge
 		// cleanup is safe because its commit ID is structurally unique.
+		v2.W2PublicationBeforeRepairBarrier(repoID)
 		if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, targetHead, canonicalByFile); err != nil {
 			cleanupAttempt()
 			log.Printf("%s: failed to queue durable publish repair for repo %s head %s: %v", operation, repoID, targetHead, err)
@@ -5402,6 +5422,16 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 			return
 		}
 
+		// Repair is the non-expiring GC gate. Validate the captured provenanced
+		// placements after acquiring it; never re-scope expired provenance.
+		if err := h.validateSyncCommitBlockPublicationFences(orgID, placements); err != nil {
+			cleanupAttempt()
+			c.Header("Retry-After", "1")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync head publish authority changed after repair acquisition; retry"})
+			return
+		}
+
+		v2.W2PublicationAfterAuthorityBarrier(repoID)
 		if err := h.updateLibraryHeadWithStats(orgID, repoID, targetHead, userID, currentHead); err != nil {
 			if !errors.Is(err, ErrHeadConflict) {
 				if errors.Is(err, errSyncHeadRepairPending) || errors.Is(err, errSyncHeadPostCAS) {

@@ -1,5 +1,17 @@
 # PC-0 — Multi-DC Publication Protocol Characterization
 
+## W2-0 follow-up — durable repair gate (2026-09-29)
+
+Covered F1/F2/F3 and Sync-provenanced writers now acquire a non-expiring repair
+before final exact-P. GC reads every organization repair page at EACH_QUORUM
+and repeats the reference probe after a negative scan; acquisition pins LQ.
+Sync preserves its captured placement through queueing. UNKNOWN/unreachable
+rows retain existing R31 behavior, so stranded repairs can inhibit collection.
+W2-0/W2-6a remain OPEN: network ambiguity, OS process-kill and rollout evidence
+are pending. Older GC readers must be upgraded; cold-path cost is up to 32
+organization range reads plus a ref probe, proportional to pending rows.
+See [plan, evidence, individual re-audit and limits](./W2-0-PUBLICATION-CONTINUITY.md).
+
 **Status:** characterization complete (PC-0, #211). PC-1 (2026-09-11) added the
 common types and the `PublicationCoordinator` skeleton in `internal/publication`
 — **zero funnels migrated, zero runtime change, zero productive importers**; the
@@ -174,7 +186,7 @@ methods in one source file cannot silently overwrite one another.
 | F5 | `v2.publishEditedDocumentMetadata` (OnlyOffice) | callback download + `saveOnlyOfficePendingBlock` | callback `up:<operation>` | `stagePendingPublishedFiles` | **none** | `queuePendingPublishedFileRepairs` | `UpdateLibraryHeadFromSnapshot` | promote / schedule; pending-commit-id is OO-specific |
 | F6 | `SeafHTTP.commitUploadedFileOnce` | single-block upload in this request | register during upload | `stageSeafHTTPPublishAttemptReferences` | **none** | `queuePublishedFSObjectBlockReferenceRepairFn` | `UpdateLibraryHeadFromSnapshot` | `finalizeSeafHTTPPublishedBlockReferences` |
 | F7 | `SeafHTTP.commitUploadedFileMultiBlockOnce` | multi-block upload | register during upload | same | **none** | same | same | same |
-| F8 | `Sync.handleSyncHeadPromotion` | client PutBlock / RecvFS / PutCommit | Scope gate: LQ hit ⇒ provenanced; clean LQ miss ⇒ EQ hit provenanced / EQ miss unprovenanced / EQ error abort; unprovenanced blocks skip readiness | `stageSyncCommitBlockDelta` **before** readiness | `ensureSyncCommitBlockPublicationReadiness` (provenanced subset only) | `queueSyncCommitBlockReferenceRepairsFn` **after** readiness | `updateLibraryHeadWithStats` | `finalizeSyncCommitBlockDeltaAndSettleRepairIntent`; shared repair never cleared on request-local loss |
+| F8 | `Sync.handleSyncHeadPromotion` | client PutBlock / RecvFS / PutCommit | Scope gate: LQ hit ⇒ provenanced; clean LQ miss ⇒ EQ hit provenanced / EQ miss unprovenanced / EQ error abort; unprovenanced blocks skip readiness | `stageSyncCommitBlockDelta` **before** readiness | `prepareSyncCommitBlockPublicationReadiness` captures provenanced exact P; final validation after repair queue | `queueSyncCommitBlockReferenceRepairsFn` **after** readiness | `updateLibraryHeadWithStats` | `finalizeSyncCommitBlockDeltaAndSettleRepairIntent`; shared repair never cleared on request-local loss |
 | F9 | `Sync.tryAutoMergeSyncHeadPromotion` | merge commit of target onto current HEAD | same complete LQ→EQ scope gate and provenanced subset | `stageSyncCommitBlockDelta` | same | queue after readiness; auto-merge commit ID includes a fresh UUID | `updateLibraryHeadWithStats` | structurally unique attempt: cleanup of `pub:` is safe; settlement still required |
 
 `CreateFileFromBlocks` is **not** a distinct HEAD callsite. It is an adapter
@@ -1419,7 +1431,7 @@ W2, R31, and X1 remain OPEN.
 | `TestPC0BlockPublicationFunnelsHaveMappedSeams` | each publication funnel has characteristic seams/stage/repair/HEAD/settle symbols; characteristic seams are not assumed to be a universal pre-stage phase |
 | `TestPC0R3StageToHeadInventoryIsSubset` | live R3 `r3PublicationStageToHeadBoundaries` labels are a subset of the PC-0 mapping |
 | `TestPC0BlockBearingFunnelsKeepDurableRepairBeforeHEAD` | every mapped block-bearing funnel keeps `stage < durable repair < HEAD`; an empty-file branch may produce no repair row |
-| `TestPC0ObservedRepairReadinessPartialOrder` | CFFB `stage < repair < fence < HEAD`; Sync `stage < readiness < repair < HEAD`; auto-merge caller `stage < helper < HEAD` |
+| `TestPC0ObservedRepairReadinessPartialOrder` | CFFB `stage < repair < fence < HEAD`; Sync `stage < readiness < repair < final exact-P < HEAD`; auto-merge caller `stage < helper < HEAD` |
 | `TestPC0CriticalConsistencyPrimitivesArePinned` | selected source tokens at named primitives; not the full consistency map; HEAD serial domain *is* pinned (needles plus `TestPC0HeadSerialDomainPinsGlobalSerial`) |
 | ~~`TestPC0PublicationCoordinatorTypeIsNotImplemented`~~ | **retired by PC-1 (2026-09-11)**: it froze "no `PublicationCoordinator` anywhere under `internal/`"; replaced by the PC-1 contracts below, which freeze the opposite boundary (exactly one, in `internal/publication`, adopted by nothing productive) |
 | `TestPC1PublicationCoordinatorIsDeclaredExactlyOnce` | exactly one top-level `PublicationCoordinator` type under `internal/` and `cmd/`, at `internal/publication/coordinator.go`, a concrete struct with zero fields (no mutex, no in-memory ownership) |
