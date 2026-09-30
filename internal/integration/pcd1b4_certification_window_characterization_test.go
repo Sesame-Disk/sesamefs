@@ -162,15 +162,15 @@ func (f pcd1b4Fixture) trashedAt(t *testing.T) time.Time {
 }
 
 // restore replays restoreDeletedLibrary's generation-fenced lifecycle
-// statements: the soft-delete marker, then the canonical row.
+// statements: the canonical row, then the soft-delete marker.
 func (f pcd1b4Fixture) restore(t *testing.T) {
 	t.Helper()
 	deletedAt := f.trashedAt(t)
-	if outcome, err := dbpkg.ClearSoftDeleteMarkerGeneration(f.database.Session(), f.libraryID, deletedAt); err != nil || outcome == dbpkg.LibraryLifecycleGenerationChanged {
-		t.Fatalf("replay restore marker statement: %v, %v", outcome, err)
-	}
 	if outcome, err := dbpkg.RestoreTrashedLibraryGeneration(f.database.Session(), f.orgID, f.libraryID, deletedAt, time.Now().UTC()); err != nil || outcome != dbpkg.LibraryLifecycleApplied {
 		t.Fatalf("replay restore canonical statement: %v, %v", outcome, err)
+	}
+	if outcome, err := dbpkg.ClearSoftDeleteMarkerGeneration(f.database.Session(), f.libraryID, deletedAt); err != nil || outcome == dbpkg.LibraryLifecycleGenerationChanged {
+		t.Fatalf("replay restore marker statement: %v, %v", outcome, err)
 	}
 }
 

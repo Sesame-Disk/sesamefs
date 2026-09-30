@@ -219,20 +219,14 @@ func settleTrashedLibraryRestore(libraryID string, deletedAt time.Time, casErr e
 }
 
 // ClearSoftDeleteMarkerGeneration removes the `deleted_libraries` marker of a
-// restore only while it is the soft-delete marker of generation deletedAt: same
-// deleted_at and no purge_requested_at. A permanent delete writes the marker
-// with purge_requested_at after it removed the canonical row, so a restore
-// owner that lost the lease cannot drop the marker of a library that was
-// permanently deleted, nor the marker of a newer trash generation.
+// restored library only while it is the soft-delete marker of generation
+// deletedAt: same deleted_at and no purge_requested_at. Restore calls it after
+// its canonical transition applied (the canonical LWT is the fence), so even a
+// restore that pauses in between cannot remove the marker of a newer trash
+// generation or a permanent-delete marker.
 //
-// Restore clears the marker BEFORE its canonical transition: if the process
-// stops between the two, the library is still trashed and restorable (only the
-// trash-retention signal is missing until the next soft or permanent delete
-// writes a marker again), whereas the reverse order would leave an active
-// library with a live purge marker.
-//
-// Outcomes: Applied; TargetAbsent (no marker, for example a retry of a restore
-// that already cleared it; the canonical transition decides); GenerationChanged.
+// Outcomes: Applied; TargetAbsent (no marker); GenerationChanged (the marker
+// belongs to another generation or records a purge request).
 func ClearSoftDeleteMarkerGeneration(session *gocql.Session, libraryID string, deletedAt time.Time) (LibraryLifecycleOutcome, error) {
 	if deletedAt.IsZero() {
 		return LibraryLifecycleGenerationChanged, fmt.Errorf("clear deleted library marker %s: zero deleted_at generation", libraryID)
@@ -279,4 +273,26 @@ func settleSoftDeleteMarkerClear(libraryID string, deletedAt time.Time, casErr e
 		return LibraryLifecycleGenerationChanged, fmt.Errorf("%w: clear deleted library marker %s: %w", ErrLibraryLifecycleOutcomeUnknown, libraryID, casErr)
 	}
 	return LibraryLifecycleGenerationChanged, nil
+}
+
+// ClearSoftDeleteMarkerOfActiveLibrary removes the soft-delete marker of
+// generation deletedAt when the canonical row is active again. A restore that
+// committed its canonical transition but stopped before clearing its marker
+// leaves exactly that state; the GC cascade calls this after its fenced delete
+// reported a changed generation, so trash retention stops re-enqueuing the
+// library. It does nothing while the row is absent or trashed, and the marker
+// removal is itself conditioned on the generation, so a re-trash in between is
+// never touched.
+func ClearSoftDeleteMarkerOfActiveLibrary(session *gocql.Session, orgID, libraryID string, deletedAt time.Time) error {
+	present, current, err := readLibraryDeletedAtSerial(session, orgID, libraryID)
+	if err != nil {
+		return fmt.Errorf("read canonical library %s before clearing a stale marker: %w", libraryID, err)
+	}
+	if !present || !current.IsZero() {
+		return nil
+	}
+	if _, err := ClearSoftDeleteMarkerGeneration(session, libraryID, deletedAt); err != nil {
+		return err
+	}
+	return nil
 }

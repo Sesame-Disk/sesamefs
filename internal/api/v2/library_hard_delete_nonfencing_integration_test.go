@@ -226,6 +226,23 @@ func pauseRestoreAfterRenew(t *testing.T, lib nonfencingLibrary) *nonfencingPaus
 	return p
 }
 
+// pauseRestoreBeforeMarkerClear parks the restore path after its canonical
+// transition applied and before it clears the soft-delete marker.
+func pauseRestoreBeforeMarkerClear(t *testing.T, lib nonfencingLibrary) *nonfencingPause {
+	t.Helper()
+	p := newNonfencingPause(lib.LibraryID)
+	original := clearRestoredLibraryMarkerFn
+	clearRestoredLibraryMarkerFn = func(session *gocql.Session, libraryID string, deletedAt time.Time) (dbpkg.LibraryLifecycleOutcome, error) {
+		p.after(uuid.MustParse(libraryID), uuid.Nil, true, nil)
+		return original(session, libraryID, deletedAt)
+	}
+	t.Cleanup(func() {
+		p.resumeOwner()
+		clearRestoredLibraryMarkerFn = original
+	})
+	return p
+}
+
 func nonfencingPermanentDelete(db *dbpkg.DB, lib nonfencingLibrary) error {
 	// cleanupLinks=true is the PermanentDeleteRepo / org-admin single delete path.
 	_, err := permanentlyDeleteTrashedLibraryCandidate(db, lib.candidate(), "permanent_delete", "PermanentDeleteRepo", true)
@@ -464,6 +481,33 @@ func TestNonfencingT5StaleRestoreAgainstNewerGeneration(t *testing.T) {
 	}
 }
 
+// T5c: a restore whose canonical transition applied pauses before clearing its
+// marker; meanwhile the library is trashed again (generation D2). The resumed
+// cleanup must not remove the D2 marker.
+func TestNonfencingT5StaleRestoreCompletionAgainstNewerGeneration(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	pause := pauseRestoreBeforeMarkerClear(t, lib)
+
+	oldOwner := runOwner(func() error { return nonfencingRestore(db, lib) })
+	pause.wait(t)
+	if present, deletedAt := nonfencingCanonical(t, db, lib); !present || !deletedAt.IsZero() {
+		t.Fatalf("restore did not commit before its marker cleanup: present=%v deleted_at=%v", present, deletedAt)
+	}
+	d2 := nonfencingSoftDelete(t, db, lib)
+
+	pause.resumeOwner()
+	errA := awaitOwner(t, oldOwner)
+
+	marker := nonfencingReadMarker(t, db, lib)
+	if !marker.Present || !marker.DeletedAt.Equal(d2) {
+		t.Fatalf("NONFENCING RED: stale restore completion (err=%v) removed the generation-%s marker: %+v", errA, d2, marker)
+	}
+	if present, deletedAt := nonfencingCanonical(t, db, lib); !present || !deletedAt.Equal(d2) {
+		t.Fatalf("stale restore completion changed generation %s: present=%v deleted_at=%v", d2, present, deletedAt)
+	}
+}
+
 // T6: legitimate continuation is not rejected. A restore whose earlier attempt
 // already removed the marker (and then failed) completes on retry, and a
 // permanent delete of such a library still completes and writes its marker.
@@ -646,6 +690,23 @@ func TestNonfencingGCHardDeleteLibraryIsGenerationFenced(t *testing.T) {
 		var orgID string
 		if err := db.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, lib.LibraryID).Scan(&orgID); err != nil {
 			t.Fatalf("stale GC hard delete removed libraries_by_id: %v", err)
+		}
+	})
+
+	t.Run("restore stopped before its marker cleanup", func(t *testing.T) {
+		lib := nonfencingSeedTrashedLibrary(t, db)
+		if outcome, err := dbpkg.RestoreTrashedLibraryGeneration(db.Session(), lib.OrgID, lib.LibraryID, lib.DeletedAt, time.Now().UTC()); err != nil || outcome != dbpkg.LibraryLifecycleApplied {
+			t.Fatalf("canonical restore: %v, %v", outcome, err)
+		}
+		deleted, err := store.HardDeleteLibrary(uuid.MustParse(lib.OrgID), lib.uuid(t), lib.DeletedAt)
+		if err != nil || deleted {
+			t.Fatalf("GC hard delete of a restored library with a leftover marker: deleted=%v err=%v", deleted, err)
+		}
+		if present, deletedAt := nonfencingCanonical(t, db, lib); !present || !deletedAt.IsZero() {
+			t.Fatalf("GC hard delete changed the restored library: present=%v deleted_at=%v", present, deletedAt)
+		}
+		if marker := nonfencingReadMarker(t, db, lib); marker.Present {
+			t.Fatalf("GC left the restored library's stale marker behind: %+v", marker)
 		}
 	})
 

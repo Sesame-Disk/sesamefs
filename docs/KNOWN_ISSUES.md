@@ -6789,23 +6789,26 @@ the owner paused (no read-then-write, no reliance on the renewal):
   maps "not applied" to the existing `errPermanentDeleteCandidateStale` (409);
   the GC library cascade completes the item as stale; the org cascade fails and
   retries (the org is not hard-deleted over a restored library).
-- Restore: first `DELETE FROM deleted_libraries ... IF deleted_at = ? AND
-  purge_requested_at = null` (`db.ClearSoftDeleteMarkerGeneration`: only the
-  soft-delete marker of that generation, never a permanent-delete marker), then
-  `UPDATE libraries SET updated_at = ?, deleted_at = null, deleted_by = null
-  ... IF deleted_at = ?` (`db.RestoreTrashedLibraryGeneration`). A conditional
-  update never creates a row, so a stale restore can neither resurrect a deleted
-  library nor restore a newer generation. Marker first: a crash in between
-  leaves a library that is still trashed and restorable (only the retention
-  signal is missing until the next delete writes a marker), whereas the reverse
-  order would leave an active library with a live purge marker. Restore
-  conflicts keep the existing API mapping (500), as before this change.
+- Restore: `UPDATE libraries SET updated_at = ?, deleted_at = null,
+  deleted_by = null ... IF deleted_at = ?` (`db.RestoreTrashedLibraryGeneration`).
+  A conditional update never creates a row, so a stale restore can neither
+  resurrect a deleted library nor restore a newer generation. Only after it
+  applied does the restore remove its marker, again conditioned on the
+  generation (`DELETE FROM deleted_libraries ... IF deleted_at = ? AND
+  purge_requested_at = null`, `db.ClearSoftDeleteMarkerGeneration`), so even a
+  restore that pauses between the two steps cannot remove a newer generation's
+  or a permanent-delete marker. A marker left behind (process stopped between
+  the steps, or a marker write not yet visible to that LWT across DCs) sits on
+  an active library: the GC cascade's fenced delete then reports a changed
+  generation, deletes nothing, and clears that stale marker
+  (`db.ClearSoftDeleteMarkerOfActiveLibrary`); guarded child items already
+  refuse to purge while the canonical row exists. Restore conflicts keep the
+  existing API mapping (500), as before this change.
 - The remaining writes (lookup, admin read model, purge marker, policies,
   reconciliation) run only after the canonical transition applied. For a delete
   they are terminal and idempotent (no newer generation can exist after a hard
-  delete); the permanent-delete completion batch is written at global `QUORUM`
-  so a stale restore's SERIAL marker check in another DC observes the purge
-  marker (the fenced delete already needs a global quorum).
+  delete). A committed restore attempts every completion step even if one fails
+  and then reports the failure.
 - Paxos domain: the `libraries` transitions pin `LibraryHeadSerialConsistency`
   (the partition's existing global SERIAL domain; the row delete is inventoried
   as a HEAD-authority guard) and the marker LWT pins
@@ -6827,18 +6830,19 @@ has exactly one lifecycle transition.
 `internal/api/v2/library_hard_delete_nonfencing_integration_test.go` — T1 normal
 permanent delete, T2 normal restore, T3 stale delete after restore, T4 stale
 restore after delete, T4b stale restore while the new owner's delete has not
-written its completion yet, T5 stale delete / stale restore against a newer
-trash generation, T6 retries after a partial first attempt, T7 a stale owner
-cannot remove the current owner's lease or state, plus each primitive's
-outcomes and the GC store hard delete. T3, T4, both T5 legs and T7 were RED on
+written its completion yet, T5 stale delete / stale restore / stale restore
+marker cleanup against a newer trash generation, T6 retries after a partial
+first attempt, T7 a stale owner cannot remove the current owner's lease or
+state, plus each primitive's outcomes and the GC store hard delete (including
+the marker left by a restore that stopped after its canonical transition). T3, T4, both T5 legs and T7 were RED on
 `main` + the test seam and are GREEN on the branch. `internal/db/library_lifecycle_test.go`
 pins the SERIAL domains and the ambiguous-outcome settlement;
 `internal/gc/worker_test.go` covers a restore between the GC fence and the hard
 delete for the library and org cascades. `scripts/library-hard-delete-lease-nonfencing-mutation-validation.sh`
 runs directed mutations (predicate removed, restore made an upsert, predicate
-accepting any generation, marker predicate without generation, each fence
-downgraded to `LOCAL_SERIAL`, GC store/worker ignoring a rejected delete), each
-RED for its own reason. `scripts/library-hard-delete-lease-nonfencing-multidc-validation.sh`
+accepting any generation, marker cleanup without generation, each fence
+downgraded to `LOCAL_SERIAL`, GC store/worker ignoring a rejected delete, GC no
+longer clearing a marker left by a stopped restore), each RED for its own reason. `scripts/library-hard-delete-lease-nonfencing-multidc-validation.sh`
 runs the stale owner in dc-na against a new owner in dc-eu with `LOCAL_SERIAL`
 session defaults on the isolated 3-DC fixture. That leg is positive evidence;
 the `LOCAL_SERIAL` downgrade is caught by the static pins, not by a divergent
@@ -6851,13 +6855,27 @@ multi-DC schedule.
   row, the admin read-model entry and a soft-delete marker without
   `purge_requested_at` (the API returns 500; a retry returns 404); they are
   removed only by the GC cascade of that marker (after trash retention; never
-  while `GC_ENABLED=false`). A restore that fails after its canonical restore
-  leaves the admin read model showing the library as trashed and the aggregate
-  counters not re-added.
+  while `GC_ENABLED=false`). A restore whose completion writes fail after its
+  canonical restore still attempts all of them, then returns 500; a failed
+  read-model refresh leaves the admin projection showing the library as trashed
+  (a retry answers "not in trash"), and a leftover marker is cleared by the GC
+  cascade (never while `GC_ENABLED=false`).
 - A restore's post-commit writes (read-model refresh, reconciliation request,
   aggregate re-add) are not generation-fenced: a restore that pauses after its
   canonical restore can later write them over a newer state. They are
   projections/accounting; the aggregate re-add was already unfenced before.
+  Only the post-commit marker cleanup is generation-conditioned.
+- Earlier destructive steps under the same lease are still fenced only by lease
+  checks, as before: a permanent delete that pauses inside its share/upload link
+  cleanup and resumes after a restore took over can still remove links of the
+  restored library before its fenced delete is rejected. Pre-existing, not a
+  lifecycle mutation; GC child items are already guarded by canonical absence.
+- The lifecycle LWTs write with Paxos ballot timestamps (Cassandra coordinator
+  clocks) while soft delete writes client timestamps (application clocks). A
+  re-trash issued after a restore by less than the application-to-Cassandra
+  clock skew can lose its canonical `deleted_at` write (the library stays active)
+  or its marker (retention signal lost). The HEAD LWTs already mix timestamp
+  sources the same way; NTP-level skew makes the window milliseconds.
 - An ambiguous outcome settled as applied can duplicate the completion writes
   of a concurrent owner of the same generation (possible only if the lease was
   taken over while the LWT was in flight); for a restore that double-adds the
@@ -6869,9 +6887,9 @@ multi-DC schedule.
 - A GC cascade whose marker and canonical `deleted_at` disagree is skipped as
   stale instead of deleting; current writers always stamp both in one batch
   (greenfield deployment).
-- Cost: permanent delete adds one global-SERIAL LWT and writes its completion
-  at global QUORUM; restore adds two global-SERIAL LWTs. A DC that cannot reach
-  a global quorum cannot restore or permanently delete (already true for the lease).
+- Cost: permanent delete adds one global-SERIAL LWT; restore adds two
+  global-SERIAL LWTs. A DC that cannot reach a global quorum cannot restore or
+  permanently delete (already true for the lease).
 
 This does not close `ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01` (user
 lease), does not establish GC activation readiness, and `GC_ENABLED=false`

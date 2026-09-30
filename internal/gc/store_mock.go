@@ -3958,6 +3958,9 @@ func (m *MockStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt time
 	// Mirrors the generation-fenced canonical delete: a present row that is not
 	// trashed under deletedAt is left untouched.
 	if lib, ok := m.libraries[libraryID]; ok && lib.OrgID == orgID && !lib.DeletedAt.Equal(deletedAt) {
+		if marker := m.deletedLibraries[libraryID]; lib.DeletedAt.IsZero() && marker != nil && marker.DeletedAt.Equal(deletedAt) && marker.PurgeRequestedAt.IsZero() {
+			delete(m.deletedLibraries, libraryID)
+		}
 		return false, nil
 	}
 	delete(m.libraries, libraryID)

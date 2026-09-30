@@ -530,9 +530,10 @@ type GCStore interface {
 	ListExpiredDeletedLibraries(retentionDays int) ([]DeletedLibraryInfo, error)
 	// HardDeleteLibrary removes the canonical library row only while it is still
 	// trashed under generation deletedAt, then its lookup, policy, admin read-model
-	// and marker rows. It reports false, and changes nothing, when the canonical row
-	// carries another generation (restored or trashed again); a row that is already
-	// gone still gets its completion writes.
+	// and marker rows. It reports false when the canonical row carries another
+	// generation (restored or trashed again); it then deletes nothing, and only
+	// clears this generation's soft-delete marker if the library is active again.
+	// A row that is already gone still gets its completion writes.
 	HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt time.Time) (bool, error)
 
 	// Storage counter cleanup after permanent library deletion.

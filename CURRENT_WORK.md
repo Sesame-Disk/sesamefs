@@ -10,14 +10,17 @@ removed a restored library; stale restore resurrected a permanently deleted
 library or restored a newer trash generation). Fix, with no schema change: the
 final canonical mutation is itself conditioned on the `deleted_at` generation
 the owner verified — `DELETE FROM libraries ... IF deleted_at = ?` for the API
-permanent delete and the GC library cascade, and for restore a conditional
-removal of that generation's soft-delete marker followed by
-`UPDATE libraries SET deleted_at = null ... IF deleted_at = ?` — all global
-SERIAL (the `libraries` LWTs use the existing `LibraryHeadSerialConsistency`
-domain). Completion writes (lookup, read model, purge marker, reconciliation)
-run only after the canonical transition applied; their loss of atomicity with
-it and the unfenced post-restore projection writes are recorded residuals, not
-lifecycle defects. Evidence: RED→GREEN integration legs T1–T7, directed
+permanent delete and the GC library cascade, and for restore
+`UPDATE libraries SET deleted_at = null ... IF deleted_at = ?` followed by a
+generation-conditioned removal of its soft-delete marker — all global SERIAL
+(the `libraries` LWTs use the existing `LibraryHeadSerialConsistency` domain).
+Completion writes (lookup, read model, markers, reconciliation) run only after
+the canonical transition applied; a marker left on an active library is cleared
+by the GC cascade instead of being acted on. The completion writes' loss of
+atomicity with the canonical transition, the unfenced post-restore projection
+writes and the LWT/client timestamp mix are recorded residuals, not lifecycle
+defects. A code-review pass during the audit moved the restore to
+canonical-first (marker-first could strand a trashed library without a marker). Evidence: RED→GREEN integration legs T1–T7, directed
 mutations RED, and a directed 3-DC leg with `LOCAL_SERIAL` sessions; details in
 [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md#issue-gc-hard-delete-lease-nonfencing-01).
 Not in scope: W2, PC-D1B.5, user restore serialization

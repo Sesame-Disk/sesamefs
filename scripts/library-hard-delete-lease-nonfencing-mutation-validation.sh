@@ -92,10 +92,10 @@ mutate 'M3a canonical delete predicate accepts any trash generation' "$LIFECYCLE
 	./internal/api/v2 '^TestNonfencingT5StaleDeleteAgainstNewerGeneration$' '-tags integration' \
 	'NONFENCING RED: stale generation'
 
-mutate 'M3b restore marker predicate drops the generation' "$LIFECYCLE" \
+mutate 'M3b restore marker cleanup drops the generation' "$LIFECYCLE" \
 	's{(DELETE FROM deleted_libraries WHERE library_id = \?\s*)IF deleted_at = \? AND purge_requested_at = null(\s*`, libraryID), deletedAt\)}{$1IF EXISTS$2)}' \
-	./internal/api/v2 '^TestNonfencingT4StaleRestoreAfterDelete$' '-tags integration' \
-	'dropped the permanent-delete marker'
+	./internal/api/v2 '^TestNonfencingT5StaleRestoreCompletionAgainstNewerGeneration$' '-tags integration' \
+	'stale restore completion (err=<nil>) removed the generation'
 
 mutate 'M4a marker fence downgraded to LOCAL_SERIAL' "$LIFECYCLE" \
 	's{const DeletedLibraryMarkerSerialConsistency = gocql\.Serial}{const DeletedLibraryMarkerSerialConsistency = gocql.LocalSerial}' \
@@ -113,7 +113,7 @@ mutate 'M4c canonical restore fence downgraded to LOCAL_SERIAL' "$LIFECYCLE" \
 	'library lifecycle fence no longer pins global SERIAL'
 
 mutate 'M5 GC store completes after a changed generation' internal/gc/store_cassandra.go \
-	's{\tif outcome == db\.LibraryLifecycleGenerationChanged \{\n\t\treturn false, nil\n\t\}\n}{\t_ = outcome\n}' \
+	's{\tif outcome == db\.LibraryLifecycleGenerationChanged \{\n.*?\n\t\treturn false, nil\n\t\}\n}{\t_ = outcome\n}s' \
 	./internal/api/v2 '^TestNonfencingGCHardDeleteLibraryIsGenerationFenced$' '-tags integration' \
 	'stale GC hard delete'
 
@@ -121,5 +121,10 @@ mutate 'M6 GC worker ignores a rejected hard delete' internal/gc/worker.go \
 	's{\tif !deleted \{\n\t\treturn fmt\.Errorf\([^\n]*errLibraryCascadeGenerationChanged\)\n\t\}\n}{\t_ = deleted\n}' \
 	./internal/gc '^TestWorker_ProcessOrgCascade_LibraryRestoreAfterFenceFailsClosed$' '' \
 	'want errLibraryCascadeGenerationChanged'
+
+mutate 'M7 GC no longer clears the marker a stopped restore left' internal/gc/store_cassandra.go \
+	's{\t\tif err := db\.ClearSoftDeleteMarkerOfActiveLibrary\([^\n]*\n\t\t\treturn false, err\n\t\t\}\n}{}' \
+	./internal/api/v2 '^TestNonfencingGCHardDeleteLibraryIsGenerationFenced$' '-tags integration' \
+	"GC left the restored library's stale marker behind"
 
 green "All $count NONFENCING mutations went RED for their own reason."

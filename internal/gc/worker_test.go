@@ -2986,6 +2986,33 @@ func TestWorker_ProcessLibraryCascade_RestoreAfterFenceKeepsLibrary(t *testing.T
 	}
 }
 
+// A restore that committed its canonical transition but stopped before its
+// marker cleanup leaves this generation's marker on an active library. The
+// cascade must keep the library and clear the stale marker.
+func TestWorker_ProcessLibraryCascade_ClearsMarkerLeftByRestore(t *testing.T) {
+	store := NewMockStore()
+	w := NewWorker(store, nil, NewQueue(store), 100, 0, false, &Stats{})
+
+	orgID, libID := uuid.New(), uuid.New()
+	deletedAt := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Millisecond)
+	store.AddOrganization(orgID)
+	store.AddDeletedLibrary(orgID, libID, "hot", deletedAt)
+	store.mu.Lock()
+	store.libraries[libID].DeletedAt = time.Time{} // canonical restored, marker left
+	store.mu.Unlock()
+
+	item := QueueItem{OrgID: orgID, QueuedAt: deletedAt, IdentityAt: deletedAt, ItemType: ItemLibraryCascade, ItemID: libID.String(), StorageClass: "hot"}
+	if err := w.processLibraryCascade(context.Background(), item); err != nil {
+		t.Fatalf("cascade over a restored library should complete as stale, got %v", err)
+	}
+	if exists, _ := store.CanonicalLibraryExists(orgID, libID); !exists {
+		t.Fatal("cascade hard-deleted a restored library")
+	}
+	if marker, _ := store.GetLibraryDeletedAt(libID); marker != nil {
+		t.Fatalf("stale marker %v left on the restored library", marker)
+	}
+}
+
 // Same schedule inside an org cascade: the org purge must not complete while
 // one of its libraries was restored under it; the cascade fails and retries.
 func TestWorker_ProcessOrgCascade_LibraryRestoreAfterFenceFailsClosed(t *testing.T) {

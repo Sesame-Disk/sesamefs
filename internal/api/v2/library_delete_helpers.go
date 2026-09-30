@@ -51,12 +51,8 @@ var (
 	}
 	hardDeleteLibraryRowsFn = func(database *dbpkg.DB, orgID, libraryID, storageClass, blockRepresentationID string, deletedAt time.Time) error {
 		// The completion batch is built first because the admin read-model delete keys
-		// are read from the canonical row, which the fenced delete below removes. It is
-		// written at global QUORUM so the purge marker is visible to the global-SERIAL
-		// marker check of a stale restore in another datacenter
-		// (dbpkg.ClearSoftDeleteMarkerGeneration); the fenced delete already needs a
-		// global quorum, so this costs no availability.
-		batch := database.Session().Batch(gocql.LoggedBatch).Consistency(gocql.Quorum)
+		// are read from the canonical row, which the fenced delete below removes.
+		batch := database.Session().Batch(gocql.LoggedBatch)
 		if err := addDeleteAdminLibraryReadModelQueries(database, batch, orgID, libraryID); err != nil {
 			return errors.Join(errHardDeleteLibraryReadModel, err)
 		}

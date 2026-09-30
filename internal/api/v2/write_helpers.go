@@ -996,9 +996,13 @@ func softDeleteLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID,
 }
 
 // renewLibraryRestoreLeaseFn renews the restore path's library hard-delete
-// lease. It is a variable so integration tests can pause a restore right after
-// its renewal and resume it after another owner took the lease over.
-var renewLibraryRestoreLeaseFn = gcpkg.RenewLibraryHardDeleteLockLease
+// lease, and clearRestoredLibraryMarkerFn removes the restored generation's
+// soft-delete marker. They are variables so integration tests can pause a
+// restore right after its renewal or right after its canonical transition.
+var (
+	renewLibraryRestoreLeaseFn   = gcpkg.RenewLibraryHardDeleteLockLease
+	clearRestoredLibraryMarkerFn = dbpkg.ClearSoftDeleteMarkerGeneration
+)
 
 // restoreDeletedLibrary clears deleted_at, removes the GC marker, and re-adds
 // the library's storage to aggregate counters. Mirror image of softDeleteLibrary.
@@ -1056,24 +1060,15 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	batch := db.Session().Batch(gocql.LoggedBatch)
 	traffic.AddAggregateStorageReconciliationQueries(batch, orgID, ownerID, now)
 	addAdminLibraryReadModelRefreshQueries(batch, nextRow, &previousRow)
-	// Early exit only: this renewal does not fence the lifecycle mutations below (the
-	// owner can pause right after it). They fence on the deleted_at generation
-	// verified above (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01).
+	// Early exit only: this renewal does not fence the lifecycle mutation below (the
+	// owner can pause right after it). The restore is fenced on the deleted_at
+	// generation verified above (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01).
 	owned, err := renewLibraryRestoreLeaseFn(db.Session(), libraryUUID, leaseToken)
 	if err != nil {
 		return fmt.Errorf("renew library restore lock for %s: %w", libraryID, err)
 	}
 	if !owned {
 		return fmt.Errorf("lost library restore lock for %s", libraryID)
-	}
-	// Marker first, then canonical row; see ClearSoftDeleteMarkerGeneration for why
-	// this order leaves a restorable library if the process stops in between.
-	markerOutcome, err := dbpkg.ClearSoftDeleteMarkerGeneration(db.Session(), libraryID, canonicalDeletedAt)
-	if err != nil {
-		return fmt.Errorf("clear deleted library marker for restore: %w", err)
-	}
-	if markerOutcome == dbpkg.LibraryLifecycleGenerationChanged {
-		return fmt.Errorf("library is pending permanent deletion or was trashed again")
 	}
 	outcome, err := dbpkg.RestoreTrashedLibraryGeneration(db.Session(), orgID, libraryID, canonicalDeletedAt, now)
 	if err != nil {
@@ -1086,13 +1081,23 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	default:
 		return fmt.Errorf("library is no longer in the trash generation being restored")
 	}
-	if err := batch.Exec(); err != nil {
-		return fmt.Errorf("restore library read model and storage reconciliation: %w", err)
-	}
 
-	// Re-add the library's storage to aggregates after the canonical row and
-	// deleted marker have been restored.
+	// The restore is committed. Every completion step is attempted even if an earlier
+	// one fails. A marker left behind (process stopped here, or the marker write not
+	// yet visible to this LWT) is on an active library; the GC cascade clears it
+	// (dbpkg.ClearSoftDeleteMarkerOfActiveLibrary) instead of deleting anything.
+	var completionErr error
+	if _, err := clearRestoredLibraryMarkerFn(db.Session(), libraryID, canonicalDeletedAt); err != nil {
+		completionErr = errors.Join(completionErr, fmt.Errorf("clear deleted library marker: %w", err))
+	}
+	if err := batch.Exec(); err != nil {
+		completionErr = errors.Join(completionErr, fmt.Errorf("refresh read model and request storage reconciliation: %w", err))
+	}
+	// Re-add the library's storage to aggregates now that the canonical row is active.
 	traffic.AdjustAggregateStorageCounters(db, orgID, ownerID, libraryID, true)
+	if completionErr != nil {
+		return fmt.Errorf("library restored but its completion writes failed: %w", completionErr)
+	}
 	return nil
 }
 

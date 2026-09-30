@@ -6240,6 +6240,11 @@ func (s *CassandraStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt
 		return false, err
 	}
 	if outcome == db.LibraryLifecycleGenerationChanged {
+		// A restore that stopped between its canonical transition and its marker
+		// cleanup leaves this generation's marker on an active library.
+		if err := db.ClearSoftDeleteMarkerOfActiveLibrary(session, orgID.String(), libraryID.String(), deletedAt); err != nil {
+			return false, err
+		}
 		return false, nil
 	}
 	// Applied, or the row is already gone (an API permanent delete of this
