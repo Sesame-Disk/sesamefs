@@ -18,8 +18,8 @@ const libraryLifecyclePinReason = "library lifecycle fence no longer pins global
 // Every lifecycle LWT and settlement read must run in the global SERIAL Paxos
 // domain, whatever the session default (database.serial_consistency).
 func TestLibraryLifecycleFencePinsGlobalSerial(t *testing.T) {
-	if DeletedLibraryMarkerSerialConsistency != gocql.Serial || LibraryHeadSerialConsistency != gocql.Serial {
-		t.Fatalf("%s: DeletedLibraryMarkerSerialConsistency = %v, LibraryHeadSerialConsistency = %v", libraryLifecyclePinReason, DeletedLibraryMarkerSerialConsistency, LibraryHeadSerialConsistency)
+	if LibraryHeadSerialConsistency != gocql.Serial {
+		t.Fatalf("%s: LibraryHeadSerialConsistency = %v", libraryLifecyclePinReason, LibraryHeadSerialConsistency)
 	}
 
 	_, testFile, _, ok := runtime.Caller(0)
@@ -40,7 +40,7 @@ func TestLibraryLifecycleFencePinsGlobalSerial(t *testing.T) {
 		{name: "DeleteTrashedLibraryGeneration", domain: "LibraryHeadSerialConsistency", lwts: 1},
 		{name: "RestoreTrashedLibraryGeneration", domain: "LibraryHeadSerialConsistency", lwts: 1},
 		{name: "readLibraryDeletedAtSerial", domain: "LibraryHeadSerialConsistency", serial: 1},
-		{name: "ClearSoftDeleteMarkerGeneration", domain: "DeletedLibraryMarkerSerialConsistency", lwts: 1, serial: 1},
+		{name: "SoftDeleteLibraryGeneration", domain: "LibraryHeadSerialConsistency", lwts: 1},
 	} {
 		var decl *ast.FuncDecl
 		for _, d := range file.Decls {
@@ -158,16 +158,16 @@ func TestLibraryLifecycleSettlement(t *testing.T) {
 		check(t, "read failed", got, err, LibraryLifecycleGenerationChanged, true)
 	})
 
-	t.Run("marker", func(t *testing.T) {
-		got, err := settleSoftDeleteMarkerClear("l", gen, casErr, false, time.Time{}, time.Time{}, nil)
-		check(t, "marker gone", got, err, LibraryLifecycleTargetAbsent, false)
-		got, err = settleSoftDeleteMarkerClear("l", gen, casErr, true, gen, time.Time{}, nil)
-		check(t, "soft-delete marker still there", got, err, LibraryLifecycleGenerationChanged, true)
-		got, err = settleSoftDeleteMarkerClear("l", gen, casErr, true, gen, newer, nil)
-		check(t, "permanent-delete marker", got, err, LibraryLifecycleGenerationChanged, false)
-		got, err = settleSoftDeleteMarkerClear("l", gen, casErr, true, newer, time.Time{}, nil)
-		check(t, "newer generation marker", got, err, LibraryLifecycleGenerationChanged, false)
-		got, err = settleSoftDeleteMarkerClear("l", gen, casErr, false, time.Time{}, time.Time{}, readErr)
+	t.Run("soft delete", func(t *testing.T) {
+		got, err := settleLibrarySoftDelete("l", gen, casErr, true, gen, nil)
+		check(t, "row at the new generation", got, err, LibraryLifecycleApplied, false)
+		got, err = settleLibrarySoftDelete("l", gen, casErr, true, time.Time{}, nil)
+		check(t, "row still active", got, err, LibraryLifecycleGenerationChanged, true)
+		got, err = settleLibrarySoftDelete("l", gen, casErr, false, time.Time{}, nil)
+		check(t, "row gone", got, err, LibraryLifecycleTargetAbsent, false)
+		got, err = settleLibrarySoftDelete("l", gen, casErr, true, newer, nil)
+		check(t, "row trashed by another request", got, err, LibraryLifecycleGenerationChanged, false)
+		got, err = settleLibrarySoftDelete("l", gen, casErr, true, time.Time{}, readErr)
 		check(t, "read failed", got, err, LibraryLifecycleGenerationChanged, true)
 	})
 }

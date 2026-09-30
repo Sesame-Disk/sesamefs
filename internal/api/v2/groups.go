@@ -1102,6 +1102,7 @@ func (h *GroupHandler) DeleteGroupOwnedLibrary(c *gin.Context) {
 		return
 	}
 	if !deletedAt.IsZero() {
+		repairTrashedLibraryOnRepeatedDelete(h.db, orgID, repoID)
 		c.JSON(http.StatusNotFound, gin.H{"error": "library already deleted"})
 		return
 	}

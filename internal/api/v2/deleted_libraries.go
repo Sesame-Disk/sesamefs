@@ -234,6 +234,9 @@ func (h *DeletedLibraryHandler) PermanentDeleteRepo(c *gin.Context) {
 		// Not found in caller's org.
 		// Only superadmin can manage libraries across orgs; org admin is scoped to their own org.
 		if !middleware.IsPlatformSuperAdmin(callerOrgID, callerRole) {
+			if h.resumePermanentDelete(c, orgID, repoID, userID, callerRole) {
+				return
+			}
 			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 			return
 		}
@@ -249,6 +252,9 @@ func (h *DeletedLibraryHandler) PermanentDeleteRepo(c *gin.Context) {
 		if err3 := h.db.Session().Query(`
 			SELECT owner_id, storage_class, deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
 		`, orgID, repoID).Scan(&ownerID, &storageClass, &deletedAt); err3 != nil {
+			if h.resumePermanentDelete(c, orgID, repoID, userID, callerRole) {
+				return
+			}
 			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 			return
 		}

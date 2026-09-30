@@ -125,6 +125,7 @@ func (h *OrgAdminHandler) DeleteOrgRepo(c *gin.Context) {
 		return
 	}
 	if !deletedAt.IsZero() {
+		repairTrashedLibraryOnRepeatedDelete(h.db, targetOrgID, repoID)
 		c.JSON(http.StatusNotFound, gin.H{"error": "library already deleted"})
 		return
 	}
@@ -439,6 +440,9 @@ func (h *OrgAdminHandler) DeleteOrgTrashLibrary(c *gin.Context) {
 	if err := h.db.Session().Query(`
 		SELECT deleted_at, storage_class FROM libraries WHERE org_id = ? AND library_id = ?
 	`, targetOrgID, repoID).Scan(&deletedAt, &storageClass); err != nil {
+		if h.resumeOrgTrashLibraryDelete(c, targetOrgID, repoID) {
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 		return
 	}

@@ -11,6 +11,7 @@ import (
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 	gcpkg "github.com/Sesame-Disk/sesamefs/internal/gc"
 	"github.com/Sesame-Disk/sesamefs/internal/metrics"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/traffic"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
@@ -50,24 +51,14 @@ var (
 		return gcpkg.ReleaseLibraryHardDeleteLockLease(database.Session(), libraryID, leaseToken)
 	}
 	hardDeleteLibraryRowsFn = func(database *dbpkg.DB, orgID, libraryID, storageClass, blockRepresentationID string, deletedAt time.Time) error {
-		// The completion batch is built first because the admin read-model delete keys
-		// are read from the canonical row, which the fenced delete below removes.
-		batch := database.Session().Batch(gocql.LoggedBatch)
-		if err := addDeleteAdminLibraryReadModelQueries(database, batch, orgID, libraryID); err != nil {
-			return errors.Join(errHardDeleteLibraryReadModel, err)
+		// Completion writes are stamped before the canonical transition, like every
+		// lifecycle completion; the batch is built first because the admin read-model
+		// delete keys are read from the canonical row, which the fenced delete removes.
+		stamp := dbpkg.LibraryLifecycleCompletionStamp(database.Session(), orgID, libraryID, libraryLifecycleNow())
+		batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(stamp)
+		if err := addPermanentDeleteCompletionQueries(database, batch, orgID, libraryID, storageClass, blockRepresentationID, deletedAt); err != nil {
+			return err
 		}
-		batch.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, libraryID)
-		// This is a *permanent* delete. Two invariants:
-		//   1. PRESERVE the original deleted_at (the library's trash time). Phase 13 dedups
-		//      library_cascade by deleted_at; resetting it to now() would change the identity
-		//      and let a cascade already queued under the old deleted_at be enqueued a second
-		//      time. deletedAt is the authoritative libraries.deleted_at captured by the caller.
-		//   2. Stamp purge_requested_at = now() so Phase 13 makes the library eligible on its
-		//      next scan instead of waiting out the configured TrashRetentionDays. The cascade
-		//      is still gated by the GC grace period before the worker processes it — reclamation
-		//      happens on the order of the grace period, not the retention period.
-		// See migration 012 / ISSUE-GC-ORG-TRASH-NO-CASCADE-01.
-		batch.Query(`INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id, purge_requested_at) VALUES (?, ?, ?, ?, ?, ?)`, libraryID, orgID, deletedAt, storageClass, blockRepresentationID, time.Now())
 
 		// The fenced lifecycle mutation (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01): the
 		// canonical row is deleted only while it is still trashed under the generation this
@@ -82,10 +73,9 @@ var (
 		}
 		// Completion writes run only after this generation's canonical row is gone. A
 		// hard delete is terminal, so they cannot touch a newer generation and are
-		// idempotent if replayed. If they fail, the library is deleted but its lookup,
-		// admin read model and purge request are left behind until the GC cascade of the
-		// soft-delete marker removes them.
-		if err := batch.Exec(); err != nil {
+		// idempotent. If they fail, a repeated permanent delete of the same library
+		// completes them (resumeCommittedPermanentDelete).
+		if err := execLibraryLifecycleCompletionFn(batch); err != nil {
 			return errors.Join(errHardDeleteLibraryBatchExec, err)
 		}
 		return nil
@@ -167,6 +157,86 @@ var (
 	errPermanentDeleteCandidateStale  = errors.New("permanent delete candidate stale")
 	errPermanentDeleteInProgress      = errors.New("permanent delete in progress")
 )
+
+// addPermanentDeleteCompletionQueries adds the writes that complete a permanent
+// delete once its canonical row is gone: the admin read-model rows, the
+// libraries_by_id lookup, the permanent-delete marker and a plain delete of the
+// canonical row. The plain delete carries a client timestamp, so together with
+// the LWT row tombstone (Paxos timestamp) it covers cells written under either
+// clock.
+func addPermanentDeleteCompletionQueries(database *dbpkg.DB, batch *gocql.Batch, orgID, libraryID, storageClass, blockRepresentationID string, deletedAt time.Time) error {
+	if err := addDeleteAdminLibraryReadModelQueries(database, batch, orgID, libraryID); err != nil {
+		return errors.Join(errHardDeleteLibraryReadModel, err)
+	}
+	batch.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, libraryID)
+	batch.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, libraryID)
+	// This is a *permanent* delete. Two invariants:
+	//   1. PRESERVE the original deleted_at (the library's trash time). Phase 13 dedups
+	//      library_cascade by deleted_at; resetting it to now() would change the identity
+	//      and let a cascade already queued under the old deleted_at be enqueued a second
+	//      time. deletedAt is the authoritative libraries.deleted_at captured by the caller.
+	//   2. Stamp purge_requested_at = now() so Phase 13 makes the library eligible on its
+	//      next scan instead of waiting out the configured TrashRetentionDays. The cascade
+	//      is still gated by the GC grace period before the worker processes it — reclamation
+	//      happens on the order of the grace period, not the retention period.
+	// See migration 012 / ISSUE-GC-ORG-TRASH-NO-CASCADE-01.
+	batch.Query(`INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id, purge_requested_at) VALUES (?, ?, ?, ?, ?, ?)`, libraryID, orgID, deletedAt, storageClass, blockRepresentationID, time.Now())
+	return nil
+}
+
+// resumeCommittedPermanentDelete completes a permanent delete whose canonical
+// row is already gone but whose completion writes failed: the libraries_by_id
+// lookup is still there and the deleted_libraries marker still names the trash
+// generation. It is reached by repeating the permanent delete, so it works
+// with GC_ENABLED=false. It reports false (and changes nothing) for any other
+// state. A hard delete is terminal, so no lease is needed.
+func resumeCommittedPermanentDelete(database *dbpkg.DB, orgID, libraryID string) (trashLibraryCandidate, string, bool, error) {
+	stamp := dbpkg.LibraryLifecycleCompletionStamp(database.Session(), orgID, libraryID, libraryLifecycleNow())
+	var markerOrgID, storageClass, blockRepresentationID string
+	var deletedAt time.Time
+	err := database.Session().Query(`SELECT org_id, deleted_at, storage_class, block_representation_id FROM deleted_libraries WHERE library_id = ?`,
+		libraryID).Scan(&markerOrgID, &deletedAt, &storageClass, &blockRepresentationID)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return trashLibraryCandidate{}, "", false, nil
+	}
+	if err != nil {
+		return trashLibraryCandidate{}, "", false, fmt.Errorf("read deleted library marker %s: %w", libraryID, err)
+	}
+	if markerOrgID != orgID || deletedAt.IsZero() {
+		return trashLibraryCandidate{}, "", false, nil
+	}
+	var lookupOrgID string
+	err = database.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, libraryID).Scan(&lookupOrgID)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return trashLibraryCandidate{}, "", false, nil
+	}
+	if err != nil {
+		return trashLibraryCandidate{}, "", false, fmt.Errorf("read library lookup %s: %w", libraryID, err)
+	}
+	present, _, err := dbpkg.ReadLibraryLifecycleStateSerial(database.Session(), orgID, libraryID)
+	if err != nil {
+		return trashLibraryCandidate{}, "", false, fmt.Errorf("read canonical library %s: %w", libraryID, err)
+	}
+	if present {
+		return trashLibraryCandidate{}, "", false, nil
+	}
+	batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(stamp)
+	if err := addPermanentDeleteCompletionQueries(database, batch, orgID, libraryID, storageClass, blockRepresentationID, deletedAt); err != nil {
+		return trashLibraryCandidate{}, "", false, err
+	}
+	if err := execLibraryLifecycleCompletionFn(batch); err != nil {
+		return trashLibraryCandidate{}, "", false, errors.Join(errHardDeleteLibraryBatchExec, err)
+	}
+	return trashLibraryCandidate{OrgID: orgID, LibraryID: libraryID, StorageClass: storageClass, DeletedAt: deletedAt}, blockRepresentationID, true, nil
+}
+
+// readPermanentDeleteResumeOwner returns the owner recorded on the lookup row of
+// a library whose canonical row is gone, for the permission check of a resumed
+// permanent delete.
+func readPermanentDeleteResumeOwner(database *dbpkg.DB, libraryID string) (orgID, ownerID string, err error) {
+	err = database.Session().Query(`SELECT org_id, owner_id FROM libraries_by_id WHERE library_id = ?`, libraryID).Scan(&orgID, &ownerID)
+	return orgID, ownerID, err
+}
 
 func enqueueLibraryCascadeBestEffort(libEnqueuer LibraryGCEnqueuer, orgID, repoID, blockRepresentationID, storageClass string, deletedAt time.Time) {
 	if libEnqueuer == nil {
@@ -293,6 +363,37 @@ func (h *DeletedLibraryHandler) permanentDeleteResolvedRepo(c *gin.Context, orgI
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete library"})
 		return
 	}
+	h.finishPermanentDelete(c, orgID, repoID, storageClass, deletedAt, blockRepresentationID)
+}
+
+// resumePermanentDelete completes, on a repeated request, a permanent delete of
+// repoID whose canonical row is already gone but whose completion writes failed
+// (resumeCommittedPermanentDelete). It reports whether it answered the request.
+func (h *DeletedLibraryHandler) resumePermanentDelete(c *gin.Context, orgID, repoID, userID string, callerRole middleware.OrganizationRole) bool {
+	lookupOrgID, ownerID, err := readPermanentDeleteResumeOwner(h.db, repoID)
+	if err != nil || lookupOrgID != orgID {
+		return false
+	}
+	if ownerID != userID && !middleware.HasRequiredOrgRole(callerRole, middleware.RoleAdmin) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only library owner or admin can permanently delete"})
+		return true
+	}
+	candidate, blockRepresentationID, resumed, err := resumeCommittedPermanentDelete(h.db, orgID, repoID)
+	if err != nil {
+		log.Printf("[PermanentDeleteRepo] failed to resume permanent delete of %s/%s: %v", orgID, repoID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete library"})
+		return true
+	}
+	if !resumed {
+		return false
+	}
+	h.finishPermanentDelete(c, orgID, repoID, candidate.StorageClass, candidate.DeletedAt, blockRepresentationID)
+	return true
+}
+
+// finishPermanentDelete runs the side effects that follow a committed permanent
+// delete and answers the request.
+func (h *DeletedLibraryHandler) finishPermanentDelete(c *gin.Context, orgID, repoID, storageClass string, deletedAt time.Time, blockRepresentationID string) {
 	if h.libHandler != nil {
 		enqueueLibraryCascadeBestEffort(h.libHandler.gcEnqueuer, orgID, repoID, blockRepresentationID, storageClass, deletedAt)
 	}
@@ -335,6 +436,24 @@ func (h *OrgAdminHandler) deleteResolvedTrashLibrary(c *gin.Context, targetOrgID
 	}
 	enqueueLibraryCascadeBestEffort(h.gcEnqueuer, targetOrgID, repoID, blockRepresentationID, storageClass, deletedAt)
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// resumeOrgTrashLibraryDelete is the org-admin counterpart of
+// DeletedLibraryHandler.resumePermanentDelete. It reports whether it answered
+// the request.
+func (h *OrgAdminHandler) resumeOrgTrashLibraryDelete(c *gin.Context, targetOrgID, repoID string) bool {
+	candidate, blockRepresentationID, resumed, err := resumeCommittedPermanentDelete(h.db, targetOrgID, repoID)
+	if err != nil {
+		log.Printf("[DeleteOrgTrashLibrary] failed to resume permanent delete of %s/%s: %v", targetOrgID, repoID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete library"})
+		return true
+	}
+	if !resumed {
+		return false
+	}
+	enqueueLibraryCascadeBestEffort(h.gcEnqueuer, targetOrgID, repoID, blockRepresentationID, candidate.StorageClass, candidate.DeletedAt)
+	c.JSON(http.StatusOK, gin.H{"success": true})
+	return true
 }
 
 // processOrgTrashCandidates hard-deletes each candidate trashed library for the org-admin

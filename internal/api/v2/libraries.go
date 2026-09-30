@@ -3,6 +3,7 @@ package v2
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -1134,6 +1135,9 @@ func (h *LibraryHandler) DeleteLibrary(c *gin.Context) {
 
 	libraryState, err := readLiveLibraryStateFn(h.db.Session(), orgID, repoID)
 	if err != nil {
+		if errors.Is(err, db.ErrLibraryDeleted) {
+			repairTrashedLibraryOnRepeatedDelete(h.db, orgID, repoID)
+		}
 		writeLiveLibraryStateError(c, err)
 		return
 	}

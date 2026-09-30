@@ -4018,6 +4018,14 @@ func (m *MockStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID) err
 	if err != nil {
 		return err
 	}
+	if !lib.DeletedAt.IsZero() {
+		// Mirrors the conditional soft delete: an already trashed library keeps its
+		// generation; only a missing marker is written.
+		if _, marked := m.deletedLibraries[libraryID]; !marked {
+			m.deletedLibraries[libraryID] = &mockDeletedLibrary{OrgID: orgID, LibraryID: libraryID, BlockRepresentationID: blockRepresentationID, StorageClass: lib.StorageClass, DeletedAt: lib.DeletedAt}
+		}
+		return nil
+	}
 	lib.DeletedAt = time.Now()
 	m.deletedLibraries[libraryID] = &mockDeletedLibrary{
 		OrgID:                 orgID,

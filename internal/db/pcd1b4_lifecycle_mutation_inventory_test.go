@@ -74,10 +74,11 @@ type pcd1b4LifecycleSite struct {
 }
 
 var pcd1b4ExpectedLifecycleStatements = []pcd1b4LifecycleSite{
-	// Soft-delete: plain LoggedBatch UPDATE of deleted_at, outside the HEAD
-	// Paxos domain. It does not remove any certified dependency.
-	{path: "internal/api/v2/write_helpers.go", decl: "softDeleteLibrary", kind: pcd1b4SoftDelete, role: pcd1b4NoChange},
-	{path: "internal/gc/store_cassandra.go", decl: "CassandraStore.SoftDeleteLibrary", kind: pcd1b4SoftDelete, role: pcd1b4NoChange},
+	// Soft-delete: global-SERIAL LWT `SET deleted_at = ? IF deleted_at = null
+	// AND created_at != null`, reached from softDeleteLibrary (API) and
+	// CassandraStore.SoftDeleteLibrary (GC). It does not remove any certified
+	// dependency.
+	{path: "internal/db/library_lifecycle.go", decl: "SoftDeleteLibraryGeneration", kind: pcd1b4SoftDelete, role: pcd1b4NoChange},
 	// Restore: global-SERIAL LWT `SET deleted_at = null IF deleted_at = ?`
 	// (reached from restoreDeletedLibrary under the hard-delete lease). HEAD
 	// and the tree are untouched; any destroyer that ran during trash already
@@ -87,6 +88,10 @@ var pcd1b4ExpectedLifecycleStatements = []pcd1b4LifecycleSite{
 	// `DELETE ... IF deleted_at = ?`, reached from the API permanent delete
 	// (hardDeleteLibraryRowsFn) and the GC cascade (CassandraStore.HardDeleteLibrary).
 	{path: "internal/db/library_lifecycle.go", decl: "DeleteTrashedLibraryGeneration", kind: pcd1b4RowDelete, role: pcd1b4NoChange},
+	// Plain (client-timestamp) row deletes in the completion writes, executed
+	// only after the fenced delete applied or found the row already gone.
+	{path: "internal/api/v2/library_delete_helpers.go", decl: "addPermanentDeleteCompletionQueries", kind: pcd1b4RowDelete, role: pcd1b4NoChange},
+	{path: "internal/gc/store_cassandra.go", decl: "CassandraStore.HardDeleteLibrary", kind: pcd1b4RowDelete, role: pcd1b4NoChange},
 	{path: "internal/api/v2/write_helpers.go", decl: "deleteUnpublishedLibraryRow", kind: pcd1b4RowDelete, role: pcd1b4NoChange},
 	// Witness writers: the only statements that set the continuity columns.
 	{path: "internal/db/library_continuity.go", decl: "CommitLibraryContinuityWitness", kind: pcd1b4WitnessWrite, role: pcd1b4PredicateEpoch},

@@ -951,8 +951,14 @@ func addDeleteAdminLibraryReadModelQueries(db interface{ Session() *gocql.Sessio
 // The lib-scope counter is left intact so restoreDeletedLibrary can reverse the
 // operation. Permanent delete (or GC cascade) cleans up the lib-scope row via
 // traffic.DeleteLibraryStorageCounter.
+//
+// The canonical transition is a global-SERIAL LWT (dbpkg.SoftDeleteLibraryGeneration)
+// so it is ordered by Paxos against restore and hard delete. The marker, read
+// model and reconciliation request follow it, stamped with a client timestamp
+// taken before the transition. A library another request already trashed is
+// treated as done: its derived state is repaired instead.
 func softDeleteLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID, deletedBy, libraryID string) error {
-	now := time.Now().UTC()
+	now := libraryLifecycleNow().UTC()
 	previousRow, err := dbpkg.ReadAdminLibraryProjectionRow(db.Session(), orgID, libraryID)
 	if err != nil {
 		return fmt.Errorf("read library projection row: %w", err)
@@ -973,12 +979,24 @@ func softDeleteLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID,
 		metrics.LibraryDeleteRepresentationResolutionFailures.WithLabelValues("soft_delete").Inc()
 		log.Printf("[softDeleteLibrary] could not resolve block representation for %s/%s: %v", orgID, libraryID, repErr)
 	}
-	batch := db.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`
-		UPDATE libraries SET deleted_at = ?, deleted_by = ?, updated_at = ?
-		WHERE org_id = ? AND library_id = ?`,
-		now, deletedBy, now, orgID, libraryID,
-	)
+	stamp := dbpkg.LibraryLifecycleCompletionStamp(db.Session(), orgID, libraryID, now)
+	outcome, err := dbpkg.SoftDeleteLibraryGeneration(db.Session(), orgID, libraryID, now, deletedBy)
+	if err != nil {
+		return fmt.Errorf("soft-delete library: %w", err)
+	}
+	switch outcome {
+	case dbpkg.LibraryLifecycleApplied:
+	case dbpkg.LibraryLifecycleGenerationChanged:
+		// Another request trashed it first; that request owns the accounting.
+		return repairTrashedLibraryDerivedState(db, orgID, libraryID)
+	default:
+		return fmt.Errorf("soft-delete library %s: library not found", libraryID)
+	}
+
+	// Read the live lib-scope counter and subtract from aggregate scopes.
+	traffic.AdjustAggregateStorageCounters(db, orgID, ownerID, libraryID, false)
+
+	batch := db.Session().Batch(gocql.LoggedBatch).WithTimestamp(stamp)
 	batch.Query(`
 		INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id)
 		VALUES (?, ?, ?, ?, ?)`,
@@ -986,28 +1004,94 @@ func softDeleteLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID,
 	)
 	traffic.AddAggregateStorageReconciliationQueries(batch, orgID, ownerID, now)
 	addAdminLibraryReadModelRefreshQueries(batch, nextRow, &previousRow)
-	if err := batch.Exec(); err != nil {
-		return fmt.Errorf("soft-delete library: %w", err)
+	if err := execLibraryLifecycleCompletionFn(batch); err != nil {
+		// The library is in the trash; a repeated delete repairs the derived state
+		// (repairTrashedLibraryDerivedState).
+		return fmt.Errorf("library trashed but its marker and read model were not written: %w", err)
 	}
-
-	// Read the live lib-scope counter and subtract from aggregate scopes.
-	traffic.AdjustAggregateStorageCounters(db, orgID, ownerID, libraryID, false)
 	return nil
 }
 
+// repairTrashedLibraryDerivedState rewrites the derived state of a library the
+// canonical row shows in the trash: its soft-delete marker (when missing) and
+// its admin read-model rows. It completes a soft delete whose completion writes
+// failed after the canonical transition, and is idempotent. Its writes are
+// stamped before the canonical read, so a transition that commits after that
+// read (restore, permanent delete, a new trash generation) wins over them. It
+// does not touch storage aggregates (the soft delete adjusts them right after
+// its canonical transition) and does nothing unless the row is trashed.
+func repairTrashedLibraryDerivedState(db interface{ Session() *gocql.Session }, orgID, libraryID string) error {
+	stamp := dbpkg.LibraryLifecycleCompletionStamp(db.Session(), orgID, libraryID, libraryLifecycleNow())
+	present, deletedAt, err := dbpkg.ReadLibraryLifecycleStateSerial(db.Session(), orgID, libraryID)
+	if err != nil {
+		return fmt.Errorf("read canonical library %s for repair: %w", libraryID, err)
+	}
+	if !present || deletedAt.IsZero() {
+		return nil
+	}
+	row, err := dbpkg.ReadAdminLibraryProjectionRow(db.Session(), orgID, libraryID)
+	if err != nil {
+		return fmt.Errorf("read library projection row for repair: %w", err)
+	}
+	if row.DeletedAt == nil || !row.DeletedAt.Equal(deletedAt) {
+		return nil // not yet visible at session consistency; a later retry repairs it
+	}
+	batch := db.Session().Batch(gocql.LoggedBatch).WithTimestamp(stamp)
+	var markerDeletedAt time.Time
+	markerErr := db.Session().Query(`SELECT deleted_at FROM deleted_libraries WHERE library_id = ?`, libraryID).Scan(&markerDeletedAt)
+	if markerErr != nil && !errors.Is(markerErr, gocql.ErrNotFound) {
+		return fmt.Errorf("read deleted library marker for repair: %w", markerErr)
+	}
+	if errors.Is(markerErr, gocql.ErrNotFound) {
+		blockRepresentationID, repErr := dbpkg.ResolveBlockRepresentationIDForDelete(db.Session(), orgID, libraryID)
+		if repErr != nil {
+			log.Printf("[repairTrashedLibraryDerivedState] could not resolve block representation for %s/%s: %v", orgID, libraryID, repErr)
+		}
+		batch.Query(`
+			INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id)
+			VALUES (?, ?, ?, ?, ?)`,
+			libraryID, orgID, deletedAt, row.StorageClass, blockRepresentationID,
+		)
+	}
+	dbpkg.AddUpsertAdminLibraryReadModelQuery(batch, row)
+	if err := execLibraryLifecycleCompletionFn(batch); err != nil {
+		return fmt.Errorf("repair trashed library %s: %w", libraryID, err)
+	}
+	return nil
+}
+
+// repairTrashedLibraryOnRepeatedDelete is called by delete handlers that found
+// the library already in the trash: a repeated delete is how a soft delete
+// whose completion failed gets completed. Errors are only logged; the caller
+// still reports the library as already deleted. A variable for handler tests.
+var repairTrashedLibraryOnRepeatedDelete = func(db interface{ Session() *gocql.Session }, orgID, libraryID string) {
+	if err := repairTrashedLibraryDerivedState(db, orgID, libraryID); err != nil {
+		log.Printf("[softDeleteLibrary] repair of trashed library %s/%s failed: %v", orgID, libraryID, err)
+	}
+}
+
 // renewLibraryRestoreLeaseFn renews the restore path's library hard-delete
-// lease, and clearRestoredLibraryMarkerFn removes the restored generation's
-// soft-delete marker. They are variables so integration tests can pause a
-// restore right after its renewal or right after its canonical transition.
+// lease, and afterLibraryRestoreTransitionFn runs between a restore's canonical
+// transition and its completion writes. They are variables so integration tests
+// can pause a restore at either point.
 var (
-	renewLibraryRestoreLeaseFn   = gcpkg.RenewLibraryHardDeleteLockLease
-	clearRestoredLibraryMarkerFn = dbpkg.ClearSoftDeleteMarkerGeneration
+	renewLibraryRestoreLeaseFn      = gcpkg.RenewLibraryHardDeleteLockLease
+	afterLibraryRestoreTransitionFn = func(libraryID string) {}
+)
+
+// libraryLifecycleNow is the client clock of the lifecycle helpers, and
+// execLibraryLifecycleCompletionFn executes their completion batches. Both are
+// variables so integration tests can run a node with a clock behind Cassandra's
+// and fail a completion after its canonical transition applied.
+var (
+	libraryLifecycleNow              = time.Now
+	execLibraryLifecycleCompletionFn = func(batch *gocql.Batch) error { return batch.Exec() }
 )
 
 // restoreDeletedLibrary clears deleted_at, removes the GC marker, and re-adds
 // the library's storage to aggregate counters. Mirror image of softDeleteLibrary.
 func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID, libraryID string) error {
-	now := time.Now().UTC()
+	now := libraryLifecycleNow().UTC()
 	leaseToken := uuid.New()
 	libraryUUID, err := uuid.Parse(libraryID)
 	if err != nil {
@@ -1056,10 +1140,6 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	nextRow := previousRow
 	nextRow.UpdatedAt = now
 	nextRow.DeletedAt = nil
-	// Completion writes, applied only after the fenced canonical restore below.
-	batch := db.Session().Batch(gocql.LoggedBatch)
-	traffic.AddAggregateStorageReconciliationQueries(batch, orgID, ownerID, now)
-	addAdminLibraryReadModelRefreshQueries(batch, nextRow, &previousRow)
 	// Early exit only: this renewal does not fence the lifecycle mutation below (the
 	// owner can pause right after it). The restore is fenced on the deleted_at
 	// generation verified above (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01).
@@ -1070,6 +1150,10 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	if !owned {
 		return fmt.Errorf("lost library restore lock for %s", libraryID)
 	}
+	// Completion writes are stamped before the canonical transition: a later
+	// transition (a new soft delete) stamps its own after this restore committed,
+	// so a restore completion that lands late can never overwrite it.
+	stamp := dbpkg.LibraryLifecycleCompletionStamp(db.Session(), orgID, libraryID, libraryLifecycleNow())
 	outcome, err := dbpkg.RestoreTrashedLibraryGeneration(db.Session(), orgID, libraryID, canonicalDeletedAt, now)
 	if err != nil {
 		return fmt.Errorf("restore library: %w", err)
@@ -1081,22 +1165,20 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	default:
 		return fmt.Errorf("library is no longer in the trash generation being restored")
 	}
+	afterLibraryRestoreTransitionFn(libraryID)
 
-	// The restore is committed. Every completion step is attempted even if an earlier
-	// one fails. A marker left behind (process stopped here, or the marker write not
-	// yet visible to this LWT) is on an active library; the GC cascade clears it
-	// (dbpkg.ClearSoftDeleteMarkerOfActiveLibrary) instead of deleting anything.
-	var completionErr error
-	if _, err := clearRestoredLibraryMarkerFn(db.Session(), libraryID, canonicalDeletedAt); err != nil {
-		completionErr = errors.Join(completionErr, fmt.Errorf("clear deleted library marker: %w", err))
-	}
-	if err := batch.Exec(); err != nil {
-		completionErr = errors.Join(completionErr, fmt.Errorf("refresh read model and request storage reconciliation: %w", err))
-	}
 	// Re-add the library's storage to aggregates now that the canonical row is active.
 	traffic.AdjustAggregateStorageCounters(db, orgID, ownerID, libraryID, true)
-	if completionErr != nil {
-		return fmt.Errorf("library restored but its completion writes failed: %w", completionErr)
+
+	batch := db.Session().Batch(gocql.LoggedBatch).WithTimestamp(stamp)
+	batch.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, libraryID)
+	traffic.AddAggregateStorageReconciliationQueries(batch, orgID, ownerID, now)
+	addAdminLibraryReadModelRefreshQueries(batch, nextRow, &previousRow)
+	if err := execLibraryLifecycleCompletionFn(batch); err != nil {
+		// A marker left on the active library is cleared by the GC cascade
+		// (dbpkg.ClearStaleSoftDeleteMarker); the next lifecycle transition rewrites
+		// the read model.
+		return fmt.Errorf("library restored but its marker and read model were not updated: %w", err)
 	}
 	return nil
 }

@@ -8,19 +8,22 @@ import (
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
-// Paxos domains of the generation-fenced lifecycle transitions of a trashed
-// library (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01).
+// Timestamp and Paxos discipline of the lifecycle of a library
+// (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01).
 //
-// The canonical `libraries` transitions (API permanent delete / GC cascade row
-// delete, restore) and their settlement reads use LibraryHeadSerialConsistency:
-// a partition has one Paxos domain, and the `libraries` partition is already in
-// global SERIAL for HEAD authority. The restore's conditional removal of the
-// `deleted_libraries` marker uses DeletedLibraryMarkerSerialConsistency. Both
-// are global SERIAL and never derived from database.serial_consistency /
-// CASSANDRA_SERIAL_CONSISTENCY: under LOCAL_SERIAL each datacenter would run its
-// own Paxos domain, so a restore in one DC and a stale permanent delete in
-// another could both apply.
-const DeletedLibraryMarkerSerialConsistency = gocql.Serial
+// The canonical lifecycle cells (libraries.deleted_at / deleted_by and the
+// row's existence) are written only by global-SERIAL LWTs pinned to
+// LibraryHeadSerialConsistency, the partition's existing Paxos domain: soft
+// delete, restore and hard delete. Paxos ballots on a partition only grow, so a
+// lifecycle transition that commits later always carries the larger write
+// timestamp; no transition can lose to an earlier one because of the clock that
+// stamped it. Nothing else writes those cells.
+//
+// The derived rows (the deleted_libraries marker, the admin read model,
+// libraries_by_id, reconciliation requests) keep client timestamps, as before.
+// Each transition stamps its derived writes with a client timestamp taken
+// before its canonical transition, so the derived writes of any transition
+// that commits later win, whenever a paused or retried completion lands.
 
 // ErrLibraryLifecycleOutcomeUnknown reports a lifecycle LWT whose outcome
 // Cassandra could not report and that a SERIAL read could not settle: the
@@ -99,6 +102,66 @@ func readLibraryDeletedAtSerial(session *gocql.Session, orgID, libraryID string)
 		return false, time.Time{}, err
 	}
 	return true, deletedAt, nil
+}
+
+// SoftDeleteLibraryGeneration moves an active library to the trash under the
+// new generation deletedAt: UPDATE ... IF deleted_at = null AND created_at !=
+// null, so it never creates a row for a library that is gone and never
+// replaces another trash generation.
+//
+// Outcomes: Applied; TargetAbsent (no library); GenerationChanged (already in
+// the trash). An ambiguous outcome is settled by a SERIAL read: the row at
+// deletedAt reports Applied, an active row reports
+// ErrLibraryLifecycleOutcomeUnknown.
+func SoftDeleteLibraryGeneration(session *gocql.Session, orgID, libraryID string, deletedAt time.Time, deletedBy string) (LibraryLifecycleOutcome, error) {
+	if deletedAt.IsZero() {
+		return LibraryLifecycleGenerationChanged, fmt.Errorf("soft-delete library %s: zero deleted_at generation", libraryID)
+	}
+	previous := map[string]interface{}{}
+	applied, err := session.Query(`
+		UPDATE libraries SET deleted_at = ?, deleted_by = ?, updated_at = ?
+		WHERE org_id = ? AND library_id = ?
+		IF deleted_at = null AND created_at != null
+	`, deletedAt, deletedBy, deletedAt, orgID, libraryID).
+		SerialConsistency(LibraryHeadSerialConsistency).
+		MapScanCAS(previous)
+	if err == nil {
+		if applied {
+			return LibraryLifecycleApplied, nil
+		}
+		present, current := casDeletedAt(previous)
+		if createdAt, ok := previous["created_at"].(time.Time); !present || !ok || createdAt.IsZero() {
+			return LibraryLifecycleTargetAbsent, nil
+		}
+		if current.IsZero() {
+			// created_at present and deleted_at null would have applied.
+			return LibraryLifecycleGenerationChanged, fmt.Errorf("%w: soft-delete library %s: condition failed on an active row", ErrLibraryLifecycleOutcomeUnknown, libraryID)
+		}
+		return LibraryLifecycleGenerationChanged, nil
+	}
+	if !isAmbiguousLibraryLifecycleCASError(err) {
+		return LibraryLifecycleGenerationChanged, fmt.Errorf("soft-delete library %s: %w", libraryID, err)
+	}
+	present, current, readErr := readLibraryDeletedAtSerial(session, orgID, libraryID)
+	return settleLibrarySoftDelete(libraryID, deletedAt, err, present, current, readErr)
+}
+
+// settleLibrarySoftDelete settles an ambiguous SoftDeleteLibraryGeneration from
+// a SERIAL read of the canonical row.
+func settleLibrarySoftDelete(libraryID string, deletedAt time.Time, casErr error, present bool, current time.Time, readErr error) (LibraryLifecycleOutcome, error) {
+	if readErr != nil {
+		return LibraryLifecycleGenerationChanged, errors.Join(fmt.Errorf("%w: soft-delete library %s: %w", ErrLibraryLifecycleOutcomeUnknown, libraryID, casErr), fmt.Errorf("settlement read failed: %w", readErr))
+	}
+	switch {
+	case !present:
+		return LibraryLifecycleTargetAbsent, nil
+	case current.Equal(deletedAt):
+		return LibraryLifecycleApplied, nil
+	case current.IsZero():
+		return LibraryLifecycleGenerationChanged, fmt.Errorf("%w: soft-delete library %s: %w", ErrLibraryLifecycleOutcomeUnknown, libraryID, casErr)
+	default:
+		return LibraryLifecycleGenerationChanged, nil
+	}
 }
 
 // DeleteTrashedLibraryGeneration removes the canonical `libraries` row only
@@ -218,72 +281,38 @@ func settleTrashedLibraryRestore(libraryID string, deletedAt time.Time, casErr e
 	}
 }
 
-// ClearSoftDeleteMarkerGeneration removes the `deleted_libraries` marker of a
-// restored library only while it is the soft-delete marker of generation
-// deletedAt: same deleted_at and no purge_requested_at. Restore calls it after
-// its canonical transition applied (the canonical LWT is the fence), so even a
-// restore that pauses in between cannot remove the marker of a newer trash
-// generation or a permanent-delete marker.
-//
-// Outcomes: Applied; TargetAbsent (no marker); GenerationChanged (the marker
-// belongs to another generation or records a purge request).
-func ClearSoftDeleteMarkerGeneration(session *gocql.Session, libraryID string, deletedAt time.Time) (LibraryLifecycleOutcome, error) {
-	if deletedAt.IsZero() {
-		return LibraryLifecycleGenerationChanged, fmt.Errorf("clear deleted library marker %s: zero deleted_at generation", libraryID)
+// LibraryLifecycleCompletionStamp returns the client timestamp (microseconds)
+// for the derived writes of a lifecycle transition, taken before the
+// transition: now, raised above the last write to the library's admin
+// read-model row. Every transition writes that row in its completion, so a
+// node whose clock is behind still stamps its derived writes after the
+// previous transition's.
+func LibraryLifecycleCompletionStamp(session *gocql.Session, orgID, libraryID string, now time.Time) int64 {
+	stamp := now.UnixMicro()
+	var last int64
+	if err := session.Query(`SELECT WRITETIME(updated_at) FROM libraries_by_org_updated WHERE org_id = ? AND library_id = ?`,
+		orgID, libraryID).Scan(&last); err == nil && last >= stamp {
+		stamp = last + 1
 	}
-	previous := map[string]interface{}{}
-	applied, err := session.Query(`
-		DELETE FROM deleted_libraries WHERE library_id = ?
-		IF deleted_at = ? AND purge_requested_at = null
-	`, libraryID, deletedAt).
-		SerialConsistency(DeletedLibraryMarkerSerialConsistency).
-		MapScanCAS(previous)
-	if err == nil {
-		if applied {
-			return LibraryLifecycleApplied, nil
-		}
-		if present, _ := casDeletedAt(previous); !present {
-			return LibraryLifecycleTargetAbsent, nil
-		}
-		return LibraryLifecycleGenerationChanged, nil
-	}
-	if !isAmbiguousLibraryLifecycleCASError(err) {
-		return LibraryLifecycleGenerationChanged, fmt.Errorf("clear deleted library marker %s: %w", libraryID, err)
-	}
-	var current, purgeRequestedAt time.Time
-	readErr := session.Query(`SELECT deleted_at, purge_requested_at FROM deleted_libraries WHERE library_id = ?`,
-		libraryID).Consistency(DeletedLibraryMarkerSerialConsistency).Scan(&current, &purgeRequestedAt)
-	present := true
-	if errors.Is(readErr, gocql.ErrNotFound) {
-		present, readErr = false, nil
-	}
-	return settleSoftDeleteMarkerClear(libraryID, deletedAt, err, present, current, purgeRequestedAt, readErr)
+	return stamp
 }
 
-// settleSoftDeleteMarkerClear settles an ambiguous ClearSoftDeleteMarkerGeneration
-// from a SERIAL read of the marker.
-func settleSoftDeleteMarkerClear(libraryID string, deletedAt time.Time, casErr error, present bool, current, purgeRequestedAt time.Time, readErr error) (LibraryLifecycleOutcome, error) {
-	if readErr != nil {
-		return LibraryLifecycleGenerationChanged, errors.Join(fmt.Errorf("%w: clear deleted library marker %s: %w", ErrLibraryLifecycleOutcomeUnknown, libraryID, casErr), fmt.Errorf("settlement read failed: %w", readErr))
-	}
-	if !present {
-		return LibraryLifecycleTargetAbsent, nil
-	}
-	if current.Equal(deletedAt) && purgeRequestedAt.IsZero() {
-		return LibraryLifecycleGenerationChanged, fmt.Errorf("%w: clear deleted library marker %s: %w", ErrLibraryLifecycleOutcomeUnknown, libraryID, casErr)
-	}
-	return LibraryLifecycleGenerationChanged, nil
+// ReadLibraryLifecycleStateSerial reads the canonical lifecycle state in the
+// library's Paxos domain: whether the row exists and its deleted_at (zero when
+// active).
+func ReadLibraryLifecycleStateSerial(session *gocql.Session, orgID, libraryID string) (bool, time.Time, error) {
+	return readLibraryDeletedAtSerial(session, orgID, libraryID)
 }
 
-// ClearSoftDeleteMarkerOfActiveLibrary removes the soft-delete marker of
-// generation deletedAt when the canonical row is active again. A restore that
-// committed its canonical transition but stopped before clearing its marker
-// leaves exactly that state; the GC cascade calls this after its fenced delete
-// reported a changed generation, so trash retention stops re-enqueuing the
-// library. It does nothing while the row is absent or trashed, and the marker
-// removal is itself conditioned on the generation, so a re-trash in between is
-// never touched.
-func ClearSoftDeleteMarkerOfActiveLibrary(session *gocql.Session, orgID, libraryID string, deletedAt time.Time) error {
+// ClearStaleSoftDeleteMarker removes the soft-delete marker of generation
+// deletedAt from a library that is active again. A restore that committed its
+// canonical transition but not its completion leaves exactly that state; the
+// GC cascade calls this after its fenced delete reported a changed generation.
+// It does nothing while the row is absent or trashed, or when the marker holds
+// another generation or a purge request. The tombstone is stamped with the
+// marker's own write timestamp, so it removes that write and nothing written
+// after it.
+func ClearStaleSoftDeleteMarker(session *gocql.Session, orgID, libraryID string, deletedAt time.Time) error {
 	present, current, err := readLibraryDeletedAtSerial(session, orgID, libraryID)
 	if err != nil {
 		return fmt.Errorf("read canonical library %s before clearing a stale marker: %w", libraryID, err)
@@ -291,8 +320,21 @@ func ClearSoftDeleteMarkerOfActiveLibrary(session *gocql.Session, orgID, library
 	if !present || !current.IsZero() {
 		return nil
 	}
-	if _, err := ClearSoftDeleteMarkerGeneration(session, libraryID, deletedAt); err != nil {
-		return err
+	var markerDeletedAt, purgeRequestedAt time.Time
+	var writeTime int64
+	err = session.Query(`SELECT deleted_at, purge_requested_at, WRITETIME(deleted_at) FROM deleted_libraries WHERE library_id = ?`,
+		libraryID).Scan(&markerDeletedAt, &purgeRequestedAt, &writeTime)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read deleted library marker %s: %w", libraryID, err)
+	}
+	if !markerDeletedAt.Equal(deletedAt) || !purgeRequestedAt.IsZero() || writeTime == 0 {
+		return nil
+	}
+	if err := session.Query(`DELETE FROM deleted_libraries USING TIMESTAMP ? WHERE library_id = ?`, writeTime, libraryID).Exec(); err != nil {
+		return fmt.Errorf("clear stale deleted library marker %s: %w", libraryID, err)
 	}
 	return nil
 }

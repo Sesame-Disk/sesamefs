@@ -472,6 +472,7 @@ func (h *AdminHandler) AdminDeleteLibrary(c *gin.Context) {
 		return
 	}
 	if !deletedAt.IsZero() {
+		repairTrashedLibraryOnRepeatedDelete(h.db, orgID, libraryID)
 		c.JSON(http.StatusNotFound, gin.H{"error": "library already deleted"})
 		return
 	}

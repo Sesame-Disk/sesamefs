@@ -735,6 +735,7 @@ func (h *OrgAdminHandler) DeleteOrgGroupOwnedLibrary(c *gin.Context) {
 		return
 	}
 	if !deletedAt.IsZero() {
+		repairTrashedLibraryOnRepeatedDelete(h.db, targetOrgID, repoID)
 		c.JSON(http.StatusNotFound, gin.H{"error": "library already deleted"})
 		return
 	}

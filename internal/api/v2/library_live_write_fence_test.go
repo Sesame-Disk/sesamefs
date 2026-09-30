@@ -702,6 +702,10 @@ func TestUpdateLibrary_LibraryStateErrorReturnsInternalServerError(t *testing.T)
 }
 
 func TestDeleteLibrary_DeletedLibraryReturnsNotFound(t *testing.T) {
+	originalRepair := repairTrashedLibraryOnRepeatedDelete
+	repaired := ""
+	repairTrashedLibraryOnRepeatedDelete = func(_ interface{ Session() *gocql.Session }, _, libraryID string) { repaired = libraryID }
+	t.Cleanup(func() { repairTrashedLibraryOnRepeatedDelete = originalRepair })
 	withDeletedLibraryStateStub(t, func() {
 		r := gin.New()
 		handler := newLibraryHandlerForLiveFenceTests()
@@ -720,6 +724,10 @@ func TestDeleteLibrary_DeletedLibraryReturnsNotFound(t *testing.T) {
 			t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
 		}
 		assertJSONError(t, w.Body, "library not found")
+		// A repeated delete completes a soft delete whose completion failed.
+		if repaired != "11111111-1111-1111-1111-111111111111" {
+			t.Fatalf("repeated delete did not repair the trashed library (repaired %q)", repaired)
+		}
 	})
 }
 
