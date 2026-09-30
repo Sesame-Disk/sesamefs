@@ -825,9 +825,13 @@ func (db *DB) ValidateBlockRepairAuthority(orgID, blockID string, expected Block
 // not guaranteed by the time the write returns). "The pin" below means that
 // reference, which must remain live through HEAD. The four cases below are
 // conditional on that continuity premise: a completed TTL-bound write alone
-// does not establish it. This helper neither checks nor renews pin liveness
-// nor couples it to HEAD CAS. Pin expiry before HEAD remains OPEN under W2-0
-// (ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01), including CreateFile W2-6a.
+// does not establish it. Covered writers now acquire a non-expiring publication
+// repair at LOCAL_QUORUM before their final exact-P read. Upgraded destructive
+// readers consult that repair before committing D at EACH_QUORUM and re-read refs after a negative
+// repair scan, covering handoff to permanent fs:. This helper itself does not
+// acquire continuity or couple its read to HEAD; unadapted callers and mixed
+// deployments cannot inherit that guarantee. W2-0 remains OPEN pending full
+// ambiguity/crash and rollout evidence (see W2-0-PUBLICATION-CONTINUITY.md).
 // Under the live-pin premise, four cases cover the GC ordering:
 //
 //  1. GC's zero-proof read (BlockHasReferencesGlobal, EACH_QUORUM) happens
@@ -1520,10 +1524,14 @@ func (db *DB) BlockHasReferences(orgID, blockID string) (bool, error) {
 // The per-DC argument presumes NetworkTopologyStrategy with every replica-holding DC
 // in the keyspace map; under SimpleStrategy EACH_QUORUM does not carry it. The
 // destructive path gates on that separately.
+// This reports REAL references only. Before committing a new D, callers must
+// also use BlockPublicationLivenessGlobal to check pending publication repairs.
+// After COMMITTED, repairs cannot veto that authority; real refs retain their
+// existing contradiction semantics.
 func (db *DB) BlockHasReferencesGlobal(orgID, blockID string) (bool, error) {
 	return scanBlockHasReferences(db.Session().Query(`
-		SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? LIMIT 1
-	`, orgID, blockID).Consistency(gocql.EachQuorum))
+  SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? LIMIT 1
+ `, orgID, blockID).Consistency(gocql.EachQuorum))
 }
 
 // scanBlockHasReferences turns the shared LIMIT 1 probe into a boolean. Absence is

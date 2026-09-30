@@ -1,6 +1,29 @@
 # X1 critical path — reset to the #201 roadmap
 
-**Status:** DECIDED 2026-09-29. Docs-only; no runtime, schema, CQL, guard or
+### PR #239 crossed audit correction (2026-09-30)
+
+Pre-D GC now distinguishes real references, repair-only protection and zero.
+Repair-only releases the exact claim and preserves candidate/discovery/queue,
+postponing without retry. After COMMITTED, only actual references retain the
+existing contradiction policy; a late repair cannot veto D. Both worker
+regressions are included in 17 mandatory continuity legs. G2/G3 retirement and
+durable physical continuation are proved; the future physical executor remains
+outside this PR. W2-0/W2-6a remain OPEN and GC_ENABLED=false.
+See [crossed audit evidence](./W2-0-PUBLICATION-CONTINUITY.md).
+
+## W2-0 follow-up — durable repair gate (2026-09-29)
+
+Covered F1/F2/F3 and Sync-provenanced writers now acquire a non-expiring repair
+before final exact-P. GC reads every organization repair page at EACH_QUORUM
+and repeats the reference probe after a negative scan; acquisition pins LQ.
+Sync preserves its captured placement through queueing. UNKNOWN/unreachable
+rows retain existing R31 behavior, so stranded repairs can inhibit collection.
+W2-0/W2-6a remain OPEN: network ambiguity, OS process-kill and rollout evidence
+are pending. Older GC readers must be upgraded; cold-path cost is up to 32
+organization range reads plus a ref probe, proportional to pending rows.
+See [plan, evidence, individual re-audit and limits](./W2-0-PUBLICATION-CONTINUITY.md).
+
+**Roadmap decision status (historical):** DECIDED 2026-09-29. Docs-only; no runtime, schema, CQL, guard or
 mutation-suite change. **Base:** `main@a5dea859a` (PR #233 merged).
 `GC_ENABLED=false` remains mandatory.
 
@@ -109,14 +132,14 @@ adds a funnel later does not.
 
 | # | Row (R3 source) | Today | Tracking | State |
 |---|---|---|---|---|
-| W2-0 | **Cross-cutting:** continuous own liveness through HEAD, including the 48h `up:` and 35d `pub:` TTLs | Staged `pub:` plus final exact-P rejects GC that won before validation. The four-case proof requires the own reference to remain live through HEAD; the validator does not check reference expiry or couple its read to HEAD CAS. Expiry before validation, or a pause after validation until expiry, permits GC to obtain zero refs and commit D before HEAD | R3 table; `ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01`; R31 | `OPEN` even in callers that adopted exact-P. Adoption alone is not a closure proof; continuity through HEAD remains required |
-| W2-1 | `CreateFileFromBlocks`, exact session `up:` | pre-HEAD proven with the W2-0 mechanism (#204/#205) | — | OPEN only through R31 (W2-11…W2-14) |
-| W2-2 | `CreateFileFromBlocks`, foreign `fs:` reuse / dedup | W1 proven through HEAD with the W2-0 mechanism (#202) | — | OPEN only through R31 (W2-11…W2-14) |
+| W2-0 | **Cross-cutting:** continuous own liveness through HEAD, including the 48h `up:` and 35d `pub:` TTLs | Baseline TTL pins allowed expiry after exact-P and before HEAD. Current covered chains acquire a non-expiring repair before final exact-P; destructive absence observes that repair at EACH_QUORUM, with a final reference re-read covering promotion. A late acquisition must reject the settled deleting claim | R3 table; `ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01`; R31 | `OPEN` — durable repair gate plus final exact-P now protect the covered chains; network ambiguity, process-kill and mixed-deployment evidence remain required. See W2-0 follow-up above |
+| W2-1 | `CreateFileFromBlocks`, exact session `up:` | pre-HEAD proven with the W2-0 mechanism (#204/#205) | — | OPEN through R31 and full W2-0 ambiguity/crash/rollout evidence |
+| W2-2 | `CreateFileFromBlocks`, foreign `fs:` reuse / dedup | W1 proven through HEAD with the W2-0 mechanism (#202) | — | OPEN through R31 and full W2-0 ambiguity/crash/rollout evidence |
 | W2-3 | Sync `PutBlock` → HEAD, and Sync retry from another pod | pre-HEAD proven for the PutBlock-provenanced subset, incl. cross-DC (#206/#210) | `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01` | OPEN |
 | W2-4 | Sync commit whose block had no associated PutBlock | `UNKNOWN` | R3 table | OPEN |
 | W2-5 | `recv-fs-before-put` | `UNKNOWN` | R3 table | OPEN |
 | W2-6 | v2 stored upload (`UploadFile`), materialized and reusable target | Adopts the W2-0 mechanism: passes its materialized placement to the shared finalizer (PR #237). Real-Cassandra evidence `TestW2UploadFileExactPlacementBeforeHead` (GC-committed and fully-retired placement before stage → 409, HEAD unchanged, `pub:` dropped); RED on the previous code | `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` (UploadFile part) | `CLOSED-FIX` pre-HEAD; post-HEAD through W2-11…W2-14 |
-| W2-6a | v2 `CreateFile`, Office-template block publication (empty-file path has no blocks) | Carries the actual materialized SHA-256/class/key to final exact-P after staging `pub:`. Nine real Cassandra/MinIO legs prove rejection when GC wins before validation, with 409, HEAD unchanged and cleanup. They do not prove that the 35d `pub:` remains live until HEAD | `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` (CreateFile part; PC-0 F1); `ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01`; [plan/evidence](./W2-6A-CREATEFILE-EXACT-P.md) | `OPEN` — partial exact-P fix; validator-to-HEAD continuity under pin expiry is unresolved; post-HEAD R31 also OPEN |
+| W2-6a | v2 `CreateFile`, Office-template block publication (empty-file path has no blocks) | Carries the actual materialized SHA-256/class/key to final exact-P after staging `pub:`. Nine real Cassandra/MinIO legs prove rejection when GC wins before validation, with 409, HEAD unchanged and cleanup. The follow-up adds real expiry-after-authority protection through a non-expiring repair gate; full ambiguity/crash/rollout evidence remains pending | `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` (CreateFile part; PC-0 F1); `ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01`; [plan/evidence](./W2-6A-CREATEFILE-EXACT-P.md) | `OPEN` — partial exact-P fix; covered expiry-after-validation is guarded; full ambiguity/crash/rollout and post-HEAD R31 remain OPEN |
 | W2-7 | SeafHTTP normal/streaming finalize | `CONDITIONAL` | R3 table | OPEN |
 | W2-8 | OnlyOffice callback | `CONDITIONAL` | R3 table | OPEN |
 | W2-9 | Cross-repo copy/move | `UNKNOWN`; borrowed source `fs:` with no destination fence | R3 table | OPEN |

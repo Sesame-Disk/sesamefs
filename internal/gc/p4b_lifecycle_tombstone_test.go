@@ -122,7 +122,7 @@ func TestP4B_ProcessBlockCommittedOwnerRechecksRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := formattedGCFunction(t, file, "processBlock")
-	if strings.Count(text, "BlockHasReferencesGlobal") < 2 {
+	if strings.Count(text, "BlockHasReferencesGlobal") != 1 || strings.Count(text, "BlockPublicationLivenessGlobal") != 1 {
 		t.Fatal("CommittedOwner must re-check BlockHasReferencesGlobal as a contradiction detector after locator/store/topology")
 	}
 	if !strings.Contains(text, "committed delete authority observed references after handoff") {

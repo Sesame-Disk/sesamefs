@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	publishedBlockReferenceRepairBuckets       = 32
+	publishedBlockReferenceRepairBuckets       = db.PublishedBlockReferenceRepairBuckets
 	publishedBlockReferenceRepairSweepInterval = time.Minute
 	publishedBlockReferenceRepairStaleAfter    = 30 * time.Second
 	publishedBlockReferenceRepairPreCASLease   = 5 * time.Minute
@@ -140,7 +140,7 @@ var insertPublishedBlockReferenceRepairFn = func(database *db.DB, repair publish
 	if err := database.Session().Query(`
 		INSERT INTO published_block_reference_repairs (bucket, org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, repair.StagedBlockIDs, repair.CreatedAt, repair.LeaseExpiresAt).Exec(); err != nil {
+	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, repair.StagedBlockIDs, repair.CreatedAt, repair.LeaseExpiresAt).Consistency(db.BlockReferenceWriteConsistency).Exec(); err != nil {
 		return err
 	}
 	publishedBlockReferenceRepairNextRetryAt.Delete(publishedBlockReferenceRepairRetryKey(repair))

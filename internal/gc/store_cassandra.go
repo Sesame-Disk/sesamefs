@@ -3445,6 +3445,12 @@ func (s *CassandraStore) BlockHasReferencesGlobal(orgID uuid.UUID, blockID strin
 	return s.db.BlockHasReferencesGlobal(orgID.String(), blockID)
 }
 
+// BlockPublicationLivenessGlobal distinguishes pre-D publication protection from
+// real references. It does not change the post-COMMITTED contradiction primitive.
+func (s *CassandraStore) BlockPublicationLivenessGlobal(orgID uuid.UUID, blockID string) (db.BlockPublicationLiveness, error) {
+	return s.db.BlockPublicationLivenessGlobal(orgID.String(), blockID)
+}
+
 // ReleaseStaleBlockClaim hands back a delete claim left behind by an attempt that
 // died between claiming and releasing. It reads the claim first so the common case —
 // no claim at all — costs one point read and reports "nothing to do" instead of a

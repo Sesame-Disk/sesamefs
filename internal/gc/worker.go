@@ -142,6 +142,17 @@ func (e blockClaimNotYetStaleError) FailureCode() string {
 	return GCFailureCodeBlockClaimNotYetStale
 }
 
+// Pending publication is a veto before D, not evidence of a real reference.
+// Release the exact claim and postpone without consuming candidate or retries.
+type blockPublicationPendingError struct{ ItemID string }
+
+func (e blockPublicationPendingError) Error() string {
+	return fmt.Sprintf("block %s has a pending publication repair; preserve candidate and postpone", e.ItemID)
+}
+func (e blockPublicationPendingError) FailureCode() string {
+	return GCFailureCodeBlockPublicationPending
+}
+
 // blockClaimForeignOwnerError says this attempt reached a post-claim decision point and
 // found its own claim already gone: taken over while it worked, or finalized by whoever
 // took it.
@@ -751,6 +762,7 @@ func shouldPostponeWithoutRetry(err error) bool {
 	case GCFailureCodeLibraryHardDeleteInProgress,
 		GCFailureCodeDestructiveFailClosed,
 		GCFailureCodeBlockClaimNotYetStale,
+		GCFailureCodeBlockPublicationPending,
 		GCFailureCodeBlockClaimReleaseUnconfirmed,
 		// GCFailureCodeBlockAuthorityInvalid was documented as postponing from the day it
 		// was introduced and was never listed here, so it retried into the DLQ instead —
@@ -1727,7 +1739,12 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	// handed back on the way out (see below) so failing closed does not also fence
 	// the block.
 	if !alreadyCommitted {
-		hasRefs, err = w.store.BlockHasReferencesGlobal(item.OrgID, item.ItemID)
+		var liveness db.BlockPublicationLiveness
+		liveness, err = w.store.BlockPublicationLivenessGlobal(item.OrgID, item.ItemID)
+		if err == nil && liveness != db.BlockPublicationZero && liveness != db.BlockPublicationRealReference && liveness != db.BlockPublicationRepairGuardOnly {
+			err = errors.New("unknown pre-handoff publication liveness")
+		}
+		hasRefs = liveness == db.BlockPublicationRealReference
 		if err != nil {
 			// Hand the claim back before giving up. Holding it would leave
 			// gc_state='deleting' behind an error that an unavailable DC makes
@@ -1806,6 +1823,17 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		// all the same, and waiting for a completed delete would leave a fleet of live
 		// blocks reading as permanently blocked.
 		w.recordDestructiveLivenessSuccess(destructivePathBlock)
+		if liveness == db.BlockPublicationRepairGuardOnly {
+			released, relErr := w.releaseBlockClaim(item.OrgID, item.ItemID, attempt)
+			if relErr != nil {
+				return relErr
+			}
+			if released != BlockReleaseReleased {
+				return blockClaimForeignOwnerError{ItemID: item.ItemID}
+			}
+			// No candidate settlement: R may disappear without permanent fs:.
+			return blockPublicationPendingError{ItemID: item.ItemID}
+		}
 		if hasRefs {
 			blockInfo, infoErr := w.store.GetBlockInfo(item.OrgID, item.ItemID)
 			if infoErr != nil {

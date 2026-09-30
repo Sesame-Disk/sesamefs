@@ -1,6 +1,41 @@
 # Current Work - SesameFS
 
-**Active branch - W2-6a CreateFile Office-template exact placement (`fix/w2-6a-createfile-office-exact-p`, base `main@63aa84573`, 2026-09-29):**
+### PR #239 crossed audit correction (2026-09-30)
+
+Pre-D GC now distinguishes real references, repair-only protection and zero.
+Repair-only releases the exact claim and preserves candidate/discovery/queue,
+postponing without retry. After COMMITTED, only actual references retain the
+existing contradiction policy; a late repair cannot veto D. Both worker
+regressions are included in 17 mandatory continuity legs. G2/G3 retirement and
+durable physical continuation are proved; the future physical executor remains
+outside this PR. W2-0/W2-6a remain OPEN and GC_ENABLED=false.
+See [crossed audit evidence](./docs/W2-0-PUBLICATION-CONTINUITY.md).
+
+## Active branch: fix/w2-0-publish-liveness-through-head (base main@50c50903e, 2026-09-29)
+
+The current branch adds a fail-closed GC guard using the existing non-expiring
+`published_block_reference_repairs` rows. Acquisition explicitly writes at
+LOCAL_QUORUM; destructive readers scan all 32 organization bucket prefixes at
+EACH_QUORUM, consume all pages, and repeat the reference probe after a negative
+repair scan. Settled GC claims use the existing EACH_QUORUM/global SERIAL domain.
+F1 Office, F2 UploadFile and F3 validate exact P after repair acquisition; Sync
+now retains its provenanced placements and validates them again after queueing.
+
+W2-0 and W2-6a remain OPEN. The stage-to-repair gap still exists, but the final
+check rejects HEAD if GC won there. After acquisition, the non-TTL repair guards
+against expiry after validation. Mixed deployments with older destructive
+readers do not have this protection. UNKNOWN/unreachable records retain the
+existing R31 conservative behavior and can inhibit collection indefinitely.
+The cold path adds up to 32 organization range reads plus a final ref probe.
+
+This is a useful partial correction. UNKNOWN settlement is tested through the
+existing classifier seam; process death is modeled by an abrupt panic, with
+real durable rows and discovery-worker recovery. Neither is a wire-level HEAD
+ambiguity or an OS process-kill experiment. Full closure still requires those
+experiments and rollout evidence. Historical W2-1/2/6 claims are not upgraded.
+See [plan, evidence and limits](./docs/W2-0-PUBLICATION-CONTINUITY.md).
+
+**Previous branch - W2-6a CreateFile Office-template exact placement (`fix/w2-6a-createfile-office-exact-p`, base `main@63aa84573`, 2026-09-29):**
 Scoped follow-up after merged #237. `CreateFile` carries the actual materialized
 SHA-256/class/key to the existing final exact-P validator after durable `pub:`
 and immediately before HEAD. Real Cassandra/MinIO RED: all six GC races (two

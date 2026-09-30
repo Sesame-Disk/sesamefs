@@ -1538,6 +1538,7 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 			return errors.Join(err, cleanupErr, clearErr)
 		}
 
+		W2PublicationAfterAuthorityBarrier(repoID)
 		if err := fsHelper.UpdateLibraryHeadFromSnapshot(snapshot, repoID, commitID, snapshot.HeadCommitID); err != nil {
 			if errors.Is(err, ErrLibraryHeadConflict) {
 				if cleanupErr := CleanupFailedPublishAttempt(h.db, orgID, repoID, commitID, commitID, pendingFiles); cleanupErr != nil {
@@ -1549,6 +1550,7 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 			}
 			return err
 		}
+		w2PublicationAfterHeadBarrier(repoID)
 		if ownerErr := clearPendingPublishedFileOwnersFn(h.db, repoID, pendingFiles); ownerErr != nil {
 			log.Printf("[CreateFile] WARNING: published repo=%s commit=%s but failed to clear pending fs_object owners: %v", repoID, commitID, ownerErr)
 		}
@@ -3816,6 +3818,7 @@ func (h *FileHandler) finalizeStoredUploadMetadataOnce(fsHelper *FSHelper, orgID
 		clearErr := clearPendingPublishedFileRepairs(h.db, orgID, repoID, newCommitID, pendingFiles)
 		return "", 0, 0, errors.Join(err, cleanupErr, clearErr)
 	}
+	W2PublicationAfterAuthorityBarrier(repoID)
 	if err := fsHelper.UpdateLibraryHeadFromSnapshot(snapshot, repoID, newCommitID, snapshot.HeadCommitID); err != nil {
 		if errors.Is(err, ErrLibraryHeadConflict) {
 			if cleanupErr := CleanupFailedPublishAttempt(h.db, orgID, repoID, newCommitID, newCommitID, pendingFiles); cleanupErr != nil {

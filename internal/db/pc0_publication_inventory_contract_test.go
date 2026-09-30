@@ -147,7 +147,7 @@ var pc0BlockPublicationFunnels = []pc0FunnelSeams{
 	{
 		label:               "sync/handleSyncHeadPromotion",
 		function:            "handleSyncHeadPromotion",
-		characteristicSeams: []string{"ensureSyncCommitBlockPublicationReadiness"},
+		characteristicSeams: []string{"prepareSyncCommitBlockPublicationReadiness"},
 		stage:               []string{"stageSyncCommitBlockDelta"},
 		repair:              []string{"queueSyncCommitBlockReferenceRepairsFn"},
 		head:                "updateLibraryHeadWithStats",
@@ -930,14 +930,15 @@ func TestPC0ObservedRepairReadinessPartialOrder(t *testing.T) {
 
 	syncDirect := pc0FunctionByName(functions, "handleSyncHeadPromotion")
 	syncStage := pc0FirstNamedCallPos(syncDirect, "stageSyncCommitBlockDelta")
-	readinessPos := pc0FirstNamedCallPos(syncDirect, "ensureSyncCommitBlockPublicationReadiness")
+	readinessPos := pc0FirstNamedCallPos(syncDirect, "prepareSyncCommitBlockPublicationReadiness")
 	syncRepairPos := pc0FirstNamedCallPos(syncDirect, "queueSyncCommitBlockReferenceRepairsFn")
+	syncFinal := pc0FirstNamedCallPos(syncDirect, "validateSyncCommitBlockPublicationFences")
 	syncHeadPos := pc0FirstNamedCallPos(syncDirect, "updateLibraryHeadWithStats")
 	if syncStage == token.NoPos || readinessPos == token.NoPos || syncRepairPos == token.NoPos || syncHeadPos == token.NoPos {
 		t.Fatal("PC0 ORDER: handleSyncHeadPromotion lost stage, readiness, repair, or HEAD")
 	}
-	if !(syncStage < readinessPos && readinessPos < syncRepairPos && syncRepairPos < syncHeadPos) {
-		t.Fatalf("PC0 ORDER: Sync direct HEAD observed order is stage then readiness then repair then HEAD")
+	if !(syncStage < readinessPos && readinessPos < syncRepairPos && syncRepairPos < syncFinal && syncFinal < syncHeadPos) {
+		t.Fatalf("PC0 ORDER: Sync direct HEAD must follow stage, readiness, repair, final exact-P, HEAD")
 	}
 
 	autoMerge := pc0FunctionByName(functions, "tryAutoMergeSyncHeadPromotion")
@@ -952,10 +953,11 @@ func TestPC0ObservedRepairReadinessPartialOrder(t *testing.T) {
 	}
 
 	autoMergeHelper := pc0FunctionByName(functions, "ensureAndQueueAutoMergeSyncPublication")
-	autoReady := pc0FirstNamedCallPos(autoMergeHelper, "ensureSyncCommitBlockPublicationReadiness")
+	autoReady := pc0FirstNamedCallPos(autoMergeHelper, "prepareSyncCommitBlockPublicationReadiness")
+	autoFinal := pc0FirstNamedCallPos(autoMergeHelper, "validateSyncCommitBlockPublicationFences")
 	autoRepair := pc0FirstNamedCallPos(autoMergeHelper, "queueSyncCommitBlockReferenceRepairsFn")
-	if autoReady == token.NoPos || autoRepair == token.NoPos || !(autoReady < autoRepair) {
-		t.Fatalf("PC0 ORDER: auto-merge helper must keep readiness before repair queue")
+	if autoReady == token.NoPos || autoRepair == token.NoPos || !(autoReady < autoRepair && autoRepair < autoFinal) {
+		t.Fatalf("PC0 ORDER: auto-merge helper must keep readiness before repair queue and final exact-P after it")
 	}
 }
 

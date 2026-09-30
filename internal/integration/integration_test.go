@@ -47,7 +47,8 @@ func TestMain(m *testing.M) {
 	// comment could not: R26 was added to docker-compose and missed here, and the
 	// omission was invisible in the standard run only because P4A happens to be set
 	// alongside it.
-	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_W2_CREATEFILE_EXACT_P_EVIDENCE") == "1" ||
+	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_W2_PUBLICATION_CONTINUITY_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_W2_CREATEFILE_EXACT_P_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P2_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P3_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P4A_EVIDENCE") == "1" ||
@@ -121,6 +122,12 @@ func TestMain(m *testing.M) {
 	}()
 
 	code := m.Run()
+	if os.Getenv(w2PublicationContinuityEnv) == "1" {
+		if missing := w2PublicationContinuityMissing(w2PublicationContinuityObserved); len(missing) > 0 {
+			fmt.Printf("%s=1 requires all named W2-0 legs; missing=%s (check -run filters)\n", w2PublicationContinuityEnv, strings.Join(missing, ","))
+			code = 1
+		}
+	}
 	if os.Getenv(w2CreateFileExactPEnv) == "1" {
 		if missing := w2CreateFileExactPMissing(w2CreateFileExactPEvidence); len(missing) > 0 {
 			fmt.Printf("%s=1 requires all named W2-6a legs; missing=%s (check -run filters)\n", w2CreateFileExactPEnv, strings.Join(missing, ","))
@@ -249,10 +256,22 @@ func TestMain(m *testing.M) {
 }
 
 func verifyNoOrphanAdminLibraryProjectionsWithRetry(timeout, interval time.Duration) error {
+	return settleAdminProjectionCleanup(timeout, interval, verifyNoOrphanAdminLibraryProjections, cleanupOrphanAdminLibraryProjectionsWithoutTesting)
+}
+
+// A GC pass can retire a canonical library after the cleanup snapshot. Retry
+// the existing orphan-only cleanup, then require the same zero-orphan verifier.
+// Persistent corruption or cleanup/read errors still fail the entire profile.
+func settleAdminProjectionCleanup(timeout, interval time.Duration, verify func() error, cleanup func() (int, error)) error {
 	deadline := time.Now().Add(timeout)
-	var lastErr error
 	for {
-		lastErr = verifyNoOrphanAdminLibraryProjections()
+		if err := verify(); err == nil {
+			return nil
+		}
+		if _, err := cleanup(); err != nil {
+			return fmt.Errorf("settle admin projection cleanup: %w", err)
+		}
+		lastErr := verify()
 		if lastErr == nil {
 			return nil
 		}
