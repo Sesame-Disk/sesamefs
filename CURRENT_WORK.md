@@ -10,7 +10,11 @@ the caller returned without releasing and a later Paxos round could still
 commit the proposal, stranding the lease until stale takeover (~90 min). Each
 acquire entry point now settles that outcome by releasing its own token and
 still returns the error. The lease token, TTL, stale takeover, renewal and
-release semantics are otherwise unchanged; no caller flow changed.
+release semantics are otherwise unchanged; no caller flow changed. Residual:
+renew/release can also see an unknown outcome under contention; renew fails
+closed (the operation aborts and the deferred release drops the lease) and an
+unknown release is only logged. A bounded retry is a liveness follow-up
+documented in the known issue.
 
 Evidence (all in Docker): `go test ./... -count=1`, `go vet ./...` and
 `go test -race -short ./...` pass; six directed mutations are RED for their own

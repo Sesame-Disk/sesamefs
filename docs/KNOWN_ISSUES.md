@@ -6639,6 +6639,22 @@ Cost: global SERIAL adds cross-DC round trips to acquire/renew/release, and a
 DC that cannot reach a Paxos quorum of all replicas cannot restore or
 permanently delete a library.
 
+**Residual (accepted, not fixed here): renew/release with an unknown outcome.**
+The same contention can return `CAS_WRITE_UNKNOWN` or a CAS write timeout for
+`renewHardDeleteLock` and `releaseHardDeleteLock`; the 3-DC fixture reproduced it
+on a renew right after a contended acquire. Only acquire is settled. A renew
+error fails closed on every path: the GC cascade heartbeat
+(`newHardDeleteLease`) records the error and the cascade aborts, and the restore
+(`restoreDeletedLibrary`) and permanent-delete (`permanentlyDeleteTrashedLibraryCandidate`,
+including its link-cleanup heartbeat) fences return an error before their final
+batch. Their deferred release then drops the lease by token, so it is not
+stranded; the cost is an aborted operation that the user or the next GC cycle
+retries. A release with an unknown outcome is only logged; if the delete did not
+commit, the lease waits for stale takeover (~90 min) or its TTL. Both
+operations are idempotent under the caller's own token, so a bounded retry on
+an unknown outcome would be safe; that is a liveness follow-up, not a safety
+issue, and does not block this closure.
+
 Evidence: `internal/gc/store_cassandra_serial_domain_test.go` checks that every
 `session.Query` in the three helpers is pinned to `gocql.Serial`, that all three
 acquire entry points settle an unknown outcome, the ambiguity classifier, and

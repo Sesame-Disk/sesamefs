@@ -977,6 +977,11 @@ project with ephemeral host ports, configures all three client sessions with
 `LOCAL_SERIAL`, and races library lease acquisition from dc-na and dc-eu. A
 contender whose acquire has an unknown CAS outcome must not keep the lease; such
 rounds are re-raced (at most five), and two owners in any round fails.
+Operations under the owner's own token (renew, release, next-owner and
+stale-takeover acquire) are retried on an unknown CAS outcome because they are
+idempotent; a non-owner renew or release may return an unknown outcome and the
+authoritative read decides. The runtime does not retry renew/release (see the
+residual in the known issue).
 `EACH_QUORUM` reads verify the sole owner, cross-DC renewal and conditional
 release, acquisition by the next owner, and stale takeover. The
 required-evidence gate is
