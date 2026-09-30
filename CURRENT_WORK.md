@@ -1,6 +1,6 @@
 # Current Work - SesameFS
 
-**Active branch — PR #240, `fix/gc-hard-delete-lease-nonfencing` (rebased onto `main@302d3418e`, 2026-09-30; originally based on `main@76d68c928`):**
+**Active branch — PR #240, `fix/gc-hard-delete-lease-nonfencing` (rebased onto `main@1a8f1e77c`, 2026-09-30; originally based on `main@76d68c928`):**
 Closes `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` only. PR #234 gave the library
 hard-delete lease one global SERIAL owner at a time; this closes the remaining
 stale-owner window. Every canonical lifecycle transition — soft delete, restore,
@@ -22,8 +22,6 @@ Registered follow-up: `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`
 029), user restore serialization
 (`ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`, still open PRE-GC), GC
 activation. `GC_ENABLED=false` remains mandatory.
-
-**Merged PR #241 — `codex/w2-0-wire-crash-rollout`:**
 
 ## Merged PR #242: docs/x1-greenfield-w2-reset
 
