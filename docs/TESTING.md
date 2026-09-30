@@ -971,16 +971,20 @@ CAS writers).
 
 `scripts/library-hard-delete-lease-serial-domain-multidc-validation.sh`
 is the 3-DC evidence for `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`, closed
-in PR #234. It starts the isolated
-three-DC Cassandra fixture and a Docker Go runner, configures all three client
-sessions with `LOCAL_SERIAL`, and races library lease acquisition from dc-na
-and dc-eu. `EACH_QUORUM` reads verify the sole owner, cross-DC renewal and
-conditional release, acquisition by the next owner, and stale takeover. The
+in PR #234. It attaches only to this checkout's running compose backend (or
+starts it), starts a three-DC Cassandra fixture named after the same compose
+project with ephemeral host ports, configures all three client sessions with
+`LOCAL_SERIAL`, and races library lease acquisition from dc-na and dc-eu. A
+contender whose acquire has an unknown CAS outcome must not keep the lease; such
+rounds are re-raced (at most five), and two owners in any round fails.
+`EACH_QUORUM` reads verify the sole owner, cross-DC renewal and conditional
+release, acquisition by the next owner, and stale takeover. The
 required-evidence gate is
 `SESAMEFS_REQUIRE_LIBRARY_HARD_DELETE_LEASE_SERIAL_DOMAIN_EVIDENCE=1`.
 `scripts/library-hard-delete-lease-serial-domain-mutation-validation.sh`
-removes the explicit global `SERIAL` setting and checks that the focused Go
-contract test goes RED for the lease-domain reason.
+applies six directed mutations to the source copied into its Docker image
+(the host tree is untouched) and checks that the focused Go contract tests go
+RED for each mutation's own reason.
 
 ### PC-D1 inherited-continuity evidence
 

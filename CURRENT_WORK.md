@@ -1,18 +1,22 @@
 # Current Work - SesameFS
 
 **Active branch — PR #234, `fix/library-hard-delete-lease-global-serial` (rebased onto `main@cd591709c`, 2026-09-30; originally 2026-09-26):**
-The library hard-delete lease now pins global `SERIAL` for acquire (including
-stale takeover), renew, and conditional release, independent of a session
-default of `LOCAL_SERIAL`. The existing lease token, TTL, stale takeover,
-renewal, release, and error behavior are preserved. User/org lease domains and
-all runtime caller flows are unchanged.
+Every hard-delete lease LWT (library, user and org) now pins global `SERIAL`
+for acquire (including stale takeover), renew, and conditional release,
+independent of a session default of `LOCAL_SERIAL`. The post-rebase audit found
+that global SERIAL contention between DCs can return `CAS_WRITE_UNKNOWN` or a
+CAS write timeout for an acquire (6/41 concurrent races on the 3-DC fixture);
+the caller returned without releasing and a later Paxos round could still
+commit the proposal, stranding the lease until stale takeover (~90 min). Each
+acquire entry point now settles that outcome by releasing its own token and
+still returns the error. The lease token, TTL, stale takeover, renewal and
+release semantics are otherwise unchanged; no caller flow changed.
 
-The Docker `go test ./... -count=1`, `go vet ./...`, and
-`go test -race -short ./...` suites pass. The directed pin-removal mutation is
-RED for the library lease SERIAL-domain contract. The isolated Cassandra 3-DC
-harness passed with client sessions configured as `LOCAL_SERIAL`: concurrent
-dc-na/dc-eu contenders had one owner by `EACH_QUORUM`, cross-DC renew/release
-and next-owner acquisition worked, and stale takeover remained available.
+Evidence (all in Docker): `go test ./... -count=1`, `go vet ./...` and
+`go test -race -short ./...` pass; six directed mutations are RED for their own
+reason; the isolated 3-DC harness passes with `LOCAL_SERIAL` sessions.
+Final run (2026-09-30): 60/60 pinned 3-DC races plus the gated run, official harness 3/3 on fresh fixtures; downgrading the pin to `LOCAL_SERIAL` gives two owners in 19/20 runs. The harnesses now scope their backend, fixture and runner
+names to this checkout's compose project and never modify the host tree.
 `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` is closed. The separate P1
 non-fencing finding remains a FOLLOW-UP; this change does not make a broader GC
 readiness claim. Per [docs/X1-CRITICAL-PATH.md](docs/X1-CRITICAL-PATH.md) §7 this

@@ -6610,29 +6610,50 @@ policy), with a characterization. Not part of PC-D1B.5.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01: The library hard-delete lease inherits `serial_consistency`
 
-**Status**: ✅ Closed in PR #234 on 2026-09-26 — library lease LWTs now use explicit global `SERIAL` (classified CURRENT-RUNTIME / CONFIG-DEPENDENT and PRE-GC by the 2026-09-29 X1 reset; both classifications are discharged)
+**Status**: ✅ Closed in PR #234 on 2026-09-29 — every hard-delete lease LWT (library, user and org) now uses explicit global `SERIAL`, and an acquire with an unknown CAS outcome releases its own token (classified CURRENT-RUNTIME / CONFIG-DEPENDENT and PRE-GC by the 2026-09-29 X1 reset; both classifications are discharged)
 **Severity**: Medium — multi-DC lifecycle serialization
-**Affected**: `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock` (`internal/gc/store_cassandra.go`), used by restore, API permanent delete and GC library cascade
+**Affected**: `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock` (`internal/gc/store_cassandra.go`), used by restore, API permanent delete and the GC library/user/org cascades
 **Registered**: 2026-09-23, PC-D1B.4
 
-The three library lease operations now apply `SerialConsistency(gocql.Serial)`
-to their LWT queries: acquire (including stale takeover), renew, and conditional
-release. This is independent of the configured session default
-`database.serial_consistency` / `CASSANDRA_SERIAL_CONSISTENCY`. User and org
-hard-delete leases continue to inherit the session default.
+All four lease LWTs apply `SerialConsistency(gocql.Serial)`: acquire (insert
+and stale takeover), renew, and conditional release. This is independent of
+the configured session default `database.serial_consistency` /
+`CASSANDRA_SERIAL_CONSISTENCY`. The user and org leases share the same helpers
+and are pinned as well; they are only reached by the GC worker, so that part
+was PRE-GC only.
 
-Evidence: `internal/gc/store_cassandra_serial_domain_test.go` pins the three
-current library operations to global SERIAL, and
-`scripts/library-hard-delete-lease-serial-domain-mutation-validation.sh`
-removes the explicit pin and goes RED with the lease-domain contract reason.
-The isolated Cassandra 3-DC harness
-(`scripts/library-hard-delete-lease-serial-domain-multidc-validation.sh`) ran
+**Unknown CAS outcome.** With one global Paxos domain, two DCs racing for the
+same lease can receive `CAS_WRITE_UNKNOWN` ("proposal accepted by 1 but not a
+quorum") or a CAS write timeout. The isolated 3-DC fixture reproduced it in
+6 of 41 concurrent races before the settle step existed. Such a proposal can
+still be committed by a later Paxos round; the caller had already returned an
+error without releasing, so the lease stayed owned by a token nobody renews
+and every restore/permanent delete of that library waited for stale takeover
+(about 90 minutes). `settleHardDeleteLockAcquire` now classifies the error
+(`isAmbiguousHardDeleteLockCASError`, mirroring
+`isAmbiguousLibraryHeadUpdateError`) and runs the conditional release for the
+same token. That global SERIAL round completes or supersedes the in-flight
+proposal and deletes the row only if it carries this token. The acquire still
+returns the original error, so no caller proceeds without a known lease.
+Cost: global SERIAL adds cross-DC round trips to acquire/renew/release, and a
+DC that cannot reach a Paxos quorum of all replicas cannot restore or
+permanently delete a library.
+
+Evidence: `internal/gc/store_cassandra_serial_domain_test.go` checks that every
+`session.Query` in the three helpers is pinned to `gocql.Serial`, that all three
+acquire entry points settle an unknown outcome, the ambiguity classifier, and
+the settle behavior. `scripts/library-hard-delete-lease-serial-domain-mutation-validation.sh`
+runs six directed mutations inside the Docker image (pin removed from renew,
+release downgraded to `LOCAL_SERIAL`, stale-takeover pin removed, library acquire
+not settled, settle skipping the release, `CAS_WRITE_UNKNOWN` classified as
+definite); each goes RED for its own reason. The isolated Cassandra 3-DC harness
+(`scripts/library-hard-delete-lease-serial-domain-multidc-validation.sh`) runs
 with client sessions configured as `LOCAL_SERIAL`: concurrent contenders from
-dc-na and dc-eu had one owner, confirmed by `EACH_QUORUM`; correct and wrong
-tokens behaved correctly for renewal/release, dc-eu acquired after release,
-and stale takeover still succeeded.
-
-> The library hard-delete lease fixes global SERIAL for acquire, renew and release, independent of a session default of LOCAL_SERIAL.
+dc-na and dc-eu never had two owners (`EACH_QUORUM`), an ambiguous contender
+never kept the lease, correct and wrong tokens behaved correctly for
+renewal/release, dc-eu acquired after release, and stale takeover still
+succeeded. With the pin downgraded to `LOCAL_SERIAL` the same race reports two
+owners in most runs. Final Docker run on 2026-09-30: 60/60 pinned races plus the gated run passed, the official harness passed 3/3 on fresh fixtures, and the `LOCAL_SERIAL` downgrade reported two owners in 19/20 and 20/20 runs.
 
 This closes only the lease's SERIAL-domain issue. It does not close the
 separately tracked stale-owner non-fencing issue or establish GC activation

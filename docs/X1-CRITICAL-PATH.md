@@ -233,6 +233,6 @@ Both issues are worked in parallel with W2: first the global SERIAL pin of the l
 final batch (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`). The SERIAL pin alone
 does not close the non-fencing race.
 
-Status: the global SERIAL pin landed in PR #234
-(`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` closed); the generation-fenced
+Status: the global SERIAL pin landed in PR #234 for the library, user and org
+leases (`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` closed); the generation-fenced
 final batch (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`) remains open.

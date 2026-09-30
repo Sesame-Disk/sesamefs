@@ -7,13 +7,24 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-THREE_DC=(docker compose -p sesamefs-cassandra-3dc -f docker-compose.cassandra-3dc.yaml)
 # Do not force -p sesamefs: this workspace's .env sets COMPOSE_PROJECT_NAME
 # (and WSL host ports). Forcing the default project name recreates that
 # stack onto ports already owned by the running project.
 DEFAULT_COMPOSE=(docker compose -f docker-compose.yaml)
-RUNNER=sesamefs-library-hard-delete-lease-serial-domain-3dc-runner
-IMAGE=sesamefs-library-hard-delete-lease-serial-domain-3dc
+# Everything this harness creates or attaches to is scoped to this checkout's
+# compose project, so two checkouts (e.g. separate stacks on one Docker host)
+# never share or tear down each other's backend or 3-DC fixture.
+COMPOSE_PROJECT="$("${DEFAULT_COMPOSE[@]}" config 2>/dev/null | sed -n 's/^name: //p' | head -1)"
+[ -n "$COMPOSE_PROJECT" ] || { echo "could not resolve this checkout's compose project" >&2; exit 1; }
+export CASSANDRA_3DC_CONTAINER_PREFIX="${CASSANDRA_3DC_CONTAINER_PREFIX:-$COMPOSE_PROJECT-cassandra}"
+# The runner reaches the nodes over the fixture network; host ports are unused,
+# so bind them ephemerally unless the caller pins them.
+export CASSANDRA_NA_HOST_PORT="${CASSANDRA_NA_HOST_PORT:-127.0.0.1:0}"
+export CASSANDRA_EU_HOST_PORT="${CASSANDRA_EU_HOST_PORT:-127.0.0.1:0}"
+export CASSANDRA_ASIA_HOST_PORT="${CASSANDRA_ASIA_HOST_PORT:-127.0.0.1:0}"
+THREE_DC=(docker compose -p "${CASSANDRA_3DC_PROJECT:-$COMPOSE_PROJECT-cassandra-3dc}" -f docker-compose.cassandra-3dc.yaml)
+RUNNER="$COMPOSE_PROJECT-library-hard-delete-lease-serial-domain-3dc-runner"
+IMAGE="$COMPOSE_PROJECT-library-hard-delete-lease-serial-domain-3dc"
 NETWORK=
 BACKEND_NETWORK=
 KEEP=0
@@ -50,17 +61,17 @@ trap 'exit 143' TERM
 wait_healthy() {
 	local node="$1" status
 	for _ in $(seq 1 120); do
-		status="$(docker inspect -f '{{.State.Health.Status}}' "sesamefs-cassandra-$node" 2>/dev/null || true)"
+		status="$(docker inspect -f '{{.State.Health.Status}}' "$CASSANDRA_3DC_CONTAINER_PREFIX-$node" 2>/dev/null || true)"
 		[ "$status" = "healthy" ] && return 0
 		sleep 5
 	done
-	fail "sesamefs-cassandra-$node did not become healthy"
+	fail "$CASSANDRA_3DC_CONTAINER_PREFIX-$node did not become healthy"
 }
 
 wait_gossip_stable() {
 	local node="$1" status
 	for _ in $(seq 1 60); do
-		status="$(docker exec "sesamefs-cassandra-$node" nodetool status 2>/dev/null | grep -c '^UN ' || true)"
+		status="$(docker exec "$CASSANDRA_3DC_CONTAINER_PREFIX-$node" nodetool status 2>/dev/null | grep -c '^UN ' || true)"
 		[ "$status" = "3" ] && return 0
 		sleep 2
 	done
@@ -70,7 +81,7 @@ wait_gossip_stable() {
 wait_each_quorum_ready() {
 	local node="$1"
 	for _ in $(seq 1 30); do
-		if docker exec "sesamefs-cassandra-$node" cqlsh -e "CONSISTENCY EACH_QUORUM; SELECT * FROM sesamefs.libraries LIMIT 1;" >/dev/null 2>&1; then
+		if docker exec "$CASSANDRA_3DC_CONTAINER_PREFIX-$node" cqlsh -e "CONSISTENCY EACH_QUORUM; SELECT * FROM sesamefs.libraries LIMIT 1;" >/dev/null 2>&1; then
 			return 0
 		fi
 		sleep 2
@@ -81,10 +92,10 @@ wait_each_quorum_ready() {
 wait_bootstrap() {
 	local status
 	for _ in $(seq 1 120); do
-		status="$(docker inspect -f '{{.State.Status}}:{{.State.ExitCode}}' sesamefs-cassandra-3dc-bootstrap 2>/dev/null || true)"
+		status="$(docker inspect -f '{{.State.Status}}:{{.State.ExitCode}}' "$CASSANDRA_3DC_CONTAINER_PREFIX-3dc-bootstrap" 2>/dev/null || true)"
 		[ "$status" = "exited:0" ] && return 0
 		case "$status" in
-			exited:*) docker logs sesamefs-cassandra-3dc-bootstrap | tail -40; fail "3-DC schema bootstrap failed: $status" ;;
+			exited:*) docker logs "$CASSANDRA_3DC_CONTAINER_PREFIX-3dc-bootstrap" | tail -40; fail "3-DC schema bootstrap failed: $status" ;;
 		esac
 		sleep 5
 	done
@@ -115,14 +126,10 @@ require_pass() {
 }
 
 pick_running_backend() {
-	local name status
-	for name in sesamefs-dev-wsl-sesamefs-1 sesamefs-sesamefs-1; do
-		status="$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || true)"
-		[ "$status" = "running" ] || continue
-		printf '%s\n' "$name"
-		return 0
-	done
-	return 1
+	local id
+	id="$("${DEFAULT_COMPOSE[@]}" ps -q --status running sesamefs 2>/dev/null | head -1)"
+	[ -n "$id" ] || return 1
+	printf '%s\n' "$id"
 }
 
 step "Attach to a running SesameFS backend; start the real three-DC Cassandra fixture"
