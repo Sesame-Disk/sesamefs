@@ -1,6 +1,32 @@
 # Current Work - SesameFS
 
-## Active branch: docs/x1-greenfield-w2-reset
+**Active branch — `fix/gc-hard-delete-lease-nonfencing` (base `main@76d68c928`, 2026-09-30):**
+Closes `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` only. PR #234 gave the library
+hard-delete lease one global SERIAL owner at a time; this closes the remaining
+stale-owner window: an owner that renewed, paused past the stale threshold and
+lost the lease could still run its unconditional final batch. Reproduced RED on
+`main` with real Cassandra and the production helpers (stale permanent delete
+removed a restored library; stale restore resurrected a permanently deleted
+library or restored a newer trash generation). Fix, with no schema change: the
+final canonical mutation is itself conditioned on the `deleted_at` generation
+the owner verified — `DELETE FROM libraries ... IF deleted_at = ?` for the API
+permanent delete and the GC library cascade, and for restore a conditional
+removal of that generation's soft-delete marker followed by
+`UPDATE libraries SET deleted_at = null ... IF deleted_at = ?` — all global
+SERIAL (the `libraries` LWTs use the existing `LibraryHeadSerialConsistency`
+domain). Completion writes (lookup, read model, purge marker, reconciliation)
+run only after the canonical transition applied; their loss of atomicity with
+it and the unfenced post-restore projection writes are recorded residuals, not
+lifecycle defects. Evidence: RED→GREEN integration legs T1–T7, directed
+mutations RED, and a directed 3-DC leg with `LOCAL_SERIAL` sessions; details in
+[docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md#issue-gc-hard-delete-lease-nonfencing-01).
+Not in scope: W2, PC-D1B.5, user restore serialization
+(`ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`, still open PRE-GC), GC
+activation. `GC_ENABLED=false` remains mandatory.
+
+**Merged PR #241 — `codex/w2-0-wire-crash-rollout`:**
+
+## Merged PR #242: docs/x1-greenfield-w2-reset
 
 Docs-only reconciliation after merged #241, based initially on
 main@302d3418e6596774d48eb7ac98b6be170803ab83.
@@ -23,7 +49,7 @@ The dated merged-PR entries below are historical snapshots. Their old W2-0
 OPEN statements are superseded by the current [X1 source of record](./docs/X1-CRITICAL-PATH.md);
 they preserve the evidence and limits recorded at the time.
 
-**Merged PR #234, `fix/library-hard-delete-lease-global-serial` (rebased onto `main@cd591709c`, 2026-09-30; originally 2026-09-26):**
+**Merged PR #234 — `fix/library-hard-delete-lease-global-serial` (merged into `main@76d68c928`, 2026-09-30; originally 2026-09-26):**
 Every hard-delete lease LWT (library, user and org) now pins global `SERIAL`
 for acquire (including stale takeover), renew, and conditional release,
 independent of a session default of `LOCAL_SERIAL`. The post-rebase audit found

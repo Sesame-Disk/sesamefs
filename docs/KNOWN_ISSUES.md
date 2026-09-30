@@ -6750,39 +6750,132 @@ readiness.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01: A stale lease owner can resume its final lifecycle batch
 
-**Status**: 🔴 Open — CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC. Found in the PR #232 final cross-audit (2026-09-24); not part of the PC-D1B.4 decision
+**Status**: ✅ Closed on 2026-09-30 (branch `fix/gc-hard-delete-lease-nonfencing`) — the final lifecycle mutation of restore, API permanent delete and the GC library cascade is a global-SERIAL LWT conditioned on the `deleted_at` generation the owner verified, so an owner that lost the lease cannot change the canonical lifecycle state another owner committed. Found in the PR #232 final cross-audit (2026-09-24)
 **Severity**: High (P1)
-**Scope**: CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC
+**Scope**: CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC (both discharged for the library lease; the user lease is the separate, open `ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`)
 **Introduced by #232**: No
 **Blocks #232**: No — this does not create a valid HEAD/witness
-**Affected**: `DELETE /api/v2.1/repos/deleted/:repo_id[/]` (`PermanentDeleteRepo`), `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock`, `hardDeleteLibraryRowsFn`, `restoreDeletedLibrary` and their final lifecycle batches
+**Affected**: `DELETE /api/v2.1/repos/deleted/:repo_id[/]` (`PermanentDeleteRepo`), the org-admin single and bulk trash deletes and the admin bulk clean (all through `permanentlyDeleteTrashedLibraryCandidate` → `hardDeleteLibraryRowsFn`), `restoreDeletedLibrary` (user and org-admin restore), and the GC library/org cascades (`cascadeDeleteLibrary` → `CassandraStore.HardDeleteLibrary`)
 **Registered**: 2026-09-24, PR #232 final cross-audit
 
-The current authenticated API route is registered independently of GC worker
-configuration. `PermanentDeleteRepo` calls
-`permanentlyDeleteTrashedLibraryCandidate()`, which synchronously reaches
-`hardDeleteLibraryRowsFn()` to delete the canonical library rows. Thus
-`GC_ENABLED=false` does **not** protect this permanent-delete/restore lifecycle
-from the stale-owner race; asynchronous file-data reclamation is separate.
+**Problem (reproduced on `main@76d68c928`).** The lease renewal before the final
+batch was the only fence, and a renewal is not a fence: an owner can renew,
+pause past the stale threshold, lose the lease, resume and run its unconditional
+batch. With real Cassandra and the production helpers (old owner paused right
+after its last renewal, lease aged past the threshold, new owner takes over and
+finishes, old owner resumed), `main` was RED on every stale leg: a resumed
+permanent delete removed a library the new owner had restored (and one that had
+been restored and trashed again under a newer `deleted_at`), and a resumed
+restore resurrected a permanently deleted library (partial `libraries` row) or
+cleared a newer trash generation. `GC_ENABLED=false` did not protect the API
+paths.
 
-The renewable lease detects and permits takeover after a stale heartbeat, but
-the final restore/permanent-delete batch is not fenced by the generation that
-currently owns the lease. A holder can renew, pause past the stale interval,
-lose ownership to a competing restore/delete, then resume and apply its old
-unconditional batch. For example: permanent delete pauses; restore takes over
-and restores the library; the old delete resumes and removes the restored row.
-The inverse stale-restore schedule can recreate partial canonical cells after
-hard delete.
+| Actor | Acquire | Canonical recheck | Renew | Final lifecycle mutation (before) | Old owner could resume after takeover? |
+|---|---|---|---|---|---|
+| `restoreDeletedLibrary` (user + org-admin restore) — CURRENT-RUNTIME | library lease | `deleted_at` read under the lease | once, before the batch | unconditional batch: `UPDATE libraries SET updated_at`, `DELETE deleted_at, deleted_by`, `DELETE deleted_libraries`, read model, reconciliation | yes (resurrects / restores a newer generation) |
+| `permanentlyDeleteTrashedLibraryCandidate` → `hardDeleteLibraryRowsFn` (`PermanentDeleteRepo`, org-admin single + bulk, admin bulk) — CURRENT-RUNTIME | library lease | `deleted_at == candidate` under the lease | heartbeat during link cleanup + once before the batch | unconditional batch: `DELETE libraries`, `libraries_by_id`, read model, purge marker | yes (deletes a restored or re-trashed library) |
+| GC `processLibraryCascade` / org cascade → `cascadeDeleteLibrary` → `HardDeleteLibrary` — GC-only | library lease | marker `deleted_at == identity` under the lease | heartbeat + fence before the batch | unconditional batch: `DELETE libraries`, `libraries_by_id`, policies, read model, marker | yes |
 
-This is distinct from `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`: using global
-SERIAL for the lease LWTs orders acquisition but does not fence a previously
-authorized holder's later batch. Treat this as a current-runtime lifecycle/API
-follow-up, and close it before destructive GC activation as well. Introduce a
-generation/token carried to the final mutation and require that mutation to
-prove current ownership, or another equivalent fencing protocol. Characterize
-both stale-delete-after-restore and stale-restore-after-delete with the old
-owner paused after renewal and resumed only after takeover. Keep it out of
-PC-D1B.4; `GC_ENABLED=false` is not protection from this API path.
+**Fix: generation-fenced final mutation, no schema change.** The lifecycle
+identity that already exists — the `deleted_at` captured under the lease, equal
+on the canonical row and the `deleted_libraries` marker because every writer
+stamps both in one batch — is the fence. The final mutation itself carries the
+predicate, so it is evaluated by Paxos when the mutation commits, however long
+the owner paused (no read-then-write, no reliance on the renewal):
+
+- Permanent delete / GC cascade: `DELETE FROM libraries ... IF deleted_at = ?`
+  (`db.DeleteTrashedLibraryGeneration`). A restore sets `deleted_at = null` and a
+  new soft delete writes a new value, so a stale delete cannot apply. The API
+  maps "not applied" to the existing `errPermanentDeleteCandidateStale` (409);
+  the GC library cascade completes the item as stale; the org cascade fails and
+  retries (the org is not hard-deleted over a restored library).
+- Restore: first `DELETE FROM deleted_libraries ... IF deleted_at = ? AND
+  purge_requested_at = null` (`db.ClearSoftDeleteMarkerGeneration`: only the
+  soft-delete marker of that generation, never a permanent-delete marker), then
+  `UPDATE libraries SET updated_at = ?, deleted_at = null, deleted_by = null
+  ... IF deleted_at = ?` (`db.RestoreTrashedLibraryGeneration`). A conditional
+  update never creates a row, so a stale restore can neither resurrect a deleted
+  library nor restore a newer generation. Marker first: a crash in between
+  leaves a library that is still trashed and restorable (only the retention
+  signal is missing until the next delete writes a marker), whereas the reverse
+  order would leave an active library with a live purge marker. Restore
+  conflicts keep the existing API mapping (500), as before this change.
+- The remaining writes (lookup, admin read model, purge marker, policies,
+  reconciliation) run only after the canonical transition applied. For a delete
+  they are terminal and idempotent (no newer generation can exist after a hard
+  delete); the permanent-delete completion batch is written at global `QUORUM`
+  so a stale restore's SERIAL marker check in another DC observes the purge
+  marker (the fenced delete already needs a global quorum).
+- Paxos domain: the `libraries` transitions pin `LibraryHeadSerialConsistency`
+  (the partition's existing global SERIAL domain; the row delete is inventoried
+  as a HEAD-authority guard) and the marker LWT pins
+  `DeletedLibraryMarkerSerialConsistency`; both are global SERIAL, never the
+  session default. The lease partition and the library partitions are distinct;
+  nothing claims atomicity between them — safety comes from the canonical
+  mutation invalidating itself when the generation changes.
+- An ambiguous LWT outcome is settled by a SERIAL read: a delete whose row is
+  gone, or a restore whose row is active, continues with its completion writes;
+  a row still at the precondition fails closed (`ErrLibraryLifecycleOutcomeUnknown`).
+
+Semantics: the property is "no stale owner can change a lifecycle generation
+that another owner already transitioned". An old owner that resumes before the
+new owner commits can still win (the generation is unchanged); the new owner's
+own fenced mutation is then rejected with the normal conflict. Every generation
+has exactly one lifecycle transition.
+
+**Evidence** (Docker, real Cassandra, production helpers):
+`internal/api/v2/library_hard_delete_nonfencing_integration_test.go` — T1 normal
+permanent delete, T2 normal restore, T3 stale delete after restore, T4 stale
+restore after delete, T4b stale restore while the new owner's delete has not
+written its completion yet, T5 stale delete / stale restore against a newer
+trash generation, T6 retries after a partial first attempt, T7 a stale owner
+cannot remove the current owner's lease or state, plus each primitive's
+outcomes and the GC store hard delete. T3, T4, both T5 legs and T7 were RED on
+`main` + the test seam and are GREEN on the branch. `internal/db/library_lifecycle_test.go`
+pins the SERIAL domains and the ambiguous-outcome settlement;
+`internal/gc/worker_test.go` covers a restore between the GC fence and the hard
+delete for the library and org cascades. `scripts/library-hard-delete-lease-nonfencing-mutation-validation.sh`
+runs directed mutations (predicate removed, restore made an upsert, predicate
+accepting any generation, marker predicate without generation, each fence
+downgraded to `LOCAL_SERIAL`, GC store/worker ignoring a rejected delete), each
+RED for its own reason. `scripts/library-hard-delete-lease-nonfencing-multidc-validation.sh`
+runs the stale owner in dc-na against a new owner in dc-eu with `LOCAL_SERIAL`
+session defaults on the isolated 3-DC fixture. That leg is positive evidence;
+the `LOCAL_SERIAL` downgrade is caught by the static pins, not by a divergent
+multi-DC schedule.
+
+**Residuals (accepted; none changes the canonical lifecycle):**
+
+- The completion writes are no longer atomic with the canonical transition.
+  A permanent delete that fails after its canonical delete leaves the lookup
+  row, the admin read-model entry and a soft-delete marker without
+  `purge_requested_at` (the API returns 500; a retry returns 404); they are
+  removed only by the GC cascade of that marker (after trash retention; never
+  while `GC_ENABLED=false`). A restore that fails after its canonical restore
+  leaves the admin read model showing the library as trashed and the aggregate
+  counters not re-added.
+- A restore's post-commit writes (read-model refresh, reconciliation request,
+  aggregate re-add) are not generation-fenced: a restore that pauses after its
+  canonical restore can later write them over a newer state. They are
+  projections/accounting; the aggregate re-add was already unfenced before.
+- An ambiguous outcome settled as applied can duplicate the completion writes
+  of a concurrent owner of the same generation (possible only if the lease was
+  taken over while the LWT was in flight); for a restore that double-adds the
+  aggregate counters until reconciliation.
+- Soft delete remains a plain write: a restore or permanent-delete LWT in
+  another DC may not yet observe a just-written soft delete and fails closed
+  (a retry succeeds). Once one owner's LWT transitioned a generation, every later
+  SERIAL predicate observes it, so this never lets a stale owner apply.
+- A GC cascade whose marker and canonical `deleted_at` disagree is skipped as
+  stale instead of deleting; current writers always stamp both in one batch
+  (greenfield deployment).
+- Cost: permanent delete adds one global-SERIAL LWT and writes its completion
+  at global QUORUM; restore adds two global-SERIAL LWTs. A DC that cannot reach
+  a global quorum cannot restore or permanently delete (already true for the lease).
+
+This does not close `ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01` (user
+lease), does not establish GC activation readiness, and `GC_ENABLED=false`
+remains mandatory.
 
 ### ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01: User restore does not serialize with the user hard-delete lease
 

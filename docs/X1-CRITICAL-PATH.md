@@ -258,7 +258,7 @@ added here to count.
 | HEAD-less ghost `libraries` row counts as canonically absent for GC/restore | `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` |
 | Repair-liveness residual (35-day `pub:` TTL): the fail-closed GC health gate, if W2-11 is closed as `CLOSED-GATED` through it, must exist and be enabled before activation | `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` (W2-11) |
 | GC mapping resolver `CassandraStore.lookupBlockMapping()` reclassified from session consistency | `PCD1B3-PRE-GC-SESSION-CONSISTENCY-EXCEPTION` marker |
-| Library hard-delete lease: global SERIAL (✅ closed by PR #234) and fenced final batch | `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` (closed), `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (open; current-runtime, §7) |
+| Library hard-delete lease: global SERIAL (✅ closed by PR #234) and stale-owner final-mutation fencing (✅ closed by `fix/gc-hard-delete-lease-nonfencing`, including the GC library cascade) | `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` (closed), `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (closed; §7) |
 | Startup check refusing `GC_ENABLED=true` while any A1 gate item (tagged entry or row above) is open | first A1 item |
 
 Closed by the greenfield precondition, not carried into A1: Technical Debt
@@ -281,6 +281,17 @@ Both issues are worked in parallel with W2: first the global SERIAL pin of the l
 final batch (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`). The SERIAL pin alone
 does not close the non-fencing race.
 
-Status: the global SERIAL pin landed in PR #234 for the library, user and org
-leases (`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` closed); the generation-fenced
-final batch (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`) remains open.
+Status:
+
+- Hard-delete library lease:
+  - ✅ global SERIAL — PR #234 (library, user and org leases;
+    `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` closed)
+  - ✅ stale-owner final mutation fencing — `fix/gc-hard-delete-lease-nonfencing`
+    (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` closed): restore, API permanent
+    delete and the GC library cascade condition their final canonical mutation
+    on the captured `deleted_at` generation (global-SERIAL LWT), so an owner
+    that lost the lease cannot undo or destroy another owner's transition.
+
+This does not make GC ready or close A1: the user lease
+(`ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`) and the rest of the §6
+list stay open, and `GC_ENABLED=false` remains mandatory.
