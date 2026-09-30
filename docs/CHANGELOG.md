@@ -6,6 +6,23 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-29 - PR #234 hard-delete lease global SERIAL domain (rebased onto the X1 reset / W2-6a)
+
+Closed `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`. Every hard-delete lease
+LWT (library, user and org; acquire including stale takeover, renew, and
+conditional release) applies explicit global `SERIAL`. Post-rebase audit:
+global SERIAL contention can report an unknown CAS outcome for an acquire whose
+proposal is later committed, stranding the lease until stale takeover; each
+acquire entry point now makes a best-effort own-token release on that outcome
+and always returns the error (a failed release is reported, and the
+single-owner liveness residual is recorded). Adds a source contract plus
+classifier/settle unit tests, seven directed
+mutations run inside Docker, and a 3-DC harness that re-races ambiguous rounds
+while still failing on two owners. The harnesses are scoped to this checkout's
+compose project (no attachment to another stack's backend, ephemeral fixture
+host ports). The lease SERIAL-domain closure does not close the separately
+tracked stale-owner non-fencing issue or mark GC ready for activation.
+
 ## 2026-09-29 - W2-6a: CreateFile Office-template exact placement before HEAD
 
 Reproduced the bug first on real Cassandra/MinIO for `.docx`, `.xlsx` and

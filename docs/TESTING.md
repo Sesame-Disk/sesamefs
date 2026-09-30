@@ -969,6 +969,30 @@ migration `UPDATE ... SET head_commit_id ... IF EXISTS`, a whole-row
 CAS writers).
 `CASSANDRA_SERIAL_CONSISTENCY` may still control other LWTs.
 
+`scripts/library-hard-delete-lease-serial-domain-multidc-validation.sh`
+is the 3-DC evidence for `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`, closed
+in PR #234. It attaches only to this checkout's running compose backend (or
+starts it), starts a three-DC Cassandra fixture named after the same compose
+project with ephemeral host ports, configures all three client sessions with
+`LOCAL_SERIAL`, and races library lease acquisition from dc-na and dc-eu. A
+contender whose acquire has an unknown CAS outcome must return an error; if it
+still owns the lease after its best-effort release, the round is logged as the
+documented residual, cleared and re-raced (at most five rounds without an
+owner). Two owners in any round fails.
+Operations under the owner's own token (renew, release, next-owner and
+stale-takeover acquire) are retried on an unknown CAS outcome because they are
+idempotent; a non-owner renew or release may return an unknown outcome and the
+authoritative read decides. The runtime does not retry renew/release (see the
+residual in the known issue).
+`EACH_QUORUM` reads verify the sole owner, cross-DC renewal and conditional
+release, acquisition by the next owner, and stale takeover. The
+required-evidence gate is
+`SESAMEFS_REQUIRE_LIBRARY_HARD_DELETE_LEASE_SERIAL_DOMAIN_EVIDENCE=1`.
+`scripts/library-hard-delete-lease-serial-domain-mutation-validation.sh`
+applies seven directed mutations to the source copied into its Docker image
+(the host tree is untouched) and checks that the focused Go contract tests go
+RED for each mutation's own reason.
+
 ### PC-D1 inherited-continuity evidence
 
 The PC-D1 decision model remains documentation/test-only, but PC-D1A now adds

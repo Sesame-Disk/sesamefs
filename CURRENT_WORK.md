@@ -1,5 +1,43 @@
 # Current Work - SesameFS
 
+**Active branch — PR #234, `fix/library-hard-delete-lease-global-serial` (rebased onto `main@cd591709c`, 2026-09-30; originally 2026-09-26):**
+Every hard-delete lease LWT (library, user and org) now pins global `SERIAL`
+for acquire (including stale takeover), renew, and conditional release,
+independent of a session default of `LOCAL_SERIAL`. The post-rebase audit found
+that global SERIAL contention between DCs can return `CAS_WRITE_UNKNOWN` or a
+CAS write timeout for an acquire (6/41 concurrent races on the 3-DC fixture);
+the caller returned without releasing and a later Paxos round could still
+commit the proposal, stranding the lease until stale takeover (~90 min). Each
+acquire entry point now makes a best-effort own-token release on that outcome
+and still returns the error; a failed release is reported as such, and the
+remaining single-owner liveness residual is recorded in the known issue. The
+lease token, TTL, stale takeover, renewal and release semantics are otherwise
+unchanged; no caller flow changed. Residual:
+renew/release can also see an unknown outcome under contention. Renew fails
+closed before the final mutation; the deferred release then only attempts to
+drop the lease. API restore/permanent delete log a failed release, while the GC
+cascades record it inside `hardDeleteLease` after their last `Check()` (and the
+child-item guard discards it), so it is not surfaced. Either way the lease may
+remain until stale takeover or TTL. A bounded retry is a liveness follow-up
+documented in the known issue. The cross-audit also registered the pre-existing
+`ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01` (P1, PRE-GC / A1; not
+fixed here).
+
+Evidence (all in Docker): `go test ./... -count=1`, `go vet ./...` and
+`go test -race -short ./...` pass; seven directed mutations are RED for their own
+reason; the isolated 3-DC harness passes with `LOCAL_SERIAL` sessions.
+Final run after the rebase onto `main@cd591709c` (2026-09-30): 60/60 pinned
+3-DC races, official harness 2/2 on fresh fixtures (one run settled an
+ambiguous acquire); downgrading the pin to `LOCAL_SERIAL` gives two owners in
+16/20 runs. The harnesses now scope their backend, fixture and runner names to
+this checkout's compose project and never modify the host tree.
+`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` is closed. The separate P1
+non-fencing finding remains a FOLLOW-UP; this change does not make a broader GC
+readiness claim. Per [docs/X1-CRITICAL-PATH.md](docs/X1-CRITICAL-PATH.md) §7 this
+closes the first of the two current-runtime lease items (the global SERIAL
+pin); the generation-fenced final batch (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`)
+remains open in both §6 and §7. `GC_ENABLED=false` remains mandatory.
+
 ### PR #239 crossed audit correction (2026-09-30)
 
 Pre-D GC now distinguishes real references, repair-only protection and zero.
@@ -11,9 +49,9 @@ durable physical continuation are proved; the future physical executor remains
 outside this PR. W2-0/W2-6a remain OPEN and GC_ENABLED=false.
 See [crossed audit evidence](./docs/W2-0-PUBLICATION-CONTINUITY.md).
 
-## Active branch: fix/w2-0-publish-liveness-through-head (base main@50c50903e, 2026-09-29)
+## Merged PR #239: fix/w2-0-publish-liveness-through-head (base main@50c50903e, 2026-09-29)
 
-The current branch adds a fail-closed GC guard using the existing non-expiring
+#239 added a fail-closed GC guard using the existing non-expiring
 `published_block_reference_repairs` rows. Acquisition explicitly writes at
 LOCAL_QUORUM; destructive readers scan all 32 organization bucket prefixes at
 EACH_QUORUM, consume all pages, and repeat the reference probe after a negative
@@ -207,7 +245,6 @@ next available number (`028` if #233 lands first).
 Side findings registered: `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` (was
 `ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`; now also covers the intent LWT),
 `ISSUE-PCD1B-STALE-TOMBSTONE-DISPLAY-METADATA-01`,
-`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` (PRE-GC multi-DC),
 `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (P1, CURRENT-RUNTIME / FOLLOW-UP;
 also required PRE-GC; pre-existing, not a #232 blocker), and Phase 6 execute-time
 TOCTOU under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`.
