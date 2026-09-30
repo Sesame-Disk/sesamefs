@@ -166,7 +166,7 @@ func (f pcd1b4Fixture) trashedAt(t *testing.T) time.Time {
 func (f pcd1b4Fixture) restore(t *testing.T) {
 	t.Helper()
 	deletedAt := f.trashedAt(t)
-	if outcome, err := dbpkg.RestoreTrashedLibraryGeneration(f.database.Session(), f.orgID, f.libraryID, deletedAt, time.Now().UTC()); err != nil || outcome != dbpkg.LibraryLifecycleApplied {
+	if _, outcome, err := dbpkg.RestoreTrashedLibraryGeneration(f.database.Session(), f.orgID, f.libraryID, deletedAt, time.Now().UTC()); err != nil || outcome != dbpkg.LibraryLifecycleApplied {
 		t.Fatalf("replay restore canonical statement: %v, %v", outcome, err)
 	}
 	if err := f.database.Session().Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, f.libraryID).Exec(); err != nil {

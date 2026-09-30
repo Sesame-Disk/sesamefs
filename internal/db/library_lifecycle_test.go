@@ -40,6 +40,7 @@ func TestLibraryLifecycleFencePinsGlobalSerial(t *testing.T) {
 		{name: "DeleteTrashedLibraryGeneration", domain: "LibraryHeadSerialConsistency", lwts: 1},
 		{name: "RestoreTrashedLibraryGeneration", domain: "LibraryHeadSerialConsistency", lwts: 1},
 		{name: "readLibraryDeletedAtSerial", domain: "LibraryHeadSerialConsistency", serial: 1},
+		{name: "ReadLibraryLifecycleSerial", domain: "LibraryHeadSerialConsistency", serial: 1},
 		{name: "SoftDeleteLibraryGeneration", domain: "LibraryHeadSerialConsistency", lwts: 1},
 	} {
 		var decl *ast.FuncDecl
@@ -146,28 +147,52 @@ func TestLibraryLifecycleSettlement(t *testing.T) {
 	})
 
 	t.Run("restore", func(t *testing.T) {
-		got, err := settleTrashedLibraryRestore("l", gen, casErr, true, time.Time{}, nil)
-		check(t, "row active", got, err, LibraryLifecycleApplied, false)
-		got, err = settleTrashedLibraryRestore("l", gen, casErr, true, gen, nil)
+		restored := newer
+		active := func(at time.Time) LibraryLifecycleState {
+			return LibraryLifecycleState{Present: true, LifecycleAt: at}
+		}
+		got, err := settleTrashedLibraryRestore("l", gen, restored, casErr, active(restored), nil)
+		check(t, "row active at the restore's lifecycle value", got, err, LibraryLifecycleApplied, false)
+		got, err = settleTrashedLibraryRestore("l", gen, restored, casErr, LibraryLifecycleState{Present: true, DeletedAt: gen, LifecycleAt: gen}, nil)
 		check(t, "row still at generation", got, err, LibraryLifecycleGenerationChanged, true)
-		got, err = settleTrashedLibraryRestore("l", gen, casErr, false, time.Time{}, nil)
+		got, err = settleTrashedLibraryRestore("l", gen, restored, casErr, LibraryLifecycleState{}, nil)
 		check(t, "row gone", got, err, LibraryLifecycleTargetAbsent, false)
-		got, err = settleTrashedLibraryRestore("l", gen, casErr, true, newer, nil)
-		check(t, "row trashed again", got, err, LibraryLifecycleGenerationChanged, false)
-		got, err = settleTrashedLibraryRestore("l", gen, casErr, true, time.Time{}, readErr)
+		got, err = settleTrashedLibraryRestore("l", gen, restored, casErr, active(restored.Add(time.Millisecond)), nil)
+		check(t, "restored by another owner", got, err, LibraryLifecycleGenerationChanged, false)
+		got, err = settleTrashedLibraryRestore("l", gen, restored, casErr, LibraryLifecycleState{}, readErr)
 		check(t, "read failed", got, err, LibraryLifecycleGenerationChanged, true)
 	})
 
 	t.Run("soft delete", func(t *testing.T) {
-		got, err := settleLibrarySoftDelete("l", gen, casErr, true, gen, nil)
+		before := LibraryLifecycleState{Present: true, LifecycleAt: gen}
+		got, err := settleLibrarySoftDelete("l", newer, before, casErr, LibraryLifecycleState{Present: true, DeletedAt: newer, LifecycleAt: newer}, nil)
 		check(t, "row at the new generation", got, err, LibraryLifecycleApplied, false)
-		got, err = settleLibrarySoftDelete("l", gen, casErr, true, time.Time{}, nil)
-		check(t, "row still active", got, err, LibraryLifecycleGenerationChanged, true)
-		got, err = settleLibrarySoftDelete("l", gen, casErr, false, time.Time{}, nil)
+		got, err = settleLibrarySoftDelete("l", newer, before, casErr, before, nil)
+		check(t, "row unchanged", got, err, LibraryLifecycleGenerationChanged, true)
+		got, err = settleLibrarySoftDelete("l", newer, before, casErr, LibraryLifecycleState{}, nil)
 		check(t, "row gone", got, err, LibraryLifecycleTargetAbsent, false)
-		got, err = settleLibrarySoftDelete("l", gen, casErr, true, newer, nil)
+		other := newer.Add(time.Millisecond)
+		got, err = settleLibrarySoftDelete("l", newer, before, casErr, LibraryLifecycleState{Present: true, DeletedAt: other, LifecycleAt: other}, nil)
 		check(t, "row trashed by another request", got, err, LibraryLifecycleGenerationChanged, false)
-		got, err = settleLibrarySoftDelete("l", gen, casErr, true, time.Time{}, readErr)
+		got, err = settleLibrarySoftDelete("l", newer, before, casErr, LibraryLifecycleState{}, readErr)
 		check(t, "read failed", got, err, LibraryLifecycleGenerationChanged, true)
 	})
+}
+
+// The lifecycle clock is strictly increasing even when the node's clock is
+// behind or has not moved, so a trash generation is unique per library.
+func TestNextLibraryLifecycleAt(t *testing.T) {
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	if got := NextLibraryLifecycleAt(time.Time{}, base.Add(123*time.Microsecond)); !got.Equal(base) {
+		t.Fatalf("first value = %s, want %s (millisecond precision)", got, base)
+	}
+	if got := NextLibraryLifecycleAt(base, base); !got.Equal(base.Add(time.Millisecond)) {
+		t.Fatalf("same millisecond = %s, want previous + 1ms", got)
+	}
+	if got := NextLibraryLifecycleAt(base, base.Add(-time.Hour)); !got.Equal(base.Add(time.Millisecond)) {
+		t.Fatalf("clock behind = %s, want previous + 1ms", got)
+	}
+	if got := NextLibraryLifecycleAt(base, base.Add(time.Second)); !got.Equal(base.Add(time.Second)) {
+		t.Fatalf("clock ahead = %s, want now", got)
+	}
 }

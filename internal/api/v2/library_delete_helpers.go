@@ -51,11 +51,20 @@ var (
 		return gcpkg.ReleaseLibraryHardDeleteLockLease(database.Session(), libraryID, leaseToken)
 	}
 	hardDeleteLibraryRowsFn = func(database *dbpkg.DB, orgID, libraryID, storageClass, blockRepresentationID string, deletedAt time.Time) error {
-		// Completion writes are stamped before the canonical transition, like every
-		// lifecycle completion; the batch is built first because the admin read-model
-		// delete keys are read from the canonical row, which the fenced delete removes.
-		stamp := dbpkg.LibraryLifecycleCompletionStamp(database.Session(), orgID, libraryID, libraryLifecycleNow())
-		batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(stamp)
+		// Continuation anchor: the generation's soft-delete marker exists before the
+		// canonical row can disappear, so a completion that fails below is always
+		// rediscoverable (resumeCommittedPermanentDelete, single and bulk). It repeats
+		// the soft delete's own marker write at the generation's lifecycle timestamp,
+		// so it can never outlive a restore (whose marker removal is stamped later).
+		if err := database.Session().Query(`
+			INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id)
+			VALUES (?, ?, ?, ?, ?) USING TIMESTAMP ?`,
+			libraryID, orgID, deletedAt, storageClass, blockRepresentationID, dbpkg.LibraryLifecycleWriteTimestamp(deletedAt)).Exec(); err != nil {
+			return errors.Join(errHardDeleteLibraryBatchExec, fmt.Errorf("write permanent-delete continuation marker: %w", err))
+		}
+		// The completion batch is built first because the admin read-model delete keys
+		// are read from the canonical row, which the fenced delete removes.
+		batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt))
 		if err := addPermanentDeleteCompletionQueries(database, batch, orgID, libraryID, storageClass, blockRepresentationID, deletedAt); err != nil {
 			return err
 		}
@@ -63,7 +72,8 @@ var (
 		// The fenced lifecycle mutation (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01): the
 		// canonical row is deleted only while it is still trashed under the generation this
 		// owner verified. The lease renewal before this call does not fence it: an owner can
-		// pause after renewing, lose the lease to a restore, and resume here.
+		// pause after renewing, lose the lease to a restore, and resume here. Generations are
+		// unique per library (lifecycle_at), so a later generation never matches.
 		outcome, err := dbpkg.DeleteTrashedLibraryGeneration(database.Session(), orgID, libraryID, deletedAt)
 		if err != nil {
 			return errors.Join(errHardDeleteLibraryLifecycle, err)
@@ -73,9 +83,9 @@ var (
 		}
 		// Completion writes run only after this generation's canonical row is gone. A
 		// hard delete is terminal, so they cannot touch a newer generation and are
-		// idempotent. If they fail, a repeated permanent delete of the same library
+		// idempotent. If they fail, a repeated permanent delete (single or bulk)
 		// completes them (resumeCommittedPermanentDelete).
-		if err := execLibraryLifecycleCompletionFn(batch); err != nil {
+		if err := dbpkg.ExecLibraryLifecycleCompletionFn(batch); err != nil {
 			return errors.Join(errHardDeleteLibraryBatchExec, err)
 		}
 		return nil
@@ -184,18 +194,30 @@ func addPermanentDeleteCompletionQueries(database *dbpkg.DB, batch *gocql.Batch,
 	return nil
 }
 
+// permanentDeleteCompletionTimestamp is the write timestamp of a permanent
+// delete's completion: after the generation's own derived writes, and not before
+// the client clock (the completion also deletes rows other writers stamp with it).
+func permanentDeleteCompletionTimestamp(deletedAt time.Time) int64 {
+	stamp := libraryLifecycleNow().UnixMicro()
+	if floor := dbpkg.LibraryLifecycleWriteTimestamp(deletedAt) + 1; stamp < floor {
+		stamp = floor
+	}
+	return stamp
+}
+
 // resumeCommittedPermanentDelete completes a permanent delete whose canonical
-// row is already gone but whose completion writes failed: the libraries_by_id
-// lookup is still there and the deleted_libraries marker still names the trash
-// generation. It is reached by repeating the permanent delete, so it works
-// with GC_ENABLED=false. It reports false (and changes nothing) for any other
-// state. A hard delete is terminal, so no lease is needed.
+// row is already gone but whose completion writes failed. Its anchor is the
+// generation's deleted_libraries marker, which the permanent delete writes
+// before its canonical transition: a marker without purge request (or with the
+// lookup row still present) for an absent canonical row. It is reached by
+// repeating the permanent delete (single routes) and by the bulk cleanups, so
+// it works with GC_ENABLED=false. It reports false, changing nothing, for any
+// other state. A hard delete is terminal, so no lease is needed.
 func resumeCommittedPermanentDelete(database *dbpkg.DB, orgID, libraryID string) (trashLibraryCandidate, string, bool, error) {
-	stamp := dbpkg.LibraryLifecycleCompletionStamp(database.Session(), orgID, libraryID, libraryLifecycleNow())
 	var markerOrgID, storageClass, blockRepresentationID string
-	var deletedAt time.Time
-	err := database.Session().Query(`SELECT org_id, deleted_at, storage_class, block_representation_id FROM deleted_libraries WHERE library_id = ?`,
-		libraryID).Scan(&markerOrgID, &deletedAt, &storageClass, &blockRepresentationID)
+	var deletedAt, purgeRequestedAt time.Time
+	err := database.Session().Query(`SELECT org_id, deleted_at, storage_class, block_representation_id, purge_requested_at FROM deleted_libraries WHERE library_id = ?`,
+		libraryID).Scan(&markerOrgID, &deletedAt, &storageClass, &blockRepresentationID, &purgeRequestedAt)
 	if errors.Is(err, gocql.ErrNotFound) {
 		return trashLibraryCandidate{}, "", false, nil
 	}
@@ -205,29 +227,78 @@ func resumeCommittedPermanentDelete(database *dbpkg.DB, orgID, libraryID string)
 	if markerOrgID != orgID || deletedAt.IsZero() {
 		return trashLibraryCandidate{}, "", false, nil
 	}
-	var lookupOrgID string
-	err = database.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, libraryID).Scan(&lookupOrgID)
-	if errors.Is(err, gocql.ErrNotFound) {
-		return trashLibraryCandidate{}, "", false, nil
+	if !purgeRequestedAt.IsZero() {
+		var lookupOrgID string
+		err = database.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, libraryID).Scan(&lookupOrgID)
+		if errors.Is(err, gocql.ErrNotFound) {
+			return trashLibraryCandidate{}, "", false, nil // completed
+		}
+		if err != nil {
+			return trashLibraryCandidate{}, "", false, fmt.Errorf("read library lookup %s: %w", libraryID, err)
+		}
 	}
-	if err != nil {
-		return trashLibraryCandidate{}, "", false, fmt.Errorf("read library lookup %s: %w", libraryID, err)
-	}
-	present, _, err := dbpkg.ReadLibraryLifecycleStateSerial(database.Session(), orgID, libraryID)
+	state, err := dbpkg.ReadLibraryLifecycleSerial(database.Session(), orgID, libraryID)
 	if err != nil {
 		return trashLibraryCandidate{}, "", false, fmt.Errorf("read canonical library %s: %w", libraryID, err)
 	}
-	if present {
+	if state.Present {
 		return trashLibraryCandidate{}, "", false, nil
 	}
-	batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(stamp)
+	batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt))
 	if err := addPermanentDeleteCompletionQueries(database, batch, orgID, libraryID, storageClass, blockRepresentationID, deletedAt); err != nil {
 		return trashLibraryCandidate{}, "", false, err
 	}
-	if err := execLibraryLifecycleCompletionFn(batch); err != nil {
+	if err := dbpkg.ExecLibraryLifecycleCompletionFn(batch); err != nil {
 		return trashLibraryCandidate{}, "", false, errors.Join(errHardDeleteLibraryBatchExec, err)
 	}
 	return trashLibraryCandidate{OrgID: orgID, LibraryID: libraryID, StorageClass: storageClass, DeletedAt: deletedAt}, blockRepresentationID, true, nil
+}
+
+type resumedPermanentDelete struct {
+	Candidate             trashLibraryCandidate
+	BlockRepresentationID string
+}
+
+// resumeCommittedPermanentDeletes is the bulk counterpart of
+// resumeCommittedPermanentDelete for the given orgs: the bulk cleanups list
+// their candidates from canonical rows, which a half-committed permanent delete
+// no longer has, so they first scan the deleted_libraries markers (one scan for
+// all orgs) and resume every committed but incomplete delete among them.
+func resumeCommittedPermanentDeletes(database *dbpkg.DB, orgIDs []string) ([]resumedPermanentDelete, int) {
+	wanted := make(map[string]bool, len(orgIDs))
+	for _, orgID := range orgIDs {
+		wanted[orgID] = true
+	}
+	var candidates [][2]string
+	iter := database.Session().Query(`SELECT library_id, org_id FROM deleted_libraries`).Iter()
+	var libraryID, orgID string
+	for iter.Scan(&libraryID, &orgID) {
+		if wanted[orgID] {
+			candidates = append(candidates, [2]string{orgID, libraryID})
+		}
+	}
+	if err := iter.Close(); err != nil {
+		log.Printf("[resumeCommittedPermanentDeletes] scan deleted_libraries: %v", err)
+		return nil, 1
+	}
+	var resumed []resumedPermanentDelete
+	failed := 0
+	for _, pair := range candidates {
+		var present string
+		if err := database.Session().Query(`SELECT library_id FROM libraries WHERE org_id = ? AND library_id = ?`, pair[0], pair[1]).Scan(&present); err == nil {
+			continue // still canonical: the normal candidate path handles it
+		}
+		candidate, blockRepresentationID, ok, err := resumeCommittedPermanentDelete(database, pair[0], pair[1])
+		if err != nil {
+			log.Printf("[resumeCommittedPermanentDeletes] resume %s/%s: %v", pair[0], pair[1], err)
+			failed++
+			continue
+		}
+		if ok {
+			resumed = append(resumed, resumedPermanentDelete{Candidate: candidate, BlockRepresentationID: blockRepresentationID})
+		}
+	}
+	return resumed, failed
 }
 
 // readPermanentDeleteResumeOwner returns the owner recorded on the lookup row of

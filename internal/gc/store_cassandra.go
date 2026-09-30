@@ -5826,11 +5826,16 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 	}
 
 	now := time.Now().UTC()
-	// The canonical transition is a global-SERIAL LWT, ordered by Paxos against
-	// restore and hard delete (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01); the derived
-	// writes follow it, stamped before it.
-	stamp := db.LibraryLifecycleCompletionStamp(s.db.Session(), orgID.String(), libraryID.String(), now)
-	outcome, casErr := db.SoftDeleteLibraryGeneration(s.db.Session(), orgID.String(), libraryID.String(), now, deletedBy.String())
+	// Protocol (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01): the storage reconciliation
+	// request is durable before the canonical transition; the transition is a
+	// global-SERIAL LWT creating a unique trash generation; the derived writes carry
+	// the generation's lifecycle timestamp.
+	reconcile := s.db.Session().Batch(gocql.LoggedBatch)
+	traffic.AddAggregateStorageReconciliationQueries(reconcile, orgID.String(), ownerID, now)
+	if err := reconcile.Exec(); err != nil {
+		return fmt.Errorf("request storage reconciliation for %s: %w", libraryID, err)
+	}
+	deletedAt, outcome, casErr := db.SoftDeleteLibraryGeneration(s.db.Session(), orgID.String(), libraryID.String(), deletedBy.String(), now)
 	if casErr != nil {
 		return casErr
 	}
@@ -5838,8 +5843,9 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 	case db.LibraryLifecycleApplied:
 	case db.LibraryLifecycleGenerationChanged:
 		// Already in the trash (a user delete, or a previous cascade pass whose
-		// completion failed): keep that generation and make sure its marker exists.
-		return s.ensureTrashedLibraryMarker(orgID, libraryID, storageClass, blockRepresentationID)
+		// completion failed): keep that generation and rewrite its full derived state
+		// (marker and read model) from the canonical row.
+		return db.RepairLibraryLifecycleDerivedState(s.db.Session(), orgID.String(), libraryID.String(), func() string { return blockRepresentationID })
 	default:
 		return nil // gone: nothing left to soft-delete
 	}
@@ -5849,45 +5855,19 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 		traffic.AdjustAggregateStorageCounters(s.db, orgID.String(), ownerID, libraryID.String(), false)
 	}
 
-	batch := s.db.Session().Batch(gocql.LoggedBatch).WithTimestamp(stamp)
+	batch := s.db.Session().Batch(gocql.LoggedBatch).WithTimestamp(db.LibraryLifecycleWriteTimestamp(deletedAt))
 	batch.Query(`
 		INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id) VALUES (?, ?, ?, ?, ?)
-	`, libraryID.String(), orgID.String(), now, storageClass, blockRepresentationID)
-	traffic.AddAggregateStorageReconciliationQueries(batch, orgID.String(), ownerID, now)
+	`, libraryID.String(), orgID.String(), deletedAt, storageClass, blockRepresentationID)
 	if err == nil {
 		nextRow := previousRow
-		nextRow.UpdatedAt = now
-		nextRow.DeletedAt = &now
+		nextRow.UpdatedAt = deletedAt
+		nextRow.DeletedAt = &deletedAt
 		db.AddRefreshAdminLibraryReadModelQueries(batch, nextRow, &previousRow)
 	}
 	// On failure the cascade retries: the canonical row is then already trashed and
-	// ensureTrashedLibraryMarker writes the missing marker.
-	return batch.Exec()
-}
-
-// ensureTrashedLibraryMarker writes the soft-delete marker of the library's
-// current trash generation when it is missing. Stamped before the canonical
-// read, so a later restore's marker removal wins over it.
-func (s *CassandraStore) ensureTrashedLibraryMarker(orgID, libraryID uuid.UUID, storageClass, blockRepresentationID string) error {
-	stamp := db.LibraryLifecycleCompletionStamp(s.db.Session(), orgID.String(), libraryID.String(), time.Now())
-	present, deletedAt, err := db.ReadLibraryLifecycleStateSerial(s.db.Session(), orgID.String(), libraryID.String())
-	if err != nil {
-		return err
-	}
-	if !present || deletedAt.IsZero() {
-		return nil
-	}
-	var markerDeletedAt time.Time
-	err = s.db.Session().Query(`SELECT deleted_at FROM deleted_libraries WHERE library_id = ?`, libraryID.String()).Scan(&markerDeletedAt)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, gocql.ErrNotFound) {
-		return err
-	}
-	return s.db.Session().Query(`
-		INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id) VALUES (?, ?, ?, ?, ?)
-	`, libraryID.String(), orgID.String(), deletedAt, storageClass, blockRepresentationID).WithTimestamp(stamp).Exec()
+	// RepairLibraryLifecycleDerivedState rewrites the marker and read model.
+	return db.ExecLibraryLifecycleCompletionFn(batch)
 }
 
 func (s *CassandraStore) ListGroupMembershipsByUser(orgID, userID uuid.UUID) ([]uuid.UUID, error) {
@@ -6260,7 +6240,11 @@ func (s *CassandraStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt
 	// The completion batch is stamped before the canonical transition and built
 	// first, because the admin read-model delete keys are read from the canonical
 	// row, which the fenced delete below removes.
-	batch := session.Batch(gocql.LoggedBatch).WithTimestamp(db.LibraryLifecycleCompletionStamp(session, orgID.String(), libraryID.String(), time.Now()))
+	stamp, err := hardDeleteLibraryCompletionTimestamp(session, libraryID.String(), deletedAt)
+	if err != nil {
+		return false, err
+	}
+	batch := session.Batch(gocql.LoggedBatch).WithTimestamp(stamp)
 	if err := db.AddDeleteAdminLibraryReadModelQueries(session, batch, orgID.String(), libraryID.String()); err != nil {
 		return false, err
 	}
@@ -6286,7 +6270,7 @@ func (s *CassandraStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt
 	if outcome == db.LibraryLifecycleGenerationChanged {
 		// A restore that stopped between its canonical transition and its marker
 		// cleanup leaves this generation's marker on an active library.
-		if err := db.ClearStaleSoftDeleteMarker(session, orgID.String(), libraryID.String(), deletedAt); err != nil {
+		if err := db.ClearRestoredLibraryMarker(session, orgID.String(), libraryID.String()); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -6294,10 +6278,33 @@ func (s *CassandraStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt
 	// Applied, or the row is already gone (an API permanent delete of this
 	// generation): hard delete is terminal, so the completion writes cannot touch a
 	// newer generation and a retry after a failure here completes them.
-	if err := batch.Exec(); err != nil {
+	if err := db.ExecLibraryLifecycleCompletionFn(batch); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// hardDeleteLibraryCompletionTimestamp stamps the GC hard delete's completion
+// after every earlier write of the marker (the soft delete's, and a permanent
+// delete's purge request stamped with an API node's clock) and not before this
+// node's clock.
+func hardDeleteLibraryCompletionTimestamp(session *gocql.Session, libraryID string, deletedAt time.Time) (int64, error) {
+	stamp := time.Now().UnixMicro()
+	if floor := db.LibraryLifecycleWriteTimestamp(deletedAt) + 1; stamp < floor {
+		stamp = floor
+	}
+	var markerWrite, purgeWrite *int64
+	err := session.Query(`SELECT WRITETIME(deleted_at), WRITETIME(purge_requested_at) FROM deleted_libraries WHERE library_id = ?`,
+		libraryID).Scan(&markerWrite, &purgeWrite)
+	if err != nil && !errors.Is(err, gocql.ErrNotFound) {
+		return 0, fmt.Errorf("read deleted library marker write time %s: %w", libraryID, err)
+	}
+	for _, w := range []*int64{markerWrite, purgeWrite} {
+		if w != nil && *w >= stamp {
+			stamp = *w + 1
+		}
+	}
+	return stamp, nil
 }
 
 // --- Org cascade (Fase 4) ---

@@ -1248,6 +1248,15 @@ func (h *AdminHandler) AdminCleanTrashLibraries(c *gin.Context) {
 	cleaned := 0
 	failed := 0
 
+	// First complete permanent deletes whose canonical row is already gone but whose
+	// completion failed: the per-org canonical scan below no longer lists them.
+	resumed, resumeFailed := resumeCommittedPermanentDeletes(h.db, orgIDs)
+	for _, r := range resumed {
+		enqueueLibraryCascadeBestEffort(libEnqueuer, r.Candidate.OrgID, r.Candidate.LibraryID, r.BlockRepresentationID, r.Candidate.StorageClass, r.Candidate.DeletedAt)
+	}
+	cleaned += len(resumed)
+	failed += resumeFailed
+
 	// Process each org's trash independently: collect that org's soft-deleted
 	// libraries and hard-delete them before moving on. Accumulating every org's
 	// candidates first would hold the whole platform's trash in memory and defer

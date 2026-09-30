@@ -392,6 +392,13 @@ func (h *OrgAdminHandler) CleanOrgTrashLibraries(c *gin.Context) {
 		return
 	}
 
+	// First complete permanent deletes whose canonical row is already gone but whose
+	// completion failed: they are no longer listed by the canonical scan below.
+	resumed, resumeFailed := resumeCommittedPermanentDeletes(h.db, []string{targetOrgID})
+	for _, r := range resumed {
+		enqueueLibraryCascadeBestEffort(h.gcEnqueuer, r.Candidate.OrgID, r.Candidate.LibraryID, r.BlockRepresentationID, r.Candidate.StorageClass, r.Candidate.DeletedAt)
+	}
+
 	// Collect this org's trashed libraries, then hand them to the shared candidate processor.
 	// Keeping the org-wide SELECT here and the per-library work in processOrgTrashCandidates
 	// mirrors AdminCleanTrashLibraries and lets the bulk loop be tested with explicit
@@ -418,6 +425,8 @@ func (h *OrgAdminHandler) CleanOrgTrashLibraries(c *gin.Context) {
 	}
 
 	cleaned, failed := h.processOrgTrashCandidates(candidates, h.gcEnqueuer)
+	cleaned += len(resumed)
+	failed += resumeFailed
 
 	log.Printf("[CleanOrgTrashLibraries] Cleaned %d trashed libraries in org %s (%d skipped)", cleaned, targetOrgID, failed)
 	// success=true means the operation completed; partial=true flags skipped libs.
@@ -474,6 +483,7 @@ func (h *OrgAdminHandler) RestoreOrgTrashLibrary(c *gin.Context) {
 		return
 	}
 	if deletedAt.IsZero() {
+		repairTrashedLibraryOnRepeatedDelete(h.db, targetOrgID, repoID)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "library is not in trash"})
 		return
 	}

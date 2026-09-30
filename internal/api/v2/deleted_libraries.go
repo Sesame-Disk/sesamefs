@@ -169,6 +169,7 @@ func (h *DeletedLibraryHandler) RestoreDeletedRepo(c *gin.Context) {
 	}
 
 	if deletedAt.IsZero() {
+		repairTrashedLibraryOnRepeatedDelete(h.db, orgID, repoID)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "library is not deleted"})
 		return
 	}
