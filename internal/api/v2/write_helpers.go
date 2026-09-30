@@ -1023,13 +1023,14 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	}()
 
 	// Canonical precondition, re-checked UNDER the lease. AcquireLibraryHardDeleteLockLease
-	// is stale-aware: it can steal a lease from a GC worker that crashed mid-purge. In
-	// Cassandra an UPDATE is an upsert, so the batch below would otherwise RECREATE the
-	// `libraries` row over partially-purged content. The only safe state to restore from is
-	// the original soft-deleted canonical row (present, deleted_at != null). If the canonical
-	// row is gone, permanent deletion / orphan purge already started — never resurrect it. A
-	// present-but-active row (deleted_at == null) is not in trash. The admin projection is a
-	// read model and does not prove canonical presence, so it cannot gate this.
+	// is stale-aware: it can steal a lease from a GC worker that crashed mid-purge. The only
+	// safe state to restore from is the original soft-deleted canonical row (present,
+	// deleted_at != null). If the canonical row is gone, permanent deletion / orphan purge
+	// already started — never resurrect it. A present-but-active row (deleted_at == null) is
+	// not in trash. The admin projection is a read model and does not prove canonical
+	// presence, so it cannot gate this. This read only selects the generation; the restore
+	// below re-proves it atomically (IF deleted_at = canonicalDeletedAt), because this owner
+	// can lose the lease at any point after the read.
 	var canonicalDeletedAt time.Time
 	err = db.Session().Query(`
 		SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?`,
@@ -1051,29 +1052,42 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	nextRow := previousRow
 	nextRow.UpdatedAt = now
 	nextRow.DeletedAt = nil
+	// Completion writes, applied only after the fenced canonical restore below.
 	batch := db.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`
-		UPDATE libraries SET updated_at = ?
-		WHERE org_id = ? AND library_id = ?`,
-		now, orgID, libraryID,
-	)
-	batch.Query(`
-		DELETE deleted_at, deleted_by FROM libraries
-		WHERE org_id = ? AND library_id = ?`,
-		orgID, libraryID,
-	)
-	batch.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, libraryID)
 	traffic.AddAggregateStorageReconciliationQueries(batch, orgID, ownerID, now)
 	addAdminLibraryReadModelRefreshQueries(batch, nextRow, &previousRow)
+	// Early exit only: this renewal does not fence the lifecycle mutations below (the
+	// owner can pause right after it). They fence on the deleted_at generation
+	// verified above (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01).
 	owned, err := renewLibraryRestoreLeaseFn(db.Session(), libraryUUID, leaseToken)
 	if err != nil {
-		return fmt.Errorf("fence library restore lock for %s: %w", libraryID, err)
+		return fmt.Errorf("renew library restore lock for %s: %w", libraryID, err)
 	}
 	if !owned {
 		return fmt.Errorf("lost library restore lock for %s", libraryID)
 	}
-	if err := batch.Exec(); err != nil {
+	// Marker first, then canonical row; see ClearSoftDeleteMarkerGeneration for why
+	// this order leaves a restorable library if the process stops in between.
+	markerOutcome, err := dbpkg.ClearSoftDeleteMarkerGeneration(db.Session(), libraryID, canonicalDeletedAt)
+	if err != nil {
+		return fmt.Errorf("clear deleted library marker for restore: %w", err)
+	}
+	if markerOutcome == dbpkg.LibraryLifecycleGenerationChanged {
+		return fmt.Errorf("library is pending permanent deletion or was trashed again")
+	}
+	outcome, err := dbpkg.RestoreTrashedLibraryGeneration(db.Session(), orgID, libraryID, canonicalDeletedAt, now)
+	if err != nil {
 		return fmt.Errorf("restore library: %w", err)
+	}
+	switch outcome {
+	case dbpkg.LibraryLifecycleApplied:
+	case dbpkg.LibraryLifecycleTargetAbsent:
+		return fmt.Errorf("library is pending permanent deletion")
+	default:
+		return fmt.Errorf("library is no longer in the trash generation being restored")
+	}
+	if err := batch.Exec(); err != nil {
+		return fmt.Errorf("restore library read model and storage reconciliation: %w", err)
 	}
 
 	// Re-add the library's storage to aggregates after the canonical row and

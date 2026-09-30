@@ -151,15 +151,26 @@ func (f pcd1b4Fixture) softDelete(t *testing.T) {
 	}
 }
 
-// restore replays restoreDeletedLibrary's canonical-row statements.
+// trashedAt reads the canonical deleted_at generation.
+func (f pcd1b4Fixture) trashedAt(t *testing.T) time.Time {
+	t.Helper()
+	var deletedAt time.Time
+	if err := f.database.Session().Query(`SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?`, f.orgID, f.libraryID).Consistency(gocql.Serial).Scan(&deletedAt); err != nil {
+		t.Fatalf("read canonical deleted_at: %v", err)
+	}
+	return deletedAt
+}
+
+// restore replays restoreDeletedLibrary's generation-fenced lifecycle
+// statements: the soft-delete marker, then the canonical row.
 func (f pcd1b4Fixture) restore(t *testing.T) {
 	t.Helper()
-	batch := f.database.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`UPDATE libraries SET updated_at = ? WHERE org_id = ? AND library_id = ?`, time.Now().UTC(), f.orgID, f.libraryID)
-	batch.Query(`DELETE deleted_at, deleted_by FROM libraries WHERE org_id = ? AND library_id = ?`, f.orgID, f.libraryID)
-	batch.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, f.libraryID)
-	if err := batch.Exec(); err != nil {
-		t.Fatalf("replay restore canonical statements: %v", err)
+	deletedAt := f.trashedAt(t)
+	if outcome, err := dbpkg.ClearSoftDeleteMarkerGeneration(f.database.Session(), f.libraryID, deletedAt); err != nil || outcome == dbpkg.LibraryLifecycleGenerationChanged {
+		t.Fatalf("replay restore marker statement: %v, %v", outcome, err)
+	}
+	if outcome, err := dbpkg.RestoreTrashedLibraryGeneration(f.database.Session(), f.orgID, f.libraryID, deletedAt, time.Now().UTC()); err != nil || outcome != dbpkg.LibraryLifecycleApplied {
+		t.Fatalf("replay restore canonical statement: %v, %v", outcome, err)
 	}
 }
 
@@ -461,8 +472,8 @@ func TestPCD1B4Characterization_PostWitnessLifecycle(t *testing.T) {
 		f := newPCD1B4Fixture(t, "r9")
 		requirePCD1B4Outcome(t, "R9 baseline", f.certify(t, dbpkg.LibraryBaselineCertifierIntegrationHooks{}), dbpkg.LibraryBaselineCertificationCertified, dbpkg.LibraryBaselineReasonApplied)
 		f.softDelete(t)
-		if err := gcpkg.NewCassandraStore(f.database).HardDeleteLibrary(uuid.MustParse(f.orgID), uuid.MustParse(f.libraryID)); err != nil {
-			t.Fatalf("production hard delete: %v", err)
+		if deleted, err := gcpkg.NewCassandraStore(f.database).HardDeleteLibrary(uuid.MustParse(f.orgID), uuid.MustParse(f.libraryID), f.trashedAt(t)); err != nil || !deleted {
+			t.Fatalf("production hard delete: deleted=%v err=%v", deleted, err)
 		}
 		var remaining string
 		err := f.database.Session().Query(`SELECT library_id FROM libraries WHERE org_id = ? AND library_id = ?`, f.orgID, f.libraryID).Consistency(gocql.Serial).Scan(&remaining)

@@ -366,6 +366,10 @@ func TestLibraryProjectionRegression_GCHardDeleteCleansCanonicalTrashProjectionW
 		return adminTrashContainsRepo(t, superadminClient, repoID, defaultAdminEmail)
 	})
 
+	var trashedAt time.Time
+	if err := session.Query(`SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?`, defaultOrgID, repoID).Scan(&trashedAt); err != nil {
+		t.Fatalf("failed to read trash generation of repo %s: %v", repoID, err)
+	}
 	removeLibraryBaseRowsForFallbackTest(t, session, repoID)
 
 	repoUUID, err := uuid.Parse(repoID)
@@ -377,8 +381,8 @@ func TestLibraryProjectionRegression_GCHardDeleteCleansCanonicalTrashProjectionW
 		t.Fatalf("failed to parse org UUID %q: %v", defaultOrgID, err)
 	}
 
-	if err := store.HardDeleteLibrary(orgUUID, repoUUID); err != nil {
-		t.Fatalf("GC HardDeleteLibrary failed: %v", err)
+	if deleted, err := store.HardDeleteLibrary(orgUUID, repoUUID, trashedAt); err != nil || !deleted {
+		t.Fatalf("GC HardDeleteLibrary failed: deleted=%v err=%v", deleted, err)
 	}
 	waitForIntegrationCondition(t, "GC hard-delete to clear canonical trash projection fallback", func() bool {
 		_, ok := deletedAdminLibraryProjectionRowForTest(t, database.Session(), defaultOrgID, repoID)

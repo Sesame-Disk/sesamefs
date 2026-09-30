@@ -528,7 +528,12 @@ type GCStore interface {
 
 	// Library trash auto-purge (soft-deleted libraries past retention period)
 	ListExpiredDeletedLibraries(retentionDays int) ([]DeletedLibraryInfo, error)
-	HardDeleteLibrary(orgID, libraryID uuid.UUID) error
+	// HardDeleteLibrary removes the canonical library row only while it is still
+	// trashed under generation deletedAt, then its lookup, policy, admin read-model
+	// and marker rows. It reports false, and changes nothing, when the canonical row
+	// carries another generation (restored or trashed again); a row that is already
+	// gone still gets its completion writes.
+	HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt time.Time) (bool, error)
 
 	// Storage counter cleanup after permanent library deletion.
 	// Deletes the lib-scope counter row. Aggregate scopes (org, user, platform)

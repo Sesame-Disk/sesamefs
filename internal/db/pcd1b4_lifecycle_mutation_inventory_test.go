@@ -78,13 +78,15 @@ var pcd1b4ExpectedLifecycleStatements = []pcd1b4LifecycleSite{
 	// Paxos domain. It does not remove any certified dependency.
 	{path: "internal/api/v2/write_helpers.go", decl: "softDeleteLibrary", kind: pcd1b4SoftDelete, role: pcd1b4NoChange},
 	{path: "internal/gc/store_cassandra.go", decl: "CassandraStore.SoftDeleteLibrary", kind: pcd1b4SoftDelete, role: pcd1b4NoChange},
-	// Restore: plain DELETE deleted_at under the hard-delete lease. HEAD and
-	// the tree are untouched; any destroyer that ran during trash already
+	// Restore: global-SERIAL LWT `SET deleted_at = null IF deleted_at = ?`
+	// (reached from restoreDeletedLibrary under the hard-delete lease). HEAD
+	// and the tree are untouched; any destroyer that ran during trash already
 	// cleared the witness through its intent.
-	{path: "internal/api/v2/write_helpers.go", decl: "restoreDeletedLibrary", kind: pcd1b4Restore, role: pcd1b4NoChange},
-	// Canonical row removal: the witness columns go with the row.
-	{path: "internal/api/v2/library_delete_helpers.go", decl: "hardDeleteLibraryRowsFn", kind: pcd1b4RowDelete, role: pcd1b4NoChange},
-	{path: "internal/gc/store_cassandra.go", decl: "CassandraStore.HardDeleteLibrary", kind: pcd1b4RowDelete, role: pcd1b4NoChange},
+	{path: "internal/db/library_lifecycle.go", decl: "RestoreTrashedLibraryGeneration", kind: pcd1b4Restore, role: pcd1b4NoChange},
+	// Canonical row removal: the witness columns go with the row. Global-SERIAL
+	// `DELETE ... IF deleted_at = ?`, reached from the API permanent delete
+	// (hardDeleteLibraryRowsFn) and the GC cascade (CassandraStore.HardDeleteLibrary).
+	{path: "internal/db/library_lifecycle.go", decl: "DeleteTrashedLibraryGeneration", kind: pcd1b4RowDelete, role: pcd1b4NoChange},
 	{path: "internal/api/v2/write_helpers.go", decl: "deleteUnpublishedLibraryRow", kind: pcd1b4RowDelete, role: pcd1b4NoChange},
 	// Witness writers: the only statements that set the continuity columns.
 	{path: "internal/db/library_continuity.go", decl: "CommitLibraryContinuityWitness", kind: pcd1b4WitnessWrite, role: pcd1b4PredicateEpoch},
@@ -134,7 +136,7 @@ var pcd1b4ExpectedDestroyerCallSites = []struct {
 var (
 	pcd1b4LibrariesTable         = `(?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)?libraries\b`
 	pcd1b4UpdateLibrariesPattern = regexp.MustCompile(`(?is)\bUPDATE\s+` + pcd1b4LibrariesTable)
-	pcd1b4DeletedAtAssignPattern = regexp.MustCompile(`(?i)\bdeleted_at\s*=`)
+	pcd1b4DeletedAtAssignPattern = regexp.MustCompile(`(?i)\bdeleted_at\s*=\s*(null\b)?`)
 	pcd1b4RestorePattern         = regexp.MustCompile(`(?is)\bDELETE\s+[^;]*?\bdeleted_at\b[^;]*?\bFROM\s+` + pcd1b4LibrariesTable)
 	pcd1b4RowDeletePattern       = regexp.MustCompile(`(?is)\bDELETE\s+FROM\s+` + pcd1b4LibrariesTable)
 	pcd1b4WitnessWritePattern    = regexp.MustCompile(`(?is)\b(?:UPDATE|INSERT\s+INTO)\s+` + pcd1b4LibrariesTable + `[^;]*?\bcontinuity_(?:certified_head_commit_id|contract_version)\b`)
@@ -143,10 +145,11 @@ var (
 	pcd1b4FenceColumnPattern     = regexp.MustCompile(`(?i)\bcontinuity_destruction_(?:epoch|pending|superseded)\b`)
 )
 
-// pcd1b4SetClauseAssignsDeletedAt looks only at the SET clause of an UPDATE on
+// pcd1b4SetClauseDeletedAt looks only at the SET clause of an UPDATE on
 // libraries: the witness CAS predicates `IF ... deleted_at = null`, which is a
-// condition, not a soft-delete.
-func pcd1b4SetClauseAssignsDeletedAt(prepared string) bool {
+// condition, not a soft-delete. Assigning a value is a soft-delete; assigning
+// null is a restore.
+func pcd1b4SetClauseDeletedAt(prepared string) (softDelete, restore bool) {
 	for _, loc := range pcd1b4UpdateLibrariesPattern.FindAllStringIndex(prepared, -1) {
 		rest := prepared[loc[1]:]
 		set := pc0SETKeywordPattern.FindStringIndex(rest)
@@ -157,20 +160,25 @@ func pcd1b4SetClauseAssignsDeletedAt(prepared string) bool {
 		if where := pc0WHEREKeywordPattern.FindStringIndex(clause); where != nil {
 			clause = clause[:where[0]]
 		}
-		if pcd1b4DeletedAtAssignPattern.MatchString(clause) {
-			return true
+		for _, match := range pcd1b4DeletedAtAssignPattern.FindAllStringSubmatch(clause, -1) {
+			if match[1] != "" {
+				restore = true
+			} else {
+				softDelete = true
+			}
 		}
 	}
-	return false
+	return softDelete, restore
 }
 
 func pcd1b4ClassifyStatement(statement string) []pcd1b4LifecycleKind {
 	prepared := pc0PreparedCQL(statement)
 	var kinds []pcd1b4LifecycleKind
-	if pcd1b4SetClauseAssignsDeletedAt(prepared) {
+	softDelete, restore := pcd1b4SetClauseDeletedAt(prepared)
+	if softDelete {
 		kinds = append(kinds, pcd1b4SoftDelete)
 	}
-	if pcd1b4RestorePattern.MatchString(prepared) {
+	if restore || pcd1b4RestorePattern.MatchString(prepared) {
 		kinds = append(kinds, pcd1b4Restore)
 	}
 	if pcd1b4RowDeletePattern.MatchString(prepared) {

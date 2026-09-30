@@ -3605,10 +3605,20 @@ func (w *Worker) processLibraryCascade(ctx context.Context, item QueueItem) erro
 	}
 
 	if err := w.cascadeDeleteLibrary(item.OrgID, libraryID, item.BlockRepresentationID, item.StorageClass, identityAt, fenceLibrary); err != nil {
+		if errors.Is(err, errLibraryCascadeGenerationChanged) {
+			log.Printf("[GC Worker] Skipping stale library cascade for %s at hard delete: %v", item.ItemID, err)
+			return nil
+		}
 		return err
 	}
 	return lease.Check()
 }
+
+// errLibraryCascadeGenerationChanged: the canonical library row is no longer
+// trashed under the cascade's deleted_at identity (a restore or a new soft
+// delete committed after the lease fence), so the fenced hard delete did not
+// apply.
+var errLibraryCascadeGenerationChanged = errors.New("library is no longer trashed under the cascade identity")
 
 // reclaimHardDeletedLibraryStorageCounter idempotently deletes the per-library
 // storage counter of a library whose canonical row is already gone. It exists to
@@ -3673,11 +3683,18 @@ func (w *Worker) cascadeDeleteLibrary(orgID, libraryID uuid.UUID, blockRepresent
 	// restore cannot observe a deleted storage counter and reactivate an
 	// under-counted library. Deleting the counter before the hard delete (the old
 	// order) left exactly that window. See DEBT-GC-COUNTER-ORDERING history.
+	// The lease fence is an early exit only: the cascade can pause after it and lose
+	// the lease to a restore. HardDeleteLibrary itself is fenced on the deleted_at
+	// generation (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01).
 	if err := fenceLibrary(); err != nil {
 		return err
 	}
-	if err := w.store.HardDeleteLibrary(orgID, libraryID); err != nil {
+	deleted, err := w.store.HardDeleteLibrary(orgID, libraryID, libraryDeletedAt)
+	if err != nil {
 		return fmt.Errorf("failed to hard-delete library %s: %w", libraryID, err)
+	}
+	if !deleted {
+		return fmt.Errorf("hard-delete library %s (deleted_at %s): %w", libraryID, libraryDeletedAt.Format(time.RFC3339Nano), errLibraryCascadeGenerationChanged)
 	}
 
 	// The library is now definitively gone — record the audit here (not after the

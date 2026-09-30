@@ -369,6 +369,39 @@ func TestNonfencingT4StaleRestoreAfterDelete(t *testing.T) {
 	}
 }
 
+// T4b: as T4, but the new owner is itself paused between its canonical delete
+// and its completion writes, so the soft-delete marker is still in place when
+// the stale restore resumes. Only the canonical restore fence stops it.
+func TestNonfencingT4StaleRestoreBeforeDeleteCompletion(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	pause := pauseRestoreAfterRenew(t, lib)
+
+	oldOwner := runOwner(func() error { return nonfencingRestore(db, lib) })
+	tokenA := pause.wait(t)
+	nonfencingAgeLease(t, db, lib, tokenA)
+	tokenB := uuid.New()
+	if acquired, err := gcpkg.AcquireLibraryHardDeleteLockLease(db.Session(), lib.uuid(t), tokenB); err != nil || !acquired {
+		t.Fatalf("new owner takeover: acquired=%v err=%v", acquired, err)
+	}
+	if err := db.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, lib.OrgID, lib.LibraryID).Exec(); err != nil {
+		t.Fatalf("new owner canonical delete: %v", err)
+	}
+
+	pause.resumeOwner()
+	errA := awaitOwner(t, oldOwner)
+
+	if present, deletedAt := nonfencingCanonical(t, db, lib); present {
+		t.Fatalf("NONFENCING RED: stale restore (err=%v) resurrected a library whose permanent delete had not completed yet: deleted_at=%v", errA, deletedAt)
+	}
+	if errA == nil {
+		t.Fatal("stale restore reported success after the canonical row was deleted")
+	}
+	if token := nonfencingLeaseToken(t, db, lib); token != tokenB.String() {
+		t.Fatalf("stale restore removed the new owner's lease: token=%q", token)
+	}
+}
+
 // T5a: a permanent delete of generation D1 resumes after a restore and a new
 // soft delete (generation D2). It must not delete generation D2.
 func TestNonfencingT5StaleDeleteAgainstNewerGeneration(t *testing.T) {
@@ -499,4 +532,148 @@ func TestNonfencingT7StaleOwnerCannotTouchCurrentOwner(t *testing.T) {
 	if errA == nil {
 		t.Fatal("stale owner reported success")
 	}
+}
+
+// The generation-fenced primitives against real Cassandra: each outcome,
+// including the shape of a not-applied LWT on a missing row.
+func TestNonfencingLifecyclePrimitiveOutcomes(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	session := db.Session()
+
+	t.Run("delete", func(t *testing.T) {
+		lib := nonfencingSeedTrashedLibrary(t, db)
+		other := lib.DeletedAt.Add(-time.Second)
+		if got, err := dbpkg.DeleteTrashedLibraryGeneration(session, lib.OrgID, lib.LibraryID, other); err != nil || got != dbpkg.LibraryLifecycleGenerationChanged {
+			t.Fatalf("delete of another generation = %v, %v; want generation changed", got, err)
+		}
+		if present, _ := nonfencingCanonical(t, db, lib); !present {
+			t.Fatal("delete of another generation removed the row")
+		}
+		if got, err := dbpkg.DeleteTrashedLibraryGeneration(session, lib.OrgID, lib.LibraryID, lib.DeletedAt); err != nil || got != dbpkg.LibraryLifecycleApplied {
+			t.Fatalf("delete of the current generation = %v, %v; want applied", got, err)
+		}
+		if got, err := dbpkg.DeleteTrashedLibraryGeneration(session, lib.OrgID, lib.LibraryID, lib.DeletedAt); err != nil || got != dbpkg.LibraryLifecycleTargetAbsent {
+			t.Fatalf("delete of a deleted library = %v, %v; want target absent", got, err)
+		}
+	})
+
+	t.Run("delete active library", func(t *testing.T) {
+		lib := nonfencingSeedTrashedLibrary(t, db)
+		if err := nonfencingRestore(db, lib); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+		if got, err := dbpkg.DeleteTrashedLibraryGeneration(session, lib.OrgID, lib.LibraryID, lib.DeletedAt); err != nil || got != dbpkg.LibraryLifecycleGenerationChanged {
+			t.Fatalf("delete of an active library = %v, %v; want generation changed", got, err)
+		}
+	})
+
+	t.Run("restore", func(t *testing.T) {
+		lib := nonfencingSeedTrashedLibrary(t, db)
+		now := time.Now().UTC()
+		if got, err := dbpkg.RestoreTrashedLibraryGeneration(session, lib.OrgID, lib.LibraryID, lib.DeletedAt.Add(-time.Second), now); err != nil || got != dbpkg.LibraryLifecycleGenerationChanged {
+			t.Fatalf("restore of another generation = %v, %v; want generation changed", got, err)
+		}
+		if got, err := dbpkg.RestoreTrashedLibraryGeneration(session, lib.OrgID, lib.LibraryID, lib.DeletedAt, now); err != nil || got != dbpkg.LibraryLifecycleApplied {
+			t.Fatalf("restore of the current generation = %v, %v; want applied", got, err)
+		}
+		if present, deletedAt := nonfencingCanonical(t, db, lib); !present || !deletedAt.IsZero() {
+			t.Fatalf("after restore: present=%v deleted_at=%v", present, deletedAt)
+		}
+		if got, err := dbpkg.RestoreTrashedLibraryGeneration(session, lib.OrgID, lib.LibraryID, lib.DeletedAt, now); err != nil || got != dbpkg.LibraryLifecycleGenerationChanged {
+			t.Fatalf("second restore = %v, %v; want generation changed", got, err)
+		}
+	})
+
+	t.Run("restore never creates a row", func(t *testing.T) {
+		lib := nonfencingLibrary{OrgID: uuid.NewString(), LibraryID: uuid.NewString()}
+		t.Cleanup(func() {
+			_ = session.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, lib.OrgID, lib.LibraryID).Exec()
+		})
+		if got, err := dbpkg.RestoreTrashedLibraryGeneration(session, lib.OrgID, lib.LibraryID, time.Now().UTC(), time.Now().UTC()); err != nil || got != dbpkg.LibraryLifecycleTargetAbsent {
+			t.Fatalf("restore of a missing row = %v, %v; want target absent", got, err)
+		}
+		if present, _ := nonfencingCanonical(t, db, lib); present {
+			t.Fatal("restore of a missing row created a canonical row")
+		}
+	})
+
+	t.Run("marker", func(t *testing.T) {
+		lib := nonfencingSeedTrashedLibrary(t, db)
+		if got, err := dbpkg.ClearSoftDeleteMarkerGeneration(session, lib.LibraryID, lib.DeletedAt.Add(-time.Second)); err != nil || got != dbpkg.LibraryLifecycleGenerationChanged {
+			t.Fatalf("clear marker of another generation = %v, %v; want generation changed", got, err)
+		}
+		if err := session.Query(`UPDATE deleted_libraries SET purge_requested_at = ? WHERE library_id = ?`, time.Now().UTC(), lib.LibraryID).Exec(); err != nil {
+			t.Fatalf("stamp purge_requested_at: %v", err)
+		}
+		if got, err := dbpkg.ClearSoftDeleteMarkerGeneration(session, lib.LibraryID, lib.DeletedAt); err != nil || got != dbpkg.LibraryLifecycleGenerationChanged {
+			t.Fatalf("clear of a permanent-delete marker = %v, %v; want generation changed", got, err)
+		}
+		if err := session.Query(`DELETE purge_requested_at FROM deleted_libraries WHERE library_id = ?`, lib.LibraryID).Exec(); err != nil {
+			t.Fatalf("clear purge_requested_at: %v", err)
+		}
+		if got, err := dbpkg.ClearSoftDeleteMarkerGeneration(session, lib.LibraryID, lib.DeletedAt); err != nil || got != dbpkg.LibraryLifecycleApplied {
+			t.Fatalf("clear of the soft-delete marker = %v, %v; want applied", got, err)
+		}
+		if marker := nonfencingReadMarker(t, db, lib); marker.Present {
+			t.Fatalf("marker survived: %+v", marker)
+		}
+		if got, err := dbpkg.ClearSoftDeleteMarkerGeneration(session, lib.LibraryID, lib.DeletedAt); err != nil || got != dbpkg.LibraryLifecycleTargetAbsent {
+			t.Fatalf("clear of a missing marker = %v, %v; want target absent", got, err)
+		}
+	})
+}
+
+// GC cascade path (GC_ENABLED=false in production): the store's hard delete is
+// fenced on the same generation. A restored library is left alone; the trashed
+// generation is deleted; a row already removed by an API permanent delete of the
+// same generation still gets its completion writes.
+func TestNonfencingGCHardDeleteLibraryIsGenerationFenced(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	store := gcpkg.NewCassandraStore(db)
+
+	t.Run("restored library", func(t *testing.T) {
+		lib := nonfencingSeedTrashedLibrary(t, db)
+		if err := nonfencingRestore(db, lib); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+		deleted, err := store.HardDeleteLibrary(uuid.MustParse(lib.OrgID), lib.uuid(t), lib.DeletedAt)
+		if err != nil || deleted {
+			t.Fatalf("stale GC hard delete of a restored library: deleted=%v err=%v", deleted, err)
+		}
+		if present, deletedAt := nonfencingCanonical(t, db, lib); !present || !deletedAt.IsZero() {
+			t.Fatalf("NONFENCING RED: stale GC hard delete changed the restored library: present=%v deleted_at=%v", present, deletedAt)
+		}
+		var orgID string
+		if err := db.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, lib.LibraryID).Scan(&orgID); err != nil {
+			t.Fatalf("stale GC hard delete removed libraries_by_id: %v", err)
+		}
+	})
+
+	t.Run("trashed generation", func(t *testing.T) {
+		lib := nonfencingSeedTrashedLibrary(t, db)
+		deleted, err := store.HardDeleteLibrary(uuid.MustParse(lib.OrgID), lib.uuid(t), lib.DeletedAt)
+		if err != nil || !deleted {
+			t.Fatalf("GC hard delete: deleted=%v err=%v", deleted, err)
+		}
+		if present, _ := nonfencingCanonical(t, db, lib); present {
+			t.Fatal("GC hard delete left the canonical row")
+		}
+		if marker := nonfencingReadMarker(t, db, lib); marker.Present {
+			t.Fatalf("GC hard delete left the marker: %+v", marker)
+		}
+	})
+
+	t.Run("already permanently deleted", func(t *testing.T) {
+		lib := nonfencingSeedTrashedLibrary(t, db)
+		if err := nonfencingPermanentDelete(db, lib); err != nil {
+			t.Fatalf("permanent delete: %v", err)
+		}
+		deleted, err := store.HardDeleteLibrary(uuid.MustParse(lib.OrgID), lib.uuid(t), lib.DeletedAt)
+		if err != nil || !deleted {
+			t.Fatalf("GC hard delete after permanent delete: deleted=%v err=%v", deleted, err)
+		}
+		if marker := nonfencingReadMarker(t, db, lib); marker.Present {
+			t.Fatalf("GC hard delete left the purge marker: %+v", marker)
+		}
+	})
 }

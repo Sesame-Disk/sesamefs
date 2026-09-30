@@ -1786,8 +1786,8 @@ func TestWorker_ProcessCommit_DeletedAtIdentityDeletesAfterCanonicalGone(t *test
 	deletedAt := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Millisecond)
 	store.AddDeletedLibrary(orgID, libID, "hot", deletedAt)
 	store.AddCommit(libID, "commit-1", "")
-	if err := store.HardDeleteLibrary(orgID, libID); err != nil { // canonical + marker removed
-		t.Fatalf("HardDeleteLibrary: %v", err)
+	if deleted, err := store.HardDeleteLibrary(orgID, libID, deletedAt); err != nil || !deleted { // canonical + marker removed
+		t.Fatalf("HardDeleteLibrary: deleted=%v err=%v", deleted, err)
 	}
 
 	item := QueueItem{
@@ -2951,6 +2951,70 @@ func TestWorker_ProcessOrgCascade_FenceFailsClosedWhenLibraryLockLost(t *testing
 	}
 }
 
+// ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01, GC path: the cascade renews its
+// lease fence, pauses, and a restore commits before the hard delete. The
+// generation-fenced HardDeleteLibrary must leave the restored library alone and
+// the item completes as stale.
+func TestWorker_ProcessLibraryCascade_RestoreAfterFenceKeepsLibrary(t *testing.T) {
+	store := NewMockStore()
+	w := NewWorker(store, nil, NewQueue(store), 100, 0, false, &Stats{})
+
+	orgID, libID := uuid.New(), uuid.New()
+	deletedAt := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Millisecond)
+	store.AddOrganization(orgID)
+	store.AddDeletedLibrary(orgID, libID, "hot", deletedAt)
+	store.afterLibraryLockRenewHook = func(id uuid.UUID) {
+		if id == libID {
+			store.RestoreLibraryForTest(libID)
+		}
+	}
+
+	item := QueueItem{OrgID: orgID, QueuedAt: deletedAt, IdentityAt: deletedAt, ItemType: ItemLibraryCascade, ItemID: libID.String(), StorageClass: "hot"}
+	if err := w.processLibraryCascade(context.Background(), item); err != nil {
+		t.Fatalf("stale cascade should complete as stale, got %v", err)
+	}
+	if exists, _ := store.CanonicalLibraryExists(orgID, libID); !exists {
+		t.Fatal("stale cascade hard-deleted the restored library")
+	}
+	if got := store.libraryDestructiveCalls; len(got) != 1 || got[0] != "HardDeleteLibrary" {
+		t.Fatalf("destructive calls = %v, want only the rejected HardDeleteLibrary (no counter cleanup)", got)
+	}
+	for _, entry := range store.AuditLogEntries() {
+		if entry.Action == "gc_library_cascade_deleted" {
+			t.Fatal("hard-delete audit written for a library that was not deleted")
+		}
+	}
+}
+
+// Same schedule inside an org cascade: the org purge must not complete while
+// one of its libraries was restored under it; the cascade fails and retries.
+func TestWorker_ProcessOrgCascade_LibraryRestoreAfterFenceFailsClosed(t *testing.T) {
+	store := NewMockStore()
+	w := NewWorker(store, nil, NewQueue(store), 100, 0, false, &Stats{})
+
+	orgID, libID := uuid.New(), uuid.New()
+	deletedAt := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Millisecond)
+	store.AddDeletedOrg(orgID, "Restore Corp", deletedAt)
+	store.AddDeletedLibrary(orgID, libID, "hot", deletedAt)
+	store.afterLibraryLockRenewHook = func(id uuid.UUID) {
+		if id == libID {
+			store.RestoreLibraryForTest(libID)
+		}
+	}
+
+	item := QueueItem{OrgID: orgID, QueuedAt: deletedAt, IdentityAt: deletedAt, ItemType: ItemOrgCascade, ItemID: orgID.String()}
+	err := w.processOrgCascade(context.Background(), item)
+	if !errors.Is(err, errLibraryCascadeGenerationChanged) {
+		t.Fatalf("org cascade error = %v, want errLibraryCascadeGenerationChanged", err)
+	}
+	if !store.HasOrg(orgID) {
+		t.Fatal("org hard-deleted although one of its libraries was not")
+	}
+	if exists, _ := store.CanonicalLibraryExists(orgID, libID); !exists {
+		t.Fatal("stale org cascade hard-deleted the restored library")
+	}
+}
+
 func TestWorker_ProcessUserCascade_AlreadyDeleted(t *testing.T) {
 	store := NewMockStore()
 	stats := &Stats{}
@@ -3183,11 +3247,15 @@ func TestWorker_ProcessFSObject_HardDeletedLibraryUsesQueuedRepresentation(t *te
 	if err := store.SoftDeleteLibrary(orgID, libID, uuid.Nil); err != nil {
 		t.Fatalf("SoftDeleteLibrary failed: %v", err)
 	}
-	if err := store.HardDeleteLibrary(orgID, libID); err != nil {
-		t.Fatalf("HardDeleteLibrary failed: %v", err)
+	trashedAt, err := store.GetLibraryDeletedAt(libID)
+	if err != nil || trashedAt == nil {
+		t.Fatalf("GetLibraryDeletedAt: %v, %v", trashedAt, err)
+	}
+	if deleted, err := store.HardDeleteLibrary(orgID, libID, *trashedAt); err != nil || !deleted {
+		t.Fatalf("HardDeleteLibrary failed: deleted=%v err=%v", deleted, err)
 	}
 
-	err := w.processFSObject(context.Background(), QueueItem{
+	err = w.processFSObject(context.Background(), QueueItem{
 		OrgID:                 orgID,
 		QueuedAt:              queuedAt,
 		IdentityAt:            queuedAt,

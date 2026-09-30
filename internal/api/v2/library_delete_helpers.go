@@ -50,28 +50,45 @@ var (
 		return gcpkg.ReleaseLibraryHardDeleteLockLease(database.Session(), libraryID, leaseToken)
 	}
 	hardDeleteLibraryRowsFn = func(database *dbpkg.DB, orgID, libraryID, storageClass, blockRepresentationID string, deletedAt time.Time) error {
-		batch := database.Session().Batch(gocql.LoggedBatch)
+		// The completion batch is built first because the admin read-model delete keys
+		// are read from the canonical row, which the fenced delete below removes. It is
+		// written at global QUORUM so the purge marker is visible to the global-SERIAL
+		// marker check of a stale restore in another datacenter
+		// (dbpkg.ClearSoftDeleteMarkerGeneration); the fenced delete already needs a
+		// global quorum, so this costs no availability.
+		batch := database.Session().Batch(gocql.LoggedBatch).Consistency(gocql.Quorum)
 		if err := addDeleteAdminLibraryReadModelQueries(database, batch, orgID, libraryID); err != nil {
 			return errors.Join(errHardDeleteLibraryReadModel, err)
 		}
-		batch.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, libraryID)
 		batch.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, libraryID)
 		// This is a *permanent* delete. Two invariants:
 		//   1. PRESERVE the original deleted_at (the library's trash time). Phase 13 dedups
 		//      library_cascade by deleted_at; resetting it to now() would change the identity
 		//      and let a cascade already queued under the old deleted_at be enqueued a second
-		//      time. deletedAt is the authoritative libraries.deleted_at captured by the caller;
-		//      fall back to now() only if it is somehow zero.
+		//      time. deletedAt is the authoritative libraries.deleted_at captured by the caller.
 		//   2. Stamp purge_requested_at = now() so Phase 13 makes the library eligible on its
 		//      next scan instead of waiting out the configured TrashRetentionDays. The cascade
 		//      is still gated by the GC grace period before the worker processes it — reclamation
 		//      happens on the order of the grace period, not the retention period.
 		// See migration 012 / ISSUE-GC-ORG-TRASH-NO-CASCADE-01.
-		markerDeletedAt := deletedAt
-		if markerDeletedAt.IsZero() {
-			markerDeletedAt = time.Now()
+		batch.Query(`INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id, purge_requested_at) VALUES (?, ?, ?, ?, ?, ?)`, libraryID, orgID, deletedAt, storageClass, blockRepresentationID, time.Now())
+
+		// The fenced lifecycle mutation (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01): the
+		// canonical row is deleted only while it is still trashed under the generation this
+		// owner verified. The lease renewal before this call does not fence it: an owner can
+		// pause after renewing, lose the lease to a restore, and resume here.
+		outcome, err := dbpkg.DeleteTrashedLibraryGeneration(database.Session(), orgID, libraryID, deletedAt)
+		if err != nil {
+			return errors.Join(errHardDeleteLibraryLifecycle, err)
 		}
-		batch.Query(`INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id, purge_requested_at) VALUES (?, ?, ?, ?, ?, ?)`, libraryID, orgID, markerDeletedAt, storageClass, blockRepresentationID, time.Now())
+		if outcome != dbpkg.LibraryLifecycleApplied {
+			return errPermanentDeleteCandidateStale
+		}
+		// Completion writes run only after this generation's canonical row is gone. A
+		// hard delete is terminal, so they cannot touch a newer generation and are
+		// idempotent if replayed. If they fail, the library is deleted but its lookup,
+		// admin read model and purge request are left behind until the GC cascade of the
+		// soft-delete marker removes them.
 		if err := batch.Exec(); err != nil {
 			return errors.Join(errHardDeleteLibraryBatchExec, err)
 		}
@@ -150,6 +167,7 @@ var (
 	errDeleteLibraryLinksCleanup      = errors.New("delete library links cleanup")
 	errHardDeleteLibraryReadModel     = errors.New("hard delete library read model")
 	errHardDeleteLibraryBatchExec     = errors.New("hard delete library batch exec")
+	errHardDeleteLibraryLifecycle     = errors.New("hard delete library lifecycle transition")
 	errPermanentDeleteCandidateStale  = errors.New("permanent delete candidate stale")
 	errPermanentDeleteInProgress      = errors.New("permanent delete in progress")
 )
@@ -224,9 +242,11 @@ func permanentlyDeleteTrashedLibraryCandidate(database *dbpkg.DB, candidate tras
 		}
 	}
 
+	// Early exit only: this renewal does not fence the final mutation (the owner can
+	// pause right after it). hardDeleteLibraryRowsFn fences on the deleted_at generation.
 	owned, err := renewLibraryHardDeleteLockLeaseFn(database, libraryUUID, leaseToken)
 	if err != nil {
-		return "", fmt.Errorf("fence library hard-delete lock for %s/%s: %w", candidate.OrgID, candidate.LibraryID, err)
+		return "", fmt.Errorf("renew library hard-delete lock for %s/%s: %w", candidate.OrgID, candidate.LibraryID, err)
 	}
 	if !owned {
 		return "", errPermanentDeleteInProgress

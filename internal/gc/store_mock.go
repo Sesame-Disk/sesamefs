@@ -166,6 +166,7 @@ type MockStore struct {
 	deleteGroupFullErr                             error
 	reconcileStorageCountersHook                   func()
 	acquireOrgHardDeleteLockHook                   func(orgID uuid.UUID)
+	afterLibraryLockRenewHook                      func(libraryID uuid.UUID) // after a successful library lease renewal, outside the lock
 	beginOrgPurgeHook                              func(orgID uuid.UUID)
 	getBlockRefCountErr                            error
 	blockExistsErr                                 error
@@ -1419,7 +1420,7 @@ func (m *MockStore) AddGroupMembership(orgID, userID, groupID uuid.UUID) {
 func (m *MockStore) AddDeletedLibrary(orgID, libraryID uuid.UUID, storageClass string, deletedAt time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.libraries[libraryID] = &mockLibrary{OrgID: orgID, LibraryID: libraryID, BlockRepresentationID: db.PlainBlockRepresentationID, StorageClass: storageClass}
+	m.libraries[libraryID] = &mockLibrary{OrgID: orgID, LibraryID: libraryID, BlockRepresentationID: db.PlainBlockRepresentationID, StorageClass: storageClass, DeletedAt: deletedAt}
 	m.deletedLibraries[libraryID] = &mockDeletedLibrary{OrgID: orgID, LibraryID: libraryID, BlockRepresentationID: db.PlainBlockRepresentationID, StorageClass: storageClass, DeletedAt: deletedAt}
 }
 
@@ -3950,13 +3951,18 @@ func (m *MockStore) ListExpiredDeletedLibraries(retentionDays int) ([]DeletedLib
 	}
 	return result, nil
 }
-func (m *MockStore) HardDeleteLibrary(orgID, libraryID uuid.UUID) error {
+func (m *MockStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.libraryDestructiveCalls = append(m.libraryDestructiveCalls, "HardDeleteLibrary")
+	// Mirrors the generation-fenced canonical delete: a present row that is not
+	// trashed under deletedAt is left untouched.
+	if lib, ok := m.libraries[libraryID]; ok && lib.OrgID == orgID && !lib.DeletedAt.Equal(deletedAt) {
+		return false, nil
+	}
 	delete(m.libraries, libraryID)
 	delete(m.deletedLibraries, libraryID)
-	return nil
+	return true, nil
 }
 
 // --- User cascade (Fase 1) ---
@@ -4159,18 +4165,35 @@ func (m *MockStore) AcquireLibraryHardDeleteLock(libraryID, leaseToken uuid.UUID
 
 func (m *MockStore) RenewLibraryHardDeleteLock(libraryID, leaseToken uuid.UUID) (bool, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.forceRenewLibraryLockNotOwned {
+		m.mu.Unlock()
 		// Simulate a lease lost to TTL expiry or a concurrent restore between acquire and fence.
 		return false, nil
 	}
 	lock, locked := m.libraryHardDeleteLocks[libraryID]
 	if !locked || lock.LeaseToken != leaseToken {
+		m.mu.Unlock()
 		return false, nil
 	}
 	lock.Heartbeat = time.Now().UTC()
 	m.libraryHardDeleteLocks[libraryID] = lock
+	hook := m.afterLibraryLockRenewHook
+	m.mu.Unlock()
+	if hook != nil {
+		hook(libraryID)
+	}
 	return true, nil
+}
+
+// RestoreLibraryForTest mirrors a committed restore: the canonical row is
+// active again and the deleted_libraries marker is gone.
+func (m *MockStore) RestoreLibraryForTest(libraryID uuid.UUID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if lib := m.libraries[libraryID]; lib != nil {
+		lib.DeletedAt = time.Time{}
+	}
+	delete(m.deletedLibraries, libraryID)
 }
 
 func (m *MockStore) ReleaseLibraryHardDeleteLock(libraryID, leaseToken uuid.UUID) error {

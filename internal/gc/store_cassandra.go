@@ -6216,22 +6216,39 @@ func (s *CassandraStore) ListExpiredDeletedLibraries(retentionDays int) ([]Delet
 	return result, nil
 }
 
-func (s *CassandraStore) HardDeleteLibrary(orgID, libraryID uuid.UUID) error {
+func (s *CassandraStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt time.Time) (bool, error) {
 	session := s.db.Session()
+	// The completion batch is built first because the admin read-model delete keys
+	// are read from the canonical row, which the fenced delete below removes.
 	batch := session.Batch(gocql.LoggedBatch)
 	if err := db.AddDeleteAdminLibraryReadModelQueries(session, batch, orgID.String(), libraryID.String()); err != nil {
-		return err
+		return false, err
 	}
 
 	db.AddDeleteLibraryPolicyQuery(batch, db.GCLibraryPolicyVersionTTL, orgID.String(), libraryID.String())
 	db.AddDeleteLibraryPolicyQuery(batch, db.GCLibraryPolicyAutoDelete, orgID.String(), libraryID.String())
-	batch.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`,
-		orgID.String(), libraryID.String())
 	batch.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`,
 		libraryID.String())
 	batch.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`,
 		libraryID.String())
-	return batch.Exec()
+
+	// The fenced lifecycle mutation (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01): a
+	// cascade that paused after its lease fence and lost the lease to a restore
+	// cannot delete the restored (or re-trashed) canonical row.
+	outcome, err := db.DeleteTrashedLibraryGeneration(session, orgID.String(), libraryID.String(), deletedAt)
+	if err != nil {
+		return false, err
+	}
+	if outcome == db.LibraryLifecycleGenerationChanged {
+		return false, nil
+	}
+	// Applied, or the row is already gone (an API permanent delete of this
+	// generation): hard delete is terminal, so the completion writes cannot touch a
+	// newer generation and a retry after a failure here completes them.
+	if err := batch.Exec(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // --- Org cascade (Fase 4) ---

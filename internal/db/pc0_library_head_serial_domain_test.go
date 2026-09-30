@@ -1150,8 +1150,8 @@ func pc0RequireEmbeddedMigrationsStayOutOfHeadDomain(t *testing.T) {
 // confirm SELECT's Consistency(gocql.Serial) or a pin moved onto the wrong query.
 func TestPC0HeadSerialDomainPinsGlobalSerial(t *testing.T) {
 	ops := pc0HeadSerialDomainOps()
-	if len(ops) != 7 {
-		t.Fatalf("PC0 HEAD SERIAL: derived serial-domain ops = %d, want 7 (six cas writers + rollback DELETE)", len(ops))
+	if len(ops) != 8 {
+		t.Fatalf("PC0 HEAD SERIAL: derived serial-domain ops = %d, want 8 (six cas writers + rollback DELETE + trashed-generation DELETE)", len(ops))
 	}
 
 	seen := map[string]bool{}
@@ -1225,7 +1225,7 @@ func pc0RequireHeadSerialPinOnCASChain(t *testing.T, op pc0HeadSerialDomainOp) {
 		}
 		return
 	}
-	if ident, ok := args[0].(*ast.Ident); ok && op.path == "internal/db/library_continuity.go" && ident.Name == "LibraryHeadSerialConsistency" {
+	if ident, ok := args[0].(*ast.Ident); ok && (op.path == "internal/db/library_continuity.go" || op.path == "internal/db/library_lifecycle.go") && ident.Name == "LibraryHeadSerialConsistency" {
 		return
 	}
 	t.Fatalf("PC0 HEAD SERIAL: %s in %s SerialConsistency argument = %s, want LibraryHeadSerialConsistency", op.decl, op.path, pc0NodeText(t, args[0]))
