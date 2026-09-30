@@ -1,6 +1,14 @@
 # Current Work - SesameFS
 
-**Active branch — PR #234, `fix/library-hard-delete-lease-global-serial` (rebased onto `main@cd591709c`, 2026-09-30; originally 2026-09-26):**
+## Active branch: codex/w2-0-wire-crash-rollout
+
+W2-0 evidence follow-up to main@76d68c928f. Real wire ambiguity and SIGKILL
+strengthen the six covered current-version chains. Both mixed deployments
+reproduce D(P)+HEAD; W2-0 stays OPEN pending rollout exclusion. GC remains
+disabled. See [evidence and limits](./docs/W2-0-WIRE-CRASH-ROLLOUT.md).
+
+
+**Merged PR #234, `fix/library-hard-delete-lease-global-serial` (rebased onto `main@cd591709c`, 2026-09-30; originally 2026-09-26):**
 Every hard-delete lease LWT (library, user and org) now pins global `SERIAL`
 for acquire (including stale takeover), renew, and conditional release,
 independent of a session default of `LOCAL_SERIAL`. The post-rebase audit found

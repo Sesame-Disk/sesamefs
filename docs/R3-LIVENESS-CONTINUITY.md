@@ -1,5 +1,17 @@
 # R3 liveness-continuity characterization
 
+## W2-0 real wire/crash/rollout audit (2026-09-30)
+
+[Native wire, OS SIGKILL and rollout evidence](./W2-0-WIRE-CRASH-ROLLOUT.md)
+strengthens the shared current-version premise for F1/F2/F3 and provenanced
+Sync. Both pinned mixed-version configurations reproduce D(P)+HEAD.
+W2-0 remains OPEN: fleet-wide GC disablement and draining old attempts are
+required; a version-aware fail-closed rollout exclusion is not implemented.
+Do not upgrade W2-1/2/6a or R31 closure claims from these tests. The #201/#236
+W2 -> G4 -> G5 -> E1 -> X1 -> PRE-GC/A1 order remains unchanged.
+Historical partial-proof entries below describe their original evidence.
+
+
 ### PR #239 crossed audit correction (2026-09-30)
 
 Pre-D GC now distinguishes real references, repair-only protection and zero.
