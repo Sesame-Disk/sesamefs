@@ -8,16 +8,19 @@ that global SERIAL contention between DCs can return `CAS_WRITE_UNKNOWN` or a
 CAS write timeout for an acquire (6/41 concurrent races on the 3-DC fixture);
 the caller returned without releasing and a later Paxos round could still
 commit the proposal, stranding the lease until stale takeover (~90 min). Each
-acquire entry point now settles that outcome by releasing its own token and
-still returns the error. The lease token, TTL, stale takeover, renewal and
+acquire entry point now makes a best-effort own-token release on that outcome
+and still returns the error; a failed release is reported as such, and the
+remaining single-owner liveness residual is recorded in the known issue. The lease token, TTL, stale takeover, renewal and
 release semantics are otherwise unchanged; no caller flow changed. Residual:
 renew/release can also see an unknown outcome under contention; renew fails
 closed (the operation aborts and the deferred release drops the lease) and an
 unknown release is only logged. A bounded retry is a liveness follow-up
-documented in the known issue.
+documented in the known issue. The cross-audit also registered the pre-existing
+`ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01` (P1, PRE-GC / A1; not
+fixed here).
 
 Evidence (all in Docker): `go test ./... -count=1`, `go vet ./...` and
-`go test -race -short ./...` pass; six directed mutations are RED for their own
+`go test -race -short ./...` pass; seven directed mutations are RED for their own
 reason; the isolated 3-DC harness passes with `LOCAL_SERIAL` sessions.
 Final run (2026-09-30): 60/60 pinned 3-DC races plus the gated run, official harness 3/3 on fresh fixtures; downgrading the pin to `LOCAL_SERIAL` gives two owners in 19/20 runs. The harnesses now scope their backend, fixture and runner
 names to this checkout's compose project and never modify the host tree.

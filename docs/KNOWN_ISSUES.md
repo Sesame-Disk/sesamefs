@@ -6610,7 +6610,7 @@ policy), with a characterization. Not part of PC-D1B.5.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01: The library hard-delete lease inherits `serial_consistency`
 
-**Status**: ✅ Closed in PR #234 on 2026-09-29 — every hard-delete lease LWT (library, user and org) now uses explicit global `SERIAL`, and an acquire with an unknown CAS outcome releases its own token (classified CURRENT-RUNTIME / CONFIG-DEPENDENT and PRE-GC by the 2026-09-29 X1 reset; both classifications are discharged)
+**Status**: ✅ Closed in PR #234 on 2026-09-29 — every hard-delete lease LWT (library, user and org) now uses explicit global `SERIAL`, and an acquire with an unknown CAS outcome makes a best-effort own-token release and never reports success (classified CURRENT-RUNTIME / CONFIG-DEPENDENT and PRE-GC by the 2026-09-29 X1 reset; both classifications are discharged)
 **Severity**: Medium — multi-DC lifecycle serialization
 **Affected**: `acquireHardDeleteLock` / `renewHardDeleteLock` / `releaseHardDeleteLock` (`internal/gc/store_cassandra.go`), used by restore, API permanent delete and the GC library/user/org cascades
 **Registered**: 2026-09-23, PC-D1B.4
@@ -6632,9 +6632,16 @@ and every restore/permanent delete of that library waited for stale takeover
 (about 90 minutes). `settleHardDeleteLockAcquire` now classifies the error
 (`isAmbiguousHardDeleteLockCASError`, mirroring
 `isAmbiguousLibraryHeadUpdateError`) and runs the conditional release for the
-same token. That global SERIAL round completes or supersedes the in-flight
-proposal and deletes the row only if it carries this token. The acquire still
-returns the original error, so no caller proceeds without a known lease.
+same token, then always returns the original error, so no caller proceeds
+without a known lease. The release is **best-effort**, not a guarantee: it can
+itself fail or time out (the error then says so: "own-token release also
+failed ... the lease may stay held until stale takeover"), and a release whose
+Paxos round does not observe the in-flight proposal returns NOT_APPLIED while a
+later round can still commit that proposal. In both cases the token can remain
+the single owner until stale takeover (~90 min) or the 6 h TTL. This is a
+liveness residual only: it never creates a second owner. Settling until the
+outcome is known (for example a bounded SERIAL read-and-release loop) is left
+as a follow-up; it is not a merge requirement for this issue.
 Cost: global SERIAL adds cross-DC round trips to acquire/renew/release, and a
 DC that cannot reach a Paxos quorum of all replicas cannot restore or
 permanently delete a library.
@@ -6659,14 +6666,15 @@ Evidence: `internal/gc/store_cassandra_serial_domain_test.go` checks that every
 `session.Query` in the three helpers is pinned to `gocql.Serial`, that all three
 acquire entry points settle an unknown outcome, the ambiguity classifier, and
 the settle behavior. `scripts/library-hard-delete-lease-serial-domain-mutation-validation.sh`
-runs six directed mutations inside the Docker image (pin removed from renew,
+runs seven directed mutations inside the Docker image (pin removed from renew,
 release downgraded to `LOCAL_SERIAL`, stale-takeover pin removed, library acquire
-not settled, settle skipping the release, `CAS_WRITE_UNKNOWN` classified as
-definite); each goes RED for its own reason. The isolated Cassandra 3-DC harness
+not settled, settle skipping the release, a failed settlement release
+reported as merely attempted, `CAS_WRITE_UNKNOWN` classified as definite); each goes RED for its own reason. The isolated Cassandra 3-DC harness
 (`scripts/library-hard-delete-lease-serial-domain-multidc-validation.sh`) runs
 with client sessions configured as `LOCAL_SERIAL`: concurrent contenders from
 dc-na and dc-eu never had two owners (`EACH_QUORUM`), an ambiguous contender
-never kept the lease, correct and wrong tokens behaved correctly for
+never reported success (if it still owns the lease after settlement the round
+is logged as the residual above, cleared and re-raced), correct and wrong tokens behaved correctly for
 renewal/release, dc-eu acquired after release, and stale takeover still
 succeeded. With the pin downgraded to `LOCAL_SERIAL` the same race reports two
 owners in most runs. Final Docker run on 2026-09-30: 60/60 pinned races plus the gated run passed, the official harness passed 3/3 on fresh fixtures, and the `LOCAL_SERIAL` downgrade reported two owners in 19/20 and 20/20 runs.
@@ -6710,6 +6718,38 @@ prove current ownership, or another equivalent fencing protocol. Characterize
 both stale-delete-after-restore and stale-restore-after-delete with the old
 owner paused after renewal and resumed only after takeover. Keep it out of
 PC-D1B.4; `GC_ENABLED=false` is not protection from this API path.
+
+### ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01: User restore does not serialize with the user hard-delete lease
+
+**Status**: 🔴 Open — PRE-GC / A1. Found in the PR #234 final cross-audit (2026-09-30)
+**Severity**: High (P1)
+**Scope**: PRE-GC / A1 (only the GC worker reaches `HardDeleteUser`)
+**Introduced by #234**: No
+**Blocks #234**: No
+**Affected**: `activateUser` (`internal/api/v2/write_helpers.go`, reached from the admin and org-admin user reactivation/restore endpoints), `Worker.processUserCascade` and the org cascade (`internal/gc/worker.go`), `CassandraStore.HardDeleteUser`
+**Registered**: 2026-09-30, PR #234 final cross-audit
+
+`processUserCascade` acquires `gc_user_hard_delete_locks` so that, per its own
+comment, "a concurrent activateUser (restore) cannot race between the
+stale-check above and the final HardDeleteUser write". `activateUser` does not
+take that lease: it only checks the lock row with an ordinary (session
+consistency) read, then writes the user back to active. `HardDeleteUser` then
+deletes `users` unconditionally. Schedule, reachable in a single DC as well:
+
+1. `activateUser` reads no lock row.
+2. The worker acquires the user lease and re-reads `deleted_at` (still the
+   queued identity), so the post-lock stale check passes.
+3. `activateUser` writes the user as active with `deleted_at = null`.
+4. `HardDeleteUser` deletes the just-reactivated user.
+
+Across DCs the window widens because the ordinary read in step 1 may not
+observe a lease already acquired in another DC. Fix direction: make restore a
+lease participant (acquire the same user lease with its own token, re-check
+`deleted_at` under it, fence the write and release), or make the final
+`HardDeleteUser` conditional on the queued `deleted_at` identity. This is a
+separate issue from `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (stale lease
+owner) and from the global SERIAL pin of the lease itself, which #234 closed.
+`GC_ENABLED=false` keeps it unreachable today; it must close before activation.
 
 ### ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01: Revert/restore paths publish borrowed block dependencies with no pin, `pub:`, repair, or fence
 

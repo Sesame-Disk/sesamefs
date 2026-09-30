@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
@@ -139,12 +140,17 @@ func TestSettleHardDeleteLockAcquire(t *testing.T) {
 		wantAcquired bool
 		wantErr      error
 		wantRelease  bool
+		wantMessage  string
 	}{
 		{name: "acquired", acquired: true, wantAcquired: true},
 		{name: "held by another owner", acquired: false},
 		{name: "definite failure passes through", err: unavailable, wantErr: unavailable},
-		{name: "unknown outcome releases own token", err: casUnknown, wantErr: casUnknown, wantRelease: true},
-		{name: "release failure keeps original error", err: casUnknown, releaseErr: errors.New("release timeout"), wantErr: casUnknown, wantRelease: true},
+		{name: "unknown outcome attempts own-token release", err: casUnknown, wantErr: casUnknown, wantRelease: true,
+			wantMessage: "own-token conditional release attempted"},
+		// Settlement is best-effort: a failed release must be reported, never
+		// described as a released lease.
+		{name: "failed release is reported", err: casUnknown, releaseErr: errors.New("release timeout"), wantErr: casUnknown, wantRelease: true,
+			wantMessage: "own-token release also failed (release timeout), the lease may stay held until stale takeover"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			released := false
@@ -154,6 +160,12 @@ func TestSettleHardDeleteLockAcquire(t *testing.T) {
 			})
 			if acquired != tc.wantAcquired || released != tc.wantRelease || !errors.Is(err, tc.wantErr) || (err == nil) != (tc.wantErr == nil) {
 				t.Fatalf("acquired=%v err=%v released=%v, want acquired=%v err=%v released=%v", acquired, err, released, tc.wantAcquired, tc.wantErr, tc.wantRelease)
+			}
+			if tc.wantMessage != "" && !strings.Contains(err.Error(), tc.wantMessage) {
+				t.Fatalf("error %q does not contain %q", err, tc.wantMessage)
+			}
+			if err != nil && strings.Contains(err.Error(), "own token released") {
+				t.Fatalf("error %q claims a guaranteed release", err)
 			}
 		})
 	}

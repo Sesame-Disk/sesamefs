@@ -85,22 +85,26 @@ func isAmbiguousHardDeleteLockCASError(err error) bool {
 	return errors.As(err, &writeFailure) && writeFailure.WriteType == "CAS"
 }
 
-// settleHardDeleteLockAcquire keeps an acquire with an unknown outcome from
-// stranding the lease. Global SERIAL contention between datacenters can report
-// CAS_WRITE_UNKNOWN (or a CAS write timeout) for a proposal that a later Paxos
-// round still commits; the caller never learns it owns the lease, never renews
-// or releases it, and every restore/permanent delete of the target waits for
-// stale takeover. The conditional release by the same token runs its own global
-// SERIAL round, which completes or supersedes that proposal and deletes the row
-// only if it carries this token. The acquire still reports the original error.
+// settleHardDeleteLockAcquire is a best-effort cleanup for an acquire whose
+// outcome Cassandra could not report. Global SERIAL contention between
+// datacenters can return CAS_WRITE_UNKNOWN (or a CAS write timeout) for a
+// proposal that a later Paxos round still commits; the caller then never renews
+// or releases a lease it owns, and every restore/permanent delete of the target
+// waits for stale takeover. The conditional release by the same token usually
+// removes that lease, but it does not guarantee it: the release itself can fail,
+// and a release that does not observe the in-flight proposal cannot prevent a
+// later round from committing it. That residual is recorded under
+// ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01. The acquire never reports success
+// and always returns the original error.
 func settleHardDeleteLockAcquire(acquired bool, err error, release func() error) (bool, error) {
 	if err == nil || !isAmbiguousHardDeleteLockCASError(err) {
 		return acquired, err
 	}
 	if releaseErr := release(); releaseErr != nil {
-		log.Printf("[gc] release after ambiguous hard-delete lock acquire: %v", releaseErr)
+		log.Printf("[gc] own-token release after ambiguous hard-delete lock acquire failed: %v", releaseErr)
+		return false, fmt.Errorf("hard-delete lock acquire outcome unknown; own-token release also failed (%v), the lease may stay held until stale takeover: %w", releaseErr, err)
 	}
-	return false, fmt.Errorf("hard-delete lock acquire outcome unknown (own token released): %w", err)
+	return false, fmt.Errorf("hard-delete lock acquire outcome unknown; own-token conditional release attempted: %w", err)
 }
 
 // acquireHardDeleteLock, renewHardDeleteLock and releaseHardDeleteLock pin every

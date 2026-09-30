@@ -46,6 +46,7 @@ MUTATIONS=(
 	'stale takeover pin removed%s{(existingToken\.String\(\)\))\.SerialConsistency\(gocql\.Serial\)}{$1}%^TestHardDeleteLeasesPinGlobalSerial$%hard-delete lease no longer pins global SERIAL'
 	'library acquire not settled%s#return settleHardDeleteLockAcquire\(acquired, err, func\(\) error \{\n\t\treturn ReleaseLibraryHardDeleteLockLease\(session, libraryID, leaseToken\)\n\t\}\)#return acquired, err#%^TestHardDeleteLeasesPinGlobalSerial$%ambiguous hard-delete lease acquire is not settled'
 	'unknown outcome skips release%s#if releaseErr := release\(\); releaseErr != nil \{#if releaseErr := error(nil); releaseErr != nil {#%^TestSettleHardDeleteLockAcquire$%released=false'
+	'failed settlement release reported as attempted%s#\t\treturn false, fmt.Errorf\("hard-delete lock acquire outcome unknown; own-token release also failed[^\n]*\n##%^TestSettleHardDeleteLockAcquire$%does not contain'
 	'CAS_WRITE_UNKNOWN classified as definite%s#errors\.As\(err, &casUnknown\) \|\| #(casUnknown != nil \&\& errors.As(err, \&casUnknown)) || #%^TestIsAmbiguousHardDeleteLockCASError$%cas write unknown: ambiguous = false'
 )
 

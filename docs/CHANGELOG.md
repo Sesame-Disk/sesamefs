@@ -13,8 +13,10 @@ LWT (library, user and org; acquire including stale takeover, renew, and
 conditional release) applies explicit global `SERIAL`. Post-rebase audit:
 global SERIAL contention can report an unknown CAS outcome for an acquire whose
 proposal is later committed, stranding the lease until stale takeover; each
-acquire entry point now releases its own token on that outcome and returns the
-error. Adds a source contract plus classifier/settle unit tests, six directed
+acquire entry point now makes a best-effort own-token release on that outcome
+and always returns the error (a failed release is reported, and the
+single-owner liveness residual is recorded). Adds a source contract plus
+classifier/settle unit tests, seven directed
 mutations run inside Docker, and a 3-DC harness that re-races ambiguous rounds
 while still failing on two owners. The harnesses are scoped to this checkout's
 compose project (no attachment to another stack's backend, ephemeral fixture
