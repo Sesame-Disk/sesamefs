@@ -37,7 +37,7 @@ worker_red(){
 }
 perl -0777 -i -pe 's/hasRefs = liveness == db.BlockPublicationRealReference/hasRefs = liveness == db.BlockPublicationRealReference || liveness == db.BlockPublicationRepairGuardOnly/ or die "collapse missed"; s/if liveness == db.BlockPublicationRepairGuardOnly \{/if false \&\& liveness == db.BlockPublicationRepairGuardOnly {/ or die "guard missed"' internal/gc/worker.go
 worker_red consume_repair_candidate 'W2 WORKER VIOLATION: repair-only consumed candidate'
-perl -0777 -i -pe 's/(if alreadyCommitted \{\n\t\t)hasRefs, err = w.store.BlockHasReferencesGlobal\(item.OrgID, item.ItemID\)/${1}lateLiveness, lateErr := w.store.BlockPublicationLivenessGlobal(item.OrgID, item.ItemID)\n\t\thasRefs, err = lateLiveness != db.BlockPublicationZero, lateErr/ or die "committed mutation missed"' internal/gc/worker.go
+perl -0777 -i -pe 's/(if alreadyCommitted \{\r?\n\t\t)hasRefs, err = w.store.BlockHasReferencesGlobal\(item.OrgID, item.ItemID\)/${1}lateLiveness, lateErr := w.store.BlockPublicationLivenessGlobal(item.OrgID, item.ItemID)\n\t\thasRefs, err = lateLiveness != db.BlockPublicationZero, lateErr/ or die "committed mutation missed"' internal/gc/worker.go
 worker_red repair_veto_after_D 'W2 WORKER VIOLATION: committed D stalled by late repair'
 rc=0
 go test -tags integration -count=1 -run '^TestW2PublicationLivenessThroughHEAD/expiryAfterAuthority$' ./internal/integration > /tmp/w2-filter.log 2>&1 || rc=$?

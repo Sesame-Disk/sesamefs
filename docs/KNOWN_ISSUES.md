@@ -6059,12 +6059,12 @@ Expired provenance past the 48h TTL remains unsolved (indistinguishable from tru
 
 ### ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01: TTL-bound own pin does not prove continuity through HEAD
 
-**Status**: Open — W2-0 shared continuity; W2-6a remains OPEN.
+**Status**: Open — current-version wire/crash evidence added; mixed rollout remains unsafe; W2-6a remains OPEN.
 **Severity**: High (P1).
 **Scope**: Shared pre-existing mechanism; blocks the full-closure claim in #238.
 **Registered**: 2026-09-29, PR #238 cross-audit.
 
-`PublishAttemptReferenceTTLSeconds` is 35 days; own `up:` is 48 hours.
+Baseline at #238: `PublishAttemptReferenceTTLSeconds` is 35 days; own `up:` is 48 hours.
 `ValidateBorrowedFSPublicationAuthority` checks placement and GC fences, not
 reference liveness. If both pins expire, the validator can authorize still-valid
 P, then GC can prove zero refs and commit D before the separate HEAD CAS.
@@ -6078,6 +6078,11 @@ Closure requires a demonstrated continuity or fail-closed mechanism excluding
 GC commitment between authority validation and HEAD, including pin-expiry
 interleavings. The current follow-up implements a durable repair gate but does not claim full closure.
 See [W2-6a evidence limits](./W2-6A-CREATEFILE-EXACT-P.md) and W2-0 in X1.
+
+See [real wire/crash/rollout audit](./W2-0-WIRE-CRASH-ROLLOUT.md): both pinned
+mixed-version combinations reproduce D(P)+HEAD. Fleet-wide GC disablement
+and draining old attempts are required; no version-aware fail-closed rollout
+gate exists. This is the concrete residual, not pending wire/OS evidence.
 
 ### ISSUE-PC0-EXACT-P-FUNNEL-GAP-01: Publication-authority/continuity before HEAD is not uniform by provenance
 

@@ -40,6 +40,9 @@ var ephemeralLibraryExactNames = []string{
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv("SESAMEFS_W2_PROCESS_CHILD") == "1" {
+		os.Exit(m.Run())
+	}
 	// Every evidence gate must be listed here. A gate that is not in this chain still
 	// fails a SKIP inside its own test, but it cannot stop TestMain from exiting 0 when
 	// the stack never came up at all — the run would print "ok" having executed nothing.
@@ -47,7 +50,10 @@ func TestMain(m *testing.M) {
 	// comment could not: R26 was added to docker-compose and missed here, and the
 	// omission was invisible in the standard run only because P4A happens to be set
 	// alongside it.
-	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_W2_PUBLICATION_CONTINUITY_EVIDENCE") == "1" ||
+	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_W2_REPAIR_3DC_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_W2_ROLLOUT_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_W2_CLOSURE_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_W2_PUBLICATION_CONTINUITY_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W2_CREATEFILE_EXACT_P_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P2_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P3_EVIDENCE") == "1" ||
@@ -123,6 +129,22 @@ func TestMain(m *testing.M) {
 	}()
 
 	code := m.Run()
+	if os.Getenv(w2Repair3DCEvidenceEnv) == "1" && !w2Repair3DCEvidence {
+		fmt.Println("required real W2 repair 3-DC phase was not observed")
+		code = 1
+	}
+	if os.Getenv(w2RolloutEvidenceEnv) == "1" {
+		if missing := w2RolloutMissing(); len(missing) > 0 {
+			fmt.Printf("%s=1 requires all named W2 rollout legs; missing=%s\n", w2RolloutEvidenceEnv, strings.Join(missing, ","))
+			code = 1
+		}
+	}
+	if os.Getenv(w2ClosureEvidenceEnv) == "1" {
+		if missing := w2ClosureMissing(); len(missing) > 0 {
+			fmt.Printf("%s=1 requires all named W2-0 closure legs; missing=%s\n", w2ClosureEvidenceEnv, strings.Join(missing, ","))
+			code = 1
+		}
+	}
 	if os.Getenv(w2PublicationContinuityEnv) == "1" {
 		if missing := w2PublicationContinuityMissing(w2PublicationContinuityObserved); len(missing) > 0 {
 			fmt.Printf("%s=1 requires all named W2-0 legs; missing=%s (check -run filters)\n", w2PublicationContinuityEnv, strings.Join(missing, ","))
