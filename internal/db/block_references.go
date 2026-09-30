@@ -829,9 +829,11 @@ func (db *DB) ValidateBlockRepairAuthority(orgID, blockID string, expected Block
 // repair at LOCAL_QUORUM before their final exact-P read. Upgraded destructive
 // readers consult that repair before committing D at EACH_QUORUM and re-read refs after a negative
 // repair scan, covering handoff to permanent fs:. This helper itself does not
-// acquire continuity or couple its read to HEAD; unadapted callers and mixed
-// deployments cannot inherit that guarantee. W2-0 remains OPEN pending full
-// ambiguity/crash and rollout evidence (see W2-0-PUBLICATION-CONTINUITY.md).
+// acquire continuity or couple its read to HEAD. Covered current-version W2-0
+// is CLOSED-EVIDENCE under the greenfield first-production contract; unadopted
+// funnels remain their own W2 rows. Incompatible mixed rollout cannot inherit
+// that guarantee and remains P1 FOLLOW-UP / GENERAL. See
+// docs/W2-0-GREENFIELD-RECONCILIATION.md and docs/X1-CRITICAL-PATH.md.
 // Under the live-pin premise, four cases cover the GC ordering:
 //
 //  1. GC's zero-proof read (BlockHasReferencesGlobal, EACH_QUORUM) happens

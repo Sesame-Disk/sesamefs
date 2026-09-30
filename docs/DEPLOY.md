@@ -4,6 +4,23 @@ This guide is organized around the repository's default production path: multi-r
 Single-region is still supported, but it is the legacy compatibility path and should be treated as a simplified fallback rather than the primary operating model.
 ---
 
+## First-production greenfield contract
+
+The supported v1 production deployment starts with a clean server, new
+Cassandra keyspace and storage namespaces: no legacy production dataset,
+historical GC candidates, repairs or publication attempts are carried forward.
+No old processes or old in-flight requests remain. Apply all migrations and
+deploy the same compatible audited release to every productive writer, repair
+worker, scanner and GC worker before first production traffic.
+
+Keep GC_ENABLED=false fleet-wide during deployment, startup, smoke tests and
+consistency/cluster validation, and until every PRE-GC prerequisite and A1 is
+closed. See the normative [X1 order and first-production contract](./X1-CRITICAL-PATH.md).
+This obligation does not implement a startup version gate or certify later
+incompatible rolling upgrades with active GC. Both pre-#239 mixed writer/GC
+counterexamples remain [P1 FOLLOW-UP / GENERAL](./KNOWN_ISSUES.md#issue-w2-incompatible-mixed-rollout-01-incompatible-rolling-upgrade-can-publish-head-after-d);
+they are outside first production, not hidden or fixed by this contract.
+
 ## Architecture
 
 ```

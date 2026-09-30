@@ -3,7 +3,25 @@
 Base: `main@76d68c928f127f82fcea69a98401223051098911` (#234).
 Branch: `codex/w2-0-wire-crash-rollout`.
 
-## Disposition
+## 2026-09-30 greenfield reconciliation
+
+**Current disposition: W2-0 CLOSED-EVIDENCE for the covered current-version
+mechanism** under the supported greenfield first-production contract.
+The #239 durable repair / final exact-P ordering and #241 wire, SIGKILL,
+independent recovery and three-DC evidence support this conclusion.
+Both incompatible mixed-version D(P)+HEAD counterexamples remain valid,
+tracked as P1 FOLLOW-UP / GENERAL outside v1 first activation.
+W2-1/2/6a remain OPEN through R31; no compatibility gate or runtime change
+is introduced. GC remains disabled and PRE-GC/A1 prerequisites remain intact.
+
+This dated note supersedes the **live status** of the original #241
+disposition. The complete original snapshot below, including its verdict,
+rollout requirements, individual closure impacts and results, is preserved.
+Its historical OPEN conclusion is not today's W2-0 state.
+See the [source argument and individual re-audit](./W2-0-GREENFIELD-RECONCILIATION.md)
+and the [current X1 contract/checklist](./X1-CRITICAL-PATH.md#first-production-deployment-contract).
+
+## Original #241 disposition (historical; superseded above)
 
 **W2-0 remains OPEN.** The covered current-version mechanism survives real
 HEAD wire ambiguity and OS process death. Both mixed-version configurations

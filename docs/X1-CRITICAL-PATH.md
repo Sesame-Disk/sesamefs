@@ -1,16 +1,24 @@
 # X1 critical path — reset to the #201 roadmap
 
-## W2-0 real wire/crash/rollout audit (2026-09-30)
+## Greenfield first-production reconciliation (2026-09-30)
 
-[Native wire, OS SIGKILL and rollout evidence](./W2-0-WIRE-CRASH-ROLLOUT.md)
-strengthens the shared current-version premise for F1/F2/F3 and provenanced
-Sync. Both pinned mixed-version configurations reproduce D(P)+HEAD.
-W2-0 remains OPEN: fleet-wide GC disablement and draining old attempts are
-required; a version-aware fail-closed rollout exclusion is not implemented.
-Do not upgrade W2-1/2/6a or R31 closure claims from these tests. The #201/#236
-W2 -> G4 -> G5 -> E1 -> X1 -> PRE-GC/A1 order remains unchanged.
-Historical partial-proof entries below describe their original evidence.
+W2-0 is **CLOSED-EVIDENCE for the covered current-version mechanism** under
+the [first-production contract](./X1-CRITICAL-PATH.md#first-production-deployment-contract).
+The #239 durable repair / final exact-P ordering and #241 native wire loss,
+real SIGKILL, independent recovery and three-DC evidence are preserved.
+Both incompatible mixed-version combinations still reproduce D(P)+HEAD;
+ISSUE-W2-INCOMPATIBLE-MIXED-ROLLOUT-01 tracks them as P1 FOLLOW-UP / GENERAL,
+outside v1 first activation. No compatibility gate is inferred or added.
+W2-1, W2-2 and W2-6a remain OPEN through the separately tracked R31 residuals.
+Other W2 rows are unchanged. W2 completion -> G4 -> G5 -> E1 -> X1 CLOSED ->
+PRE-GC -> A1 -> GC ON remains the #201/#236 path; GC stays disabled.
 
+See the [source argument, individual re-audit and drift review](./W2-0-GREENFIELD-RECONCILIATION.md).
+
+The dated #238/#239 entries and characterization tables below are historical
+evidence snapshots. Their old W2-0 OPEN / pending-evidence statements are
+superseded by this reconciliation and the current X1 checklist; they do not
+define today's closure state.
 
 ### PR #239 crossed audit correction (2026-09-30)
 
@@ -89,15 +97,43 @@ W1 ✅ → W2 (exit checklist §4) → G1 ✅ → G2 ✅ → G3 ✅ → G4 → G
   advances. Work that advances no step and fixes no current-runtime defect is
   not on the critical path.
 
+### First-production deployment contract
+
+The supported v1 deployment is **greenfield**: a clean server, new Cassandra
+keyspace and storage namespaces, with no inherited production dataset,
+historical candidates/repairs/attempts, old processes or old in-flight requests.
+Before first production traffic, all productive writers, repair workers,
+scanners and GC workers run the same compatible audited release. All migrations
+are applied before traffic. GC stays disabled fleet-wide during deployment,
+startup, smoke tests, consistency/cluster validation and until PRE-GC and A1
+close. This is a deployment obligation, not an implemented version registry
+or a claim that GC disablement proves writer continuity.
+
+This reconciles the existing [deployment scope](./DEPLOY.md#first-production-greenfield-contract),
+[metadata-identity authority contract](./PC-D1B-METADATA-IDENTITY-AUTHORITY.md)
+and the empty-server precondition already used for Technical Debt #24 in §6.
+There is no production v1 legacy fleet to upgrade. A later incompatible rolling
+upgrade with active GC is outside this first-production contract; its real
+counterexamples remain recorded as P1 FOLLOW-UP / GENERAL. If that deployment
+model is adopted, compatibility/drain evidence must be supplied before claiming
+it safe. Greenfield does not remove current-version races, wire ambiguity,
+process death, cross-DC visibility, R31 or any PRE-GC/A1 prerequisite.
+
 ## 3. Finding classification rule
 
 | The failure sequence runs on… | Classification | Effect |
 |---|---|---|
 | current code, current runtime (`GC_ENABLED=false`) | CURRENT-RUNTIME bug | blocks the PR if the PR introduces it or breaks its contract; otherwise a separate follow-up |
 | current code with the **planned** GC activation | X1 (if it is a §4/G4/G5/E1 item) or PRE-GC (§6) | valid finding; tracked in its list, blocks X1 or A1 respectively |
+| code that exists but requires an unsupported incompatible deployment (for example pre-#239 writer/GC skew) | real FOLLOW-UP / GENERAL finding; severity preserved | not a v1 X1/PRE-GC/A1 blocker; preserve counterexample and deployment limit |
 | code that does not exist (a new caller, alias, wrapper, CQL variant, future migration) | not a finding | recorded as a note at most; never a blocker |
 
 Consequences:
+
+A strong test of an unsupported incompatible deployment remains valid evidence
+of that limitation. State the deployment preconditions: test strength alone
+does not make the sequence reachable under the supported v1 contract or turn
+it into a v1 blocker.
 
 - A finding must come with a concrete sequence over code that exists in the
   branch or in `main`.
@@ -144,14 +180,14 @@ adds a funnel later does not.
 
 | # | Row (R3 source) | Today | Tracking | State |
 |---|---|---|---|---|
-| W2-0 | **Cross-cutting:** continuous own liveness through HEAD, including the 48h `up:` and 35d `pub:` TTLs | Baseline TTL pins allowed expiry after exact-P and before HEAD. Current covered chains acquire a non-expiring repair before final exact-P; destructive absence observes that repair at EACH_QUORUM, with a final reference re-read covering promotion. A late acquisition must reject the settled deleting claim | R3 table; `ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01`; R31 | `OPEN` — durable repair gate plus final exact-P now protect the covered chains; real wire/process-kill evidence now supports the covered current-version mechanism; both mixed deployments reproduce D(P)+HEAD and rollout exclusion remains unresolved. See the real wire/crash/rollout audit above |
-| W2-1 | `CreateFileFromBlocks`, exact session `up:` | pre-HEAD proven with the W2-0 mechanism (#204/#205) | — | OPEN through R31 and W2-0 mixed-rollout exclusion; real wire/SIGKILL evidence added |
-| W2-2 | `CreateFileFromBlocks`, foreign `fs:` reuse / dedup | W1 proven through HEAD with the W2-0 mechanism (#202) | — | OPEN through R31 and W2-0 mixed-rollout exclusion; real wire/SIGKILL evidence added |
+| W2-0 | **Cross-cutting:** continuous own liveness through HEAD, including the 48h `up:` and 35d `pub:` TTLs | Baseline TTL pins allowed expiry after exact-P and before HEAD. Current covered chains acquire a non-expiring repair before final exact-P; destructive absence observes that repair at EACH_QUORUM, with a final reference re-read covering promotion. A late acquisition must reject the settled deleting claim | R3 table; `ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01`; R31 | **CLOSED-EVIDENCE** for the covered current-version mechanism under the first-production contract: durable repair before final exact-P, destructive EACH_QUORUM observation, final reference re-read, native wire/SIGKILL/recovery and 3-DC evidence. No independent current-version W2-0 residual identified; R31 settlement/liveness and unadopted funnels remain their own OPEN rows |
+| W2-1 | `CreateFileFromBlocks`, exact session `up:` | pre-HEAD proven with the W2-0 mechanism (#204/#205) | — | OPEN through R31 (W2-11..14): renewal-after-classify, known-loser durability, discovery bound and zero-ref transition; covered pre-HEAD continuity re-audited against closed W2-0 and real wire/SIGKILL evidence |
+| W2-2 | `CreateFileFromBlocks`, foreign `fs:` reuse / dedup | W1 proven through HEAD with the W2-0 mechanism (#202) | — | OPEN through R31 (W2-11..14): renewal-after-classify, known-loser durability, discovery bound and zero-ref transition; covered pre-HEAD continuity re-audited against closed W2-0 and real wire/SIGKILL evidence |
 | W2-3 | Sync `PutBlock` → HEAD, and Sync retry from another pod | pre-HEAD proven for the PutBlock-provenanced subset, incl. cross-DC (#206/#210) | `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01` | OPEN |
 | W2-4 | Sync commit whose block had no associated PutBlock | `UNKNOWN` | R3 table | OPEN |
 | W2-5 | `recv-fs-before-put` | `UNKNOWN` | R3 table | OPEN |
 | W2-6 | v2 stored upload (`UploadFile`), materialized and reusable target | Adopts the W2-0 mechanism: passes its materialized placement to the shared finalizer (PR #237). Real-Cassandra evidence `TestW2UploadFileExactPlacementBeforeHead` (GC-committed and fully-retired placement before stage → 409, HEAD unchanged, `pub:` dropped); RED on the previous code | `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` (UploadFile part) | `CLOSED-FIX` pre-HEAD; post-HEAD through W2-11…W2-14 |
-| W2-6a | v2 `CreateFile`, Office-template block publication (empty-file path has no blocks) | Carries the actual materialized SHA-256/class/key to final exact-P after staging `pub:`. Nine real Cassandra/MinIO legs prove rejection when GC wins before validation, with 409, HEAD unchanged and cleanup. The follow-up adds real expiry-after-authority protection through a non-expiring repair gate; real wire/SIGKILL evidence now covers the current-version chain; mixed rollout remains unsafe | `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` (CreateFile part; PC-0 F1); `ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01`; [plan/evidence](./W2-6A-CREATEFILE-EXACT-P.md) | `OPEN` — partial exact-P fix; covered expiry-after-validation is guarded; mixed-rollout exclusion and post-HEAD R31 remain OPEN |
+| W2-6a | v2 `CreateFile`, Office-template block publication (empty-file path has no blocks) | Carries the actual materialized SHA-256/class/key to final exact-P after staging `pub:`. Nine real Cassandra/MinIO legs prove rejection when GC wins before validation, with 409, HEAD unchanged and cleanup. The follow-up adds real expiry-after-authority protection through a non-expiring repair gate; real wire/SIGKILL evidence now covers the current-version chain under the first-production contract | `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` (CreateFile part; PC-0 F1); `ISSUE-W2-PUBLISH-PIN-EXPIRY-BEFORE-HEAD-01`; [plan/evidence](./W2-6A-CREATEFILE-EXACT-P.md) | **OPEN** — exact-P and covered pre-HEAD continuity proved; post-HEAD R31 (W2-11..14: renewal, known-loser durability, discovery and zero-ref transition) remains OPEN |
 | W2-7 | SeafHTTP normal/streaming finalize | `CONDITIONAL` | R3 table | OPEN |
 | W2-8 | OnlyOffice callback | `CONDITIONAL` | R3 table | OPEN |
 | W2-9 | Cross-repo copy/move | `UNKNOWN`; borrowed source `fs:` with no destination fence | R3 table | OPEN |
@@ -168,7 +204,7 @@ Not W2 exit rows (follow-ups, may be reclassified in E1):
 `ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`,
 `ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01`.
 
-Suggested order: resolve W2-0 pin-expiry continuity before claiming full closure of an adopting funnel. W2-6a remains OPEN. Existing W2-1/2/6 closure language is historical and must be re-audited against this shared premise, not treated as proof of unbounded continuity. Other scoped work:
+Suggested order: W2-0 is closed for the covered shared mechanism. W2-1/2/6a were individually re-audited against that premise and remain OPEN through R31, not mixed rollout. W2-6 retains CLOSED-FIX pre-HEAD. Finish the real remaining funnels:
 W2-7/W2-8 or W2-10, each starting with a
 demonstration of the failure; then the Sync `UNKNOWN` rows, W2-9 and the R31
 rows.
