@@ -79,7 +79,7 @@ and child TestMain isolation are injected; productive legacy code is unchanged.
 | Combination | Actual interleaving | Result |
 |---|---|---|
 | New writer + old GC | New Office acquires repair and validates P; temporary refs expire; old productive GC commits D and retires canonical P; writer resumes HEAD | D(P)+HEAD, unsupported |
-| Old writer + new GC | Old Sync finishes readiness; its real repair INSERT is held before acquisition; pins expire; new GC commits D; old INSERT and HEAD resume | D(P)+HEAD, unsupported |
+| Old writer + new GC | Old Sync finishes readiness; its real repair INSERT is held before acquisition; pins expire; real candidate is queued; current productive `Worker.ProcessOrgOnce` probes liveness, commits D and retires P; old INSERT and HEAD resume | D(P)+HEAD, unsupported |
 
 Tests pass only by **requiring these counterexamples**. A green rollout test
 therefore means the unsafe combinations were reproduced, not certified safe.
@@ -131,7 +131,7 @@ The mutation script edits a disposable image filesystem, never host source.
 
 - Native wire/process matrix: 37/37 PASS, 113.579s (`tmp/w2-wire-crash-matrix-third.log`);
   later exact-attempt HEAD assertions are checked by the final regression run.
-- Pinned mixed rollout: both required counterexamples PASS, 7.569s
+- Initial pinned rollout (before P2 correction; current-GC leg used direct primitives): PASS, 7.569s
   (`tmp/w2-rollout-first.log`).
 - Real 3DC seed/readGuard/promote/readPermanent/unavailable/cleanup PASS;
   LOCAL_QUORUM repair-read mutation semantic RED. Logs: `tmp/w2-3dc-*.log`.
@@ -139,7 +139,8 @@ The mutation script edits a disposable image filesystem, never host source.
   `go test -race -short -count=1 ./...` PASS. Broad tests use the Docker source
   snapshot to avoid host node_modules traversal.
 - Four evidence negative controls PASS (`tmp/w2-closure-gates.log`); pinned
-  rollout rerun with archive identity verification PASS, 6.087s (`tmp/w2-rollout.log`).
+  initial rollout rerun with archive identity verification PASS, 6.087s (`tmp/w2-rollout.log`).
+  These initial logs do not prove the current productive worker path; see the P2 correction below.
 - Supported full compose integration PASS, 409.953s (all 37 named legs, exact
   attempt HEAD assertions included): `tmp/w2-integration-full.log`.
 - Integration-tag `go vet` and Docker Windows cross-compilation PASS.
@@ -161,3 +162,34 @@ an org-wide GC count assertion; the corrected test selects one actual queued
 candidate and requires the productive liveness probe to execute. The legacy
 worker mutation regex now accepts Windows CRLF. Cleanup was retried after
 EU became healthy. No failing backend or filtered run counts as proof.
+
+## P2 audit correction: productive oldWriterNewGC evidence
+
+The audit of original HEAD `204208722d7a1bbd598540e384e093d754645e4a`
+confirmed a THIS-PR evidence defect. `oldWriterNewGC` used
+`x1CommitHandoffAfterZeroRefs`, which drives claim/reference/handoff primitives
+without a queued candidate or the productive worker's checks. Its claim of
+productive current-GC evidence was too broad. This was P2 evidence scope,
+not a productive defect or evidence that mixed deployment was safe.
+
+The corrected leg queues a real exact candidate through `w2Candidate` and
+runs `w2Worker(...).ProcessOrgOnce` with grace=0. The existing discovery
+wrapper selects only that real queue row; all candidate, topology, claim,
+publication-liveness and handoff methods delegate to the real Cassandra store.
+The test requires one retirement and observes the worker's pre-D liveness probe.
+It independently requires canonical retirement, exact COMMITTED orphan authority,
+durable physical continuation and unchanged HEAD before releasing the old INSERT.
+After the legacy writer publishes its exact target HEAD, the same COMMITTED
+continuation remains required. No direct handoff helper creates D in this leg.
+
+The refs/repair probe distinction was not the primary blocker: while the real
+INSERT is held, both pins and repair are absent. The corrected experiment
+confirms that the productive current worker can reach D in that state.
+
+Correction validation (Docker): both rollout legs PASS, 10.426s
+(`tmp/w2-p2-rollout-runner.log`); both legs also PASS with `-race`, 12.249s
+(`tmp/w2-p2-rollout-race.log`). In a disposable Docker copy, substituting the
+worker call with the old direct handoff helper and a synthetic success count
+fails specifically on the missing productive liveness probe; compilation
+errors cannot satisfy this negative control
+(`tmp/w2-p2-primitive-substitute-result.log`). No production or unrelated scope change.

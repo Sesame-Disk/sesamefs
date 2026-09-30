@@ -125,8 +125,18 @@ func TestW2MixedRollout(t *testing.T) {
 		}
 		w2ExpireTemporaryRefs(t, fx)
 		store := gcpkg.NewCassandraStore(fx.database)
-		d := x1CommitHandoffAfterZeroRefs(t, store, fx.orgUUID, fx.blockID, x1Attempt(fx.target, "w2-rollout-old-writer"))
-		fx.assertDUnrevoked(t, d)
+		candidate := w2Candidate(t, store, fx.orgUUID, fx.blockID, fx.target.StorageClass)
+		scope := &w2ClosureOwnedQueue{GCStore: store, org: fx.orgUUID, block: fx.blockID, identity: candidate.Identity()}
+		fx.assertHeadUnchanged(t)
+		if n, err := w2Worker(t, scope, fx.target.StorageClass).ProcessOrgOnce(t.Context(), fx.orgUUID); err != nil || n != 1 {
+			t.Fatalf("current productive GC did not retire the owned candidate: n=%d err=%v", n, err)
+		}
+		if !scope.visited {
+			t.Fatal("current productive GC did not execute its pre-D publication liveness probe")
+		}
+		w2AssertCommittedContinuation(t, store, fx.orgUUID, fx.blockID, fx.target.StorageClass, fx.target.StorageKey, newVerificationBlockStore(t, fx.orgID))
+		fx.assertHeadUnchanged(t)
+		t.Log("CURRENT PRODUCTIVE GC COMMITTED AND RETIRED EXACT P BEFORE LEGACY HEAD")
 		proxy.resume()
 		select {
 		case err := <-done:
@@ -141,7 +151,7 @@ func TestW2MixedRollout(t *testing.T) {
 			t.Fatalf("missing old writer proof: %s", out.String())
 		}
 		fx.assertHeadAdvanced(t)
-		fx.assertDUnrevoked(t, d)
+		w2AssertCommittedContinuation(t, store, fx.orgUUID, fx.blockID, fx.target.StorageClass, fx.target.StorageKey, newVerificationBlockStore(t, fx.orgID))
 		t.Log("UNSUPPORTED MIXED ROLLOUT: old Sync published HEAD after new GC committed D(P) before late repair; GC stays disabled until all adopting writers are upgraded")
 	})
 }
