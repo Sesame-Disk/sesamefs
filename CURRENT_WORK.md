@@ -10,8 +10,9 @@ the caller returned without releasing and a later Paxos round could still
 commit the proposal, stranding the lease until stale takeover (~90 min). Each
 acquire entry point now makes a best-effort own-token release on that outcome
 and still returns the error; a failed release is reported as such, and the
-remaining single-owner liveness residual is recorded in the known issue. The lease token, TTL, stale takeover, renewal and
-release semantics are otherwise unchanged; no caller flow changed. Residual:
+remaining single-owner liveness residual is recorded in the known issue. The
+lease token, TTL, stale takeover, renewal and release semantics are otherwise
+unchanged; no caller flow changed. Residual:
 renew/release can also see an unknown outcome under contention; renew fails
 closed (the operation aborts and the deferred release drops the lease) and an
 unknown release is only logged. A bounded retry is a liveness follow-up
@@ -22,8 +23,11 @@ fixed here).
 Evidence (all in Docker): `go test ./... -count=1`, `go vet ./...` and
 `go test -race -short ./...` pass; seven directed mutations are RED for their own
 reason; the isolated 3-DC harness passes with `LOCAL_SERIAL` sessions.
-Final run (2026-09-30): 60/60 pinned 3-DC races plus the gated run, official harness 3/3 on fresh fixtures; downgrading the pin to `LOCAL_SERIAL` gives two owners in 19/20 runs. The harnesses now scope their backend, fixture and runner
-names to this checkout's compose project and never modify the host tree.
+Final run after the rebase onto `main@cd591709c` (2026-09-30): 60/60 pinned
+3-DC races, official harness 2/2 on fresh fixtures (one run settled an
+ambiguous acquire); downgrading the pin to `LOCAL_SERIAL` gives two owners in
+16/20 runs. The harnesses now scope their backend, fixture and runner names to
+this checkout's compose project and never modify the host tree.
 `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` is closed. The separate P1
 non-fencing finding remains a FOLLOW-UP; this change does not make a broader GC
 readiness claim. Per [docs/X1-CRITICAL-PATH.md](docs/X1-CRITICAL-PATH.md) §7 this
@@ -44,7 +48,7 @@ See [crossed audit evidence](./docs/W2-0-PUBLICATION-CONTINUITY.md).
 
 ## Merged PR #239: fix/w2-0-publish-liveness-through-head (base main@50c50903e, 2026-09-29)
 
-The current branch adds a fail-closed GC guard using the existing non-expiring
+#239 added a fail-closed GC guard using the existing non-expiring
 `published_block_reference_repairs` rows. Acquisition explicitly writes at
 LOCAL_QUORUM; destructive readers scan all 32 organization bucket prefixes at
 EACH_QUORUM, consume all pages, and repeat the reference probe after a negative

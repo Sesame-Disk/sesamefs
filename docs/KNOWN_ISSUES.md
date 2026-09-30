@@ -6677,7 +6677,10 @@ never reported success (if it still owns the lease after settlement the round
 is logged as the residual above, cleared and re-raced), correct and wrong tokens behaved correctly for
 renewal/release, dc-eu acquired after release, and stale takeover still
 succeeded. With the pin downgraded to `LOCAL_SERIAL` the same race reports two
-owners in most runs. Final Docker run on 2026-09-30: 60/60 pinned races plus the gated run passed, the official harness passed 3/3 on fresh fixtures, and the `LOCAL_SERIAL` downgrade reported two owners in 19/20 and 20/20 runs.
+owners in most runs. Final Docker run after the rebase onto `main@cd591709c` (2026-09-30): 60/60
+pinned races passed, the official harness passed 2/2 on fresh fixtures (one run
+exercised and settled an ambiguous acquire), and the `LOCAL_SERIAL` downgrade
+reported two owners in 16/20 runs.
 
 This closes only the lease's SERIAL-domain issue. It does not close the
 separately tracked stale-owner non-fencing issue or establish GC activation
