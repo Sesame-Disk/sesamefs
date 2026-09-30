@@ -10,9 +10,10 @@ mechanism; both real mixed-version D(P)+HEAD counterexamples remain P1
 FOLLOW-UP / GENERAL. W2-1/2/6a remain OPEN through R31. Runtime, CQL, schema,
 guards and tests are unchanged; GC remains disabled.
 
-#240 is being completed separately. This branch awaits the user's merge
-notification, then a safe rebase onto updated main and final audit before PR
-creation. Do not treat #240 as merged or alter its branch.
+#240 remains separately in progress. Per the updated work order, this docs-only
+PR proceeds first against current main; it does not depend on #240 or claim
+its hard-delete nonfencing work is merged. The final audit uses origin/main
+at 302d3418e6596774d48eb7ac98b6be170803ab83.
 Audit record: [greenfield reconciliation](./docs/W2-0-GREENFIELD-RECONCILIATION.md).
 Next critical-path work: finish remaining real W2 funnels and R31, then
 G4 -> G5 -> E1 -> X1 CLOSED -> PRE-GC -> A1 -> GC ON.

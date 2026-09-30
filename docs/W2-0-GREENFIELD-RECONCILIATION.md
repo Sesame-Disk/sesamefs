@@ -12,8 +12,9 @@ now states compatible audited components before first traffic and no inherited
 production data, historical attempts, old processes or old in-flight requests.
 This is an operational obligation; no automatic version enforcement is claimed.
 
-Initial audit baseline: merged #241, main@302d3418e6596774d48eb7ac98b6be170803ab83.
-#240 is not included yet; final rebase and audit await its merge notification.
+Final audit baseline: merged #241, origin/main@302d3418e6596774d48eb7ac98b6be170803ab83.
+#240 remains in progress and is outside this PR. The updated work order opens
+this docs-only reconciliation first; no dependency on its merge remains.
 
 ## Current-version continuity argument
 
@@ -106,3 +107,21 @@ Runtime / schema / CQL / guards / machinery changes: **NONE**.
 All changes are documentary. The critical path remains
 W2 remaining -> G4 -> G5 -> E1 -> X1 CLOSED -> PRE-GC -> A1 -> GC ON.
 G4 is still blocked by open W2 rows. GC remains disabled.
+
+
+## Final validation
+
+- Remote main was fetched and matches the audited baseline.
+- All 12 other W2 exit rows are byte-for-byte unchanged against that baseline.
+- Current-version and three-DC evidence descriptions, both mixed-version
+  counterexample definitions and reproduction/results sections are unchanged.
+- The complete diff contains Markdown documents only; no productive code,
+  tests, runners, schemas, migrations or configuration files changed.
+- Relative document links resolve and newly introduced section links were
+  checked against their target headings. Whitespace checks pass.
+- Repository-wide documentary drift was reviewed; retained old W2-0 states
+  are explicitly historical/superseded. W2-1/2/6a remain OPEN through R31,
+  and the full W2, G4/G5/E1 and PRE-GC/A1 gates remain in force.
+
+No Go tests were rerun for this documentation-only change. Existing #239/#241
+test results remain evidence from those PRs, not new executions claimed here.
