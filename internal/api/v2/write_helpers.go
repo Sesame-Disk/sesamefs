@@ -995,6 +995,11 @@ func softDeleteLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID,
 	return nil
 }
 
+// renewLibraryRestoreLeaseFn renews the restore path's library hard-delete
+// lease. It is a variable so integration tests can pause a restore right after
+// its renewal and resume it after another owner took the lease over.
+var renewLibraryRestoreLeaseFn = gcpkg.RenewLibraryHardDeleteLockLease
+
 // restoreDeletedLibrary clears deleted_at, removes the GC marker, and re-adds
 // the library's storage to aggregate counters. Mirror image of softDeleteLibrary.
 func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID, libraryID string) error {
@@ -1060,7 +1065,7 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	batch.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, libraryID)
 	traffic.AddAggregateStorageReconciliationQueries(batch, orgID, ownerID, now)
 	addAdminLibraryReadModelRefreshQueries(batch, nextRow, &previousRow)
-	owned, err := gcpkg.RenewLibraryHardDeleteLockLease(db.Session(), libraryUUID, leaseToken)
+	owned, err := renewLibraryRestoreLeaseFn(db.Session(), libraryUUID, leaseToken)
 	if err != nil {
 		return fmt.Errorf("fence library restore lock for %s: %w", libraryID, err)
 	}
