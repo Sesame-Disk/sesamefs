@@ -3,25 +3,31 @@
 Base: `main@76d68c928f127f82fcea69a98401223051098911` (#234).
 Branch: `codex/w2-0-wire-crash-rollout`.
 
-## Disposition
+## 2026-09-30 greenfield reconciliation
 
-**W2-0 is CLOSED-EVIDENCE for the covered current-version mechanism** under
-the [supported first-production contract](./X1-CRITICAL-PATH.md#first-production-deployment-contract).
-#241 is merged; the original evidence baselines below remain historical.
-The disposition is reconciled on 2026-09-30: durable non-TTL repair acquired
-before final exact-P, destructive EACH_QUORUM repair/ref observation and final
-reference re-read exclude expiry-before-HEAD for the covered chains. Real
-native wire ambiguity, OS process death, independent recovery and three-DC
-visibility support this source-level ordering argument. No independent
-current-version W2-0 residual was identified; this is not CLOSED-GATED on
-GC disablement, nor a claim of exhaustive fault timing or complete W2.
+**Current disposition: W2-0 CLOSED-EVIDENCE for the covered current-version
+mechanism** under the supported greenfield first-production contract.
+The #239 durable repair / final exact-P ordering and #241 wire, SIGKILL,
+independent recovery and three-DC evidence support this conclusion.
+Both incompatible mixed-version D(P)+HEAD counterexamples remain valid,
+tracked as P1 FOLLOW-UP / GENERAL outside v1 first activation.
+W2-1/2/6a remain OPEN through R31; no compatibility gate or runtime change
+is introduced. GC remains disabled and PRE-GC/A1 prerequisites remain intact.
 
-Both mixed-version D(P)+HEAD counterexamples remain valid and unchanged.
-They require incompatible pre-#239 components or attempts absent from v1's
-clean deployment and are tracked as P1 FOLLOW-UP / GENERAL in
-ISSUE-W2-INCOMPATIBLE-MIXED-ROLLOUT-01. No version gate was implemented.
-W2-1/2/6a retain their individual R31 dependencies; unsupported mixed rollout
-is no longer their closure dependency.
+This dated note supersedes the **live status** of the original #241
+disposition. The complete original snapshot below, including its verdict,
+rollout requirements, individual closure impacts and results, is preserved.
+Its historical OPEN conclusion is not today's W2-0 state.
+See the [source argument and individual re-audit](./W2-0-GREENFIELD-RECONCILIATION.md)
+and the [current X1 contract/checklist](./X1-CRITICAL-PATH.md#first-production-deployment-contract).
+
+## Original #241 disposition (historical; superseded above)
+
+**W2-0 remains OPEN.** The covered current-version mechanism survives real
+HEAD wire ambiguity and OS process death. Both mixed-version configurations
+have concrete D(P)+HEAD counterexamples. `GC_ENABLED=false` is an operational
+requirement, not a version-aware fail-closed rollout gate; this evidence does
+not justify calling the whole row CLOSED-GATED.
 
 The #201/#236 order remains W2 complete -> G4 -> G5 -> E1 -> X1 CLOSED ->
 PRE-GC -> A1 -> GC ON. G4 cannot start while W2 rows remain open. Hard-delete
@@ -95,23 +101,22 @@ and child TestMain isolation are injected; productive legacy code is unchanged.
 
 Tests pass only by **requiring these counterexamples**. A green rollout test
 therefore means the unsafe combinations were reproduced, not certified safe.
-Upgrading readers first alone is insufficient for such a future deployment.
-Supporting an incompatible rolling upgrade with active GC would require a
-separately reviewed compatibility/drain protocol. These legacy attempts do
-not exist in the supported greenfield first-production deployment, where every
-productive component is compatible before traffic. This accepted deployment
-contract reconciles the original broad rollout blocker; it does not repair
-either counterexample. No startup version/A1 gate is implemented here.
-Existing A1/PRE-GC prerequisites remain separate and mandatory.
+Upgrading readers first alone is insufficient. GC must stay disabled
+fleet-wide while all destructive readers and covered writers are upgraded,
+and old processes and in-flight old attempts must be drained or terminated.
+The rollout exclusion still needs a reviewable enforceable mechanism or an
+explicitly accepted deployment contract before W2-0 can close. A startup
+version/A1 gate is not implemented here and must not be inferred from the
+configuration default. Existing A1/PRE-GC prerequisites remain separate.
 
 ## Individual audit and limits
 
 | Row / subset | New evidence | Closure impact |
 |---|---|---|
-| W2-1 exact SessionUpload | Native ambiguity, SIGKILL and independent recovery | Covered pre-HEAD continuity re-audited with closed W2-0; OPEN through R31 W2-11..14 |
-| W2-2 foreign fs BorrowedFS | Same, with foreign ref removed after own repair acquisition | Covered pre-HEAD continuity re-audited with closed W2-0; OPEN through R31 W2-11..14 |
+| W2-1 exact SessionUpload | Native ambiguity, SIGKILL and independent recovery | Shared current-version premise strengthened; row remains OPEN |
+| W2-2 foreign fs BorrowedFS | Same, with foreign ref removed after own repair acquisition | Shared premise strengthened; row remains OPEN |
 | W2-6 UploadFile | Same, exact materialized P and attempt commit checked | Historical CLOSED-FIX pre-HEAD unchanged |
-| W2-6a Office | Same plus after-HEAD SIGKILL | Covered pre-HEAD exact-P/continuity proved; OPEN through R31 W2-11..14 |
+| W2-6a Office | Same plus after-HEAD SIGKILL | Row remains OPEN; no automatic full closure |
 | W2-3 direct/merge Sync | PutBlock-provenanced subset only | Expired/missing provenance and other Sync rows remain OPEN |
 
 R31 abandonment/UNKNOWN liveness, SeafHTTP, OnlyOffice, resurrection,

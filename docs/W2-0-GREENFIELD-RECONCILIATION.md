@@ -89,7 +89,9 @@ exclusion, pre-#239, old writer/GC, legacy and W2-0 OPEN wording.
 
 Current contradictions corrected: X1, R3, OPEN-WORK-INDEX and CURRENT_WORK
 summaries; X1 W2-0/1/2/6a exit states; the shared pin-expiry issue and PC-0
-funnel-gap status in KNOWN_ISSUES; #241 disposition and rollout paragraphs.
+funnel-gap status in KNOWN_ISSUES and the active OPEN-WORK-INDEX row; the
+continuity status comment in internal/db/block_references.go. #241's complete
+original snapshot is preserved under a dated superseding reconciliation note.
 DEPLOY now states the first-production contract explicitly.
 
 Historical snapshots retained with explicit supersession links: #238/#239
@@ -104,7 +106,7 @@ writers describe different contracts. Existing topology/authority guards
 and genuine current-version PRE-GC findings are preserved.
 
 Runtime / schema / CQL / guards / machinery changes: **NONE**.
-All changes are documentary. The critical path remains
+All changes are documentation/comments only. The critical path remains
 W2 remaining -> G4 -> G5 -> E1 -> X1 CLOSED -> PRE-GC -> A1 -> GC ON.
 G4 is still blocked by open W2 rows. GC remains disabled.
 
@@ -115,8 +117,8 @@ G4 is still blocked by open W2 rows. GC remains disabled.
 - All 12 other W2 exit rows are byte-for-byte unchanged against that baseline.
 - Current-version and three-DC evidence descriptions, both mixed-version
   counterexample definitions and reproduction/results sections are unchanged.
-- The complete diff contains Markdown documents only; no productive code,
-  tests, runners, schemas, migrations or configuration files changed.
+- The complete diff contains Markdown and one comment-only Go change; no
+  executable code, tests, runners, schemas, migrations or configuration changed.
 - Relative document links resolve and newly introduced section links were
   checked against their target headings. Whitespace checks pass.
 - Repository-wide documentary drift was reviewed; retained old W2-0 states
@@ -125,3 +127,18 @@ G4 is still blocked by open W2 rows. GC remains disabled.
 
 No Go tests were rerun for this documentation-only change. Existing #239/#241
 test results remain evidence from those PRs, not new executions claimed here.
+
+
+## Cross-audit corrections (2026-09-30)
+
+Two P2 findings were confirmed and corrected: live documentary reconciliation
+(the active PC-0 index row and the productive source comment) and historical
+evidence provenance (the retro-edited #241 verdict). The original #241 snapshot
+is now preserved in full under an explicitly historical disposition, with a
+dated note linking current status to this audit and X1. No W2 closure decision
+or severity was changed by these corrections.
+
+Validation now includes the source comments in the repository-wide drift
+search. The sole Go diff changes comments only; executable lines match the
+audited main baseline. Original #241 disposition/body/results match that
+baseline in full apart from the explicit historical section heading.

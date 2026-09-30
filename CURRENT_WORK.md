@@ -8,7 +8,8 @@ The existing greenfield first-production contract excludes incompatible
 pre-#239 writer/GC skew. W2-0 is CLOSED-EVIDENCE for the covered current-version
 mechanism; both real mixed-version D(P)+HEAD counterexamples remain P1
 FOLLOW-UP / GENERAL. W2-1/2/6a remain OPEN through R31. Runtime, CQL, schema,
-guards and tests are unchanged; GC remains disabled.
+guards and tests are unchanged; documentation and one source comment are
+reconciled, with no runtime change. GC remains disabled.
 
 #240 remains separately in progress. Per the updated work order, this docs-only
 PR proceeds first against current main; it does not depend on #240 or claim
