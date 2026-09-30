@@ -105,9 +105,9 @@ func pcd1b4MutationDestroy(database *db.DB, repoID, fsID string) error {
 }'
 expect_red "G2 unlisted destroyer" "unlisted DeleteFSObjectIdentity call at internal/api/v2/publish_repair.go:pcd1b4MutationDestroy" '^TestPCD1B4DestroyerCallSitesAreInventoried$'
 
-# G3: removing restore's canonical DELETE deleted_at leaves the inventory stale.
-mutate internal/api/v2/write_helpers.go 's/DELETE deleted_at, deleted_by FROM libraries/DELETE deleted_by FROM libraries/'
-expect_red "G3 inventoried restore disappears" "inventoried restore no longer found at internal/api/v2/write_helpers.go:restoreDeletedLibrary" '^TestPCD1B4LifecycleStatementsAreInventoried$'
+# G3: removing restore's canonical `deleted_at = null` leaves the inventory stale.
+mutate internal/db/library_lifecycle.go 's/updated_at = \?, deleted_at = null, deleted_by = null/updated_at = ?, deleted_by = null/'
+expect_red "G3 inventoried restore disappears" "inventoried restore no longer found at internal/db/library_lifecycle.go:RestoreTrashedLibraryGeneration" '^TestPCD1B4LifecycleStatementsAreInventoried$'
 
 # G4: a fence column written in production before PC-D1B.5 (CW-M9 precursor).
 append internal/db/library_continuity.go '
