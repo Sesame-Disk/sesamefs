@@ -18,8 +18,7 @@ Evidence: RED→GREEN integration legs (T1–T7, G1–G9), 20 directed mutations
 a 3-DC leg with `LOCAL_SERIAL` sessions; details in
 [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md#issue-gc-hard-delete-lease-nonfencing-01).
 Registered follow-up: `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`
-(pre-existing). Not in scope: W2, PC-D1B.5 (its parked migration must move to
-029), user restore serialization
+(pre-existing). Not in scope: W2, PC-D1B.5, user restore serialization
 (`ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`, still open PRE-GC), GC
 activation. `GC_ENABLED=false` remains mandatory.
 

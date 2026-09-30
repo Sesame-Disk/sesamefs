@@ -228,8 +228,7 @@ rows.
   `feat/pc-d1b5-certification-window-fence-runtime` (`8a731e6bc`: migration
   `028`, E/P/S capture/intent/completion primitives, certifier capture and
   epoch predicate, `DestructionTokenV1`). It is reference material, not
-  scheduled work; if revived, its migration must be renumbered to `029`
-  (`028_library_lifecycle_at.cql` belongs to PR #240).
+  scheduled work.
 
 ## 6. PRE-GC list (A1 prerequisites)
 

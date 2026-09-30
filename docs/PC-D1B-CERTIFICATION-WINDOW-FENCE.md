@@ -977,7 +977,7 @@ implements the frozen contract afterward; it is required before destructive GC
 activation or a productive consumer.
 
 **Scope (exact):**
-1. Next available migration (`029`: `028_library_lifecycle_at.cql` is taken by PR #240): the three fence columns.
+1. Next available migration (`028` is taken by `028_library_lifecycle_at.cql`): the three fence columns.
 2. `internal/db`: intent/completion/capture primitives (global SERIAL,
     observed E/P/S plus the canonical non-null `created_at` existence
     predicate, tri-state outcomes); typed intent capability; mint
