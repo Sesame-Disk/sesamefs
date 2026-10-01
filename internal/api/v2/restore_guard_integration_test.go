@@ -360,3 +360,184 @@ func TestRestoreDeletedLibrary_RejectsWhileHardDeleteLeaseOwned(t *testing.T) {
 		t.Fatalf("deleted_at = %s, want %s after rejected restore", canonicalDeletedAt, deletedAt)
 	}
 }
+
+// seedActiveLibraryForRestoreGuard writes a live canonical row in the past (see
+// seedTrashedLibraryForRestoreGuard for why the timestamp is explicit).
+func seedActiveLibraryForRestoreGuard(t *testing.T, session *gocql.Session, orgID, libraryID, ownerID uuid.UUID, name string) {
+	t.Helper()
+	createdAt := time.Now().UTC().Add(-4 * time.Hour).Truncate(time.Millisecond)
+	if err := session.Query(`
+		INSERT INTO libraries (org_id, library_id, owner_id, name, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?) USING TIMESTAMP ?`,
+		orgID.String(), libraryID.String(), ownerID.String(), name, createdAt, createdAt, createdAt.UnixMicro()).Exec(); err != nil {
+		t.Fatalf("seed active library: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Query(`DELETE FROM gc_library_hard_delete_locks WHERE library_id = ?`, libraryID.String()).Exec()
+		_ = session.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, libraryID.String()).Exec()
+		_ = session.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID.String(), libraryID.String()).Exec()
+	})
+}
+
+// canonicalLibraryGenerationForRestoreGuard reads libraries.deleted_at through the
+// SERIAL domain the generation CAS writes in. exists is false when the row is gone.
+func canonicalLibraryGenerationForRestoreGuard(t *testing.T, session *gocql.Session, orgID, libraryID uuid.UUID) (deletedAt time.Time, exists bool) {
+	t.Helper()
+	err := session.Query(`SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?`,
+		orgID.String(), libraryID.String()).Consistency(gocql.Serial).Scan(&deletedAt)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return time.Time{}, false
+	}
+	if err != nil {
+		t.Fatalf("read canonical generation: %v", err)
+	}
+	return deletedAt, true
+}
+
+func markerGenerationForRestoreGuard(t *testing.T, session *gocql.Session, libraryID uuid.UUID) (deletedAt time.Time, exists bool) {
+	t.Helper()
+	err := session.Query(`SELECT deleted_at FROM deleted_libraries WHERE library_id = ?`, libraryID.String()).Scan(&deletedAt)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return time.Time{}, false
+	}
+	if err != nil {
+		t.Fatalf("read GC marker: %v", err)
+	}
+	return deletedAt, true
+}
+
+// ageLibraryLeaseForRestoreGuard makes whoever holds the library lease stale, as if
+// it paused past the stale threshold, so a competitor's real takeover succeeds.
+func ageLibraryLeaseForRestoreGuard(t *testing.T, session *gocql.Session, libraryID uuid.UUID) {
+	t.Helper()
+	staleAt := time.Now().UTC().Add(-2 * time.Hour)
+	if err := session.Query(`UPDATE gc_library_hard_delete_locks SET heartbeat = ? WHERE library_id = ?`,
+		staleAt, libraryID.String()).Exec(); err != nil {
+		t.Errorf("age library lease: %v", err)
+	}
+}
+
+// Soft delete and restore both change the canonical generation cell. A restore that
+// runs right after a soft delete must clear it: if soft delete wrote deleted_at with
+// a client timestamp and restore with a Paxos one, a client clock ahead of
+// Cassandra's makes restore report success while deleted_at stays set.
+func TestSoftDeleteThenImmediateRestoreClearsGeneration(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	session := db.Session()
+	orgID, libraryID, ownerID := uuid.New(), uuid.New(), uuid.New()
+	seedActiveLibraryForRestoreGuard(t, session, orgID, libraryID, ownerID, "soft-delete-then-restore")
+
+	if err := softDeleteLibrary(db, orgID.String(), ownerID.String(), ownerID.String(), libraryID.String()); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	if err := restoreDeletedLibrary(db, orgID.String(), ownerID.String(), libraryID.String()); err != nil {
+		t.Fatalf("restore right after soft delete: %v", err)
+	}
+	if deletedAt, exists := canonicalLibraryGenerationForRestoreGuard(t, session, orgID, libraryID); !exists || !deletedAt.IsZero() {
+		t.Fatalf("restored library must be active: exists=%v deleted_at=%s", exists, deletedAt)
+	}
+}
+
+// A restore that won its CAS and then paused must not resurrect the row when, in the
+// meantime, the library was trashed again (D2) and permanently deleted.
+func TestRestoreDeletedLibrary_CompletionDoesNotResurrectPurgedRow(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	session := db.Session()
+	orgID, libraryID, ownerID := uuid.New(), uuid.New(), uuid.New()
+	deletedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
+	seedTrashedLibraryForRestoreGuard(t, session, orgID, libraryID, ownerID, "restore-completion-resurrection", deletedAt)
+
+	restoreDeletedLibraryAfterCASHook = func() {
+		restoreDeletedLibraryAfterCASHook = nil
+		if err := softDeleteLibrary(db, orgID.String(), ownerID.String(), ownerID.String(), libraryID.String()); err != nil {
+			t.Errorf("soft delete D2 while restore is paused: %v", err)
+			return
+		}
+		d2, _ := canonicalLibraryGenerationForRestoreGuard(t, session, orgID, libraryID)
+		ageLibraryLeaseForRestoreGuard(t, session, libraryID)
+		if _, err := permanentlyDeleteTrashedLibraryCandidate(db, trashLibraryCandidate{
+			OrgID: orgID.String(), LibraryID: libraryID.String(), StorageClass: "hot", DeletedAt: d2,
+		}, "permanent_delete", "PermanentDeleteRepo", false); err != nil {
+			t.Errorf("permanent delete D2 while restore is paused: %v", err)
+		}
+	}
+	t.Cleanup(func() { restoreDeletedLibraryAfterCASHook = nil })
+
+	_ = restoreDeletedLibrary(db, orgID.String(), ownerID.String(), libraryID.String())
+
+	if deletedAt, exists := canonicalLibraryGenerationForRestoreGuard(t, session, orgID, libraryID); exists {
+		t.Fatalf("resumed restore completion recreated the purged canonical row (deleted_at=%s)", deletedAt)
+	}
+}
+
+// A stale restore of D1 must not erase the GC marker of a newer generation D2: B
+// restores D1 and trashes the library again while A is paused after its fence.
+func TestRestoreDeletedLibrary_StaleRestoreKeepsNewerGenerationMarker(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	session := db.Session()
+	orgID, libraryID, ownerID := uuid.New(), uuid.New(), uuid.New()
+	deletedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
+	seedTrashedLibraryForRestoreGuard(t, session, orgID, libraryID, ownerID, "stale-restore-marker", deletedAt)
+
+	restoreDeletedLibraryAfterFenceHook = func() {
+		restoreDeletedLibraryAfterFenceHook = nil
+		ageLibraryLeaseForRestoreGuard(t, session, libraryID)
+		if err := restoreDeletedLibrary(db, orgID.String(), ownerID.String(), libraryID.String()); err != nil {
+			t.Errorf("competing restore of D1: %v", err)
+			return
+		}
+		if err := softDeleteLibrary(db, orgID.String(), ownerID.String(), ownerID.String(), libraryID.String()); err != nil {
+			t.Errorf("soft delete D2: %v", err)
+		}
+	}
+	t.Cleanup(func() { restoreDeletedLibraryAfterFenceHook = nil })
+
+	if err := restoreDeletedLibrary(db, orgID.String(), ownerID.String(), libraryID.String()); err == nil {
+		t.Fatal("the stale restore of D1 must fail once D2 is current")
+	}
+
+	d2, exists := canonicalLibraryGenerationForRestoreGuard(t, session, orgID, libraryID)
+	if !exists || d2.IsZero() || d2.Equal(deletedAt) {
+		t.Fatalf("canonical must be at the newer generation D2: exists=%v deleted_at=%s", exists, d2)
+	}
+	if marker, ok := markerGenerationForRestoreGuard(t, session, libraryID); !ok || !marker.Equal(d2) {
+		t.Fatalf("GC marker of D2 must survive the stale restore: present=%v marker=%s want %s", ok, marker, d2)
+	}
+}
+
+// A restore that won its CAS and paused must not publish ACTIVE read models over a
+// library that was trashed again (D2) in the meantime.
+func TestRestoreDeletedLibrary_CompletionPublishesCurrentGeneration(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	session := db.Session()
+	orgID, libraryID, ownerID := uuid.New(), uuid.New(), uuid.New()
+	deletedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
+	seedTrashedLibraryForRestoreGuard(t, session, orgID, libraryID, ownerID, "restore-completion-read-model", deletedAt)
+
+	restoreDeletedLibraryAfterCASHook = func() {
+		restoreDeletedLibraryAfterCASHook = nil
+		if err := softDeleteLibrary(db, orgID.String(), ownerID.String(), ownerID.String(), libraryID.String()); err != nil {
+			t.Errorf("soft delete D2 while restore is paused: %v", err)
+		}
+	}
+	t.Cleanup(func() { restoreDeletedLibraryAfterCASHook = nil })
+
+	_ = restoreDeletedLibrary(db, orgID.String(), ownerID.String(), libraryID.String())
+
+	d2, exists := canonicalLibraryGenerationForRestoreGuard(t, session, orgID, libraryID)
+	if !exists || d2.IsZero() {
+		t.Fatalf("canonical must be trashed at D2: exists=%v deleted_at=%s", exists, d2)
+	}
+	var projected time.Time
+	if err := session.Query(`SELECT deleted_at FROM libraries_by_owner WHERE org_id = ? AND owner_id = ? AND library_id = ?`,
+		orgID.String(), ownerID.String(), libraryID.String()).Scan(&projected); err != nil {
+		t.Fatalf("read owner projection: %v", err)
+	}
+	if !projected.Equal(d2) {
+		t.Fatalf("owner projection deleted_at = %s, want current generation %s (not ACTIVE)", projected, d2)
+	}
+	// The completion removes only its own generation's marker: D2's must survive.
+	if marker, ok := markerGenerationForRestoreGuard(t, session, libraryID); !ok || !marker.Equal(d2) {
+		t.Fatalf("GC marker of D2 must survive the resumed restore completion: present=%v marker=%s want %s", ok, marker, d2)
+	}
+}

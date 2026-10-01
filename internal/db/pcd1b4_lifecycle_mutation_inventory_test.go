@@ -74,14 +74,14 @@ type pcd1b4LifecycleSite struct {
 }
 
 var pcd1b4ExpectedLifecycleStatements = []pcd1b4LifecycleSite{
-	// Soft-delete: plain LoggedBatch UPDATE of deleted_at, outside the HEAD
-	// Paxos domain. It does not remove any certified dependency.
-	{path: "internal/api/v2/write_helpers.go", decl: "softDeleteLibrary", kind: pcd1b4SoftDelete, role: pcd1b4NoChange},
-	{path: "internal/gc/store_cassandra.go", decl: "CassandraStore.SoftDeleteLibrary", kind: pcd1b4SoftDelete, role: pcd1b4NoChange},
-	// Restore: conditional DELETE deleted_at IF deleted_at = <generation>, reached
-	// from restoreDeletedLibrary under the hard-delete lease. HEAD and the tree are
-	// untouched; any destroyer that ran during trash already cleared the witness
-	// through its intent.
+	// Soft-delete: the trash-generation CAS (IF deleted_at = null), shared by the
+	// API softDeleteLibrary and CassandraStore.SoftDeleteLibrary. It does not remove
+	// any certified dependency.
+	{path: "internal/gc/store_cassandra.go", decl: "SoftDeleteCanonicalLibraryGeneration", kind: pcd1b4SoftDelete, role: pcd1b4NoChange},
+	// Restore: conditional UPDATE SET deleted_at = null IF deleted_at = <generation>,
+	// reached from restoreDeletedLibrary under the hard-delete lease. HEAD and the
+	// tree are untouched; any destroyer that ran during trash already cleared the
+	// witness through its intent.
 	{path: "internal/gc/store_cassandra.go", decl: "ClearCanonicalLibraryGeneration", kind: pcd1b4Restore, role: pcd1b4NoChange},
 	// Canonical row removal: the witness columns go with the row. The trash
 	// generation CAS is shared by the GC cascade (CassandraStore.HardDeleteLibrary)
@@ -137,6 +137,7 @@ var (
 	pcd1b4LibrariesTable         = `(?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)?libraries\b`
 	pcd1b4UpdateLibrariesPattern = regexp.MustCompile(`(?is)\bUPDATE\s+` + pcd1b4LibrariesTable)
 	pcd1b4DeletedAtAssignPattern = regexp.MustCompile(`(?i)\bdeleted_at\s*=`)
+	pcd1b4DeletedAtClearPattern  = regexp.MustCompile(`(?i)\bdeleted_at\s*=\s*null\b`)
 	pcd1b4RestorePattern         = regexp.MustCompile(`(?is)\bDELETE\s+[^;]*?\bdeleted_at\b[^;]*?\bFROM\s+` + pcd1b4LibrariesTable)
 	pcd1b4RowDeletePattern       = regexp.MustCompile(`(?is)\bDELETE\s+FROM\s+` + pcd1b4LibrariesTable)
 	pcd1b4WitnessWritePattern    = regexp.MustCompile(`(?is)\b(?:UPDATE|INSERT\s+INTO)\s+` + pcd1b4LibrariesTable + `[^;]*?\bcontinuity_(?:certified_head_commit_id|contract_version)\b`)
@@ -145,10 +146,11 @@ var (
 	pcd1b4FenceColumnPattern     = regexp.MustCompile(`(?i)\bcontinuity_destruction_(?:epoch|pending|superseded)\b`)
 )
 
-// pcd1b4SetClauseAssignsDeletedAt looks only at the SET clause of an UPDATE on
+// pcd1b4SetClauseDeletedAtKind looks only at the SET clause of an UPDATE on
 // libraries: the witness CAS predicates `IF ... deleted_at = null`, which is a
-// condition, not a soft-delete.
-func pcd1b4SetClauseAssignsDeletedAt(prepared string) bool {
+// condition, not a lifecycle write. Assigning null clears the trash generation
+// (restore); assigning anything else opens one (soft-delete).
+func pcd1b4SetClauseDeletedAtKind(prepared string) (pcd1b4LifecycleKind, bool) {
 	for _, loc := range pcd1b4UpdateLibrariesPattern.FindAllStringIndex(prepared, -1) {
 		rest := prepared[loc[1]:]
 		set := pc0SETKeywordPattern.FindStringIndex(rest)
@@ -159,18 +161,21 @@ func pcd1b4SetClauseAssignsDeletedAt(prepared string) bool {
 		if where := pc0WHEREKeywordPattern.FindStringIndex(clause); where != nil {
 			clause = clause[:where[0]]
 		}
+		if pcd1b4DeletedAtClearPattern.MatchString(clause) {
+			return pcd1b4Restore, true
+		}
 		if pcd1b4DeletedAtAssignPattern.MatchString(clause) {
-			return true
+			return pcd1b4SoftDelete, true
 		}
 	}
-	return false
+	return "", false
 }
 
 func pcd1b4ClassifyStatement(statement string) []pcd1b4LifecycleKind {
 	prepared := pc0PreparedCQL(statement)
 	var kinds []pcd1b4LifecycleKind
-	if pcd1b4SetClauseAssignsDeletedAt(prepared) {
-		kinds = append(kinds, pcd1b4SoftDelete)
+	if kind, ok := pcd1b4SetClauseDeletedAtKind(prepared); ok {
+		kinds = append(kinds, kind)
 	}
 	if pcd1b4RestorePattern.MatchString(prepared) {
 		kinds = append(kinds, pcd1b4Restore)

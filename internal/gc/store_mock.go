@@ -3972,6 +3972,29 @@ func (m *MockStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt time
 	return true, nil
 }
 
+func (m *MockStore) GetCanonicalLibraryGeneration(orgID, libraryID uuid.UUID) (*time.Time, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	lib, ok := m.libraries[libraryID]
+	if !ok || lib.OrgID != orgID {
+		return nil, false, nil
+	}
+	if lib.DeletedAt.IsZero() {
+		return nil, true, nil
+	}
+	deletedAt := lib.DeletedAt
+	return &deletedAt, true, nil
+}
+
+func (m *MockStore) DeleteLibraryMarkerAtGeneration(libraryID uuid.UUID, deletedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if marker, ok := m.deletedLibraries[libraryID]; ok && marker.DeletedAt.Equal(deletedAt) {
+		delete(m.deletedLibraries, libraryID)
+	}
+	return nil
+}
+
 // --- User cascade (Fase 1) ---
 
 func (m *MockStore) ListDeletedUsersExpired(graceDays int) ([]DeletedUserInfo, error) {
@@ -4022,7 +4045,15 @@ func (m *MockStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID) err
 	if err != nil {
 		return err
 	}
-	lib.DeletedAt = time.Now()
+	// Mirrors the generation CAS (IF deleted_at = null): an already-trashed library
+	// keeps its generation; only a missing marker for it is completed.
+	if !lib.DeletedAt.IsZero() {
+		if marker, ok := m.deletedLibraries[libraryID]; ok && marker.DeletedAt.Equal(lib.DeletedAt) {
+			return nil
+		}
+	} else {
+		lib.DeletedAt = time.Now()
+	}
 	m.deletedLibraries[libraryID] = &mockDeletedLibrary{
 		OrgID:                 orgID,
 		LibraryID:             libraryID,

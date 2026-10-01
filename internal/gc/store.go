@@ -532,6 +532,12 @@ type GCStore interface {
 	// nothing, when the canonical row exists under another generation (restored or
 	// re-trashed); see CassandraStore.HardDeleteLibrary for the boundary.
 	HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt time.Time) (bool, error)
+	// GetCanonicalLibraryGeneration reads canonical libraries.deleted_at (SERIAL):
+	// nil while active, exists=false once the row is gone.
+	GetCanonicalLibraryGeneration(orgID, libraryID uuid.UUID) (*time.Time, bool, error)
+	// DeleteLibraryMarkerAtGeneration removes the GC marker only while it is still at
+	// generation deletedAt.
+	DeleteLibraryMarkerAtGeneration(libraryID uuid.UUID, deletedAt time.Time) error
 
 	// Storage counter cleanup after permanent library deletion.
 	// Deletes the lib-scope counter row. Aggregate scopes (org, user, platform)

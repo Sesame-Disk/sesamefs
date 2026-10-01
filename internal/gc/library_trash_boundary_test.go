@@ -2,6 +2,7 @@ package gc
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -110,5 +111,46 @@ func TestLibraryTrashBoundary_SupersededGenerationIsStale(t *testing.T) {
 	marker, err := store.GetLibraryDeletedAt(libID)
 	if err != nil || marker == nil || !marker.Equal(redeletedAt) {
 		t.Fatalf("generation D' marker must be untouched by the D cascade, got %v (err=%v)", marker, err)
+	}
+}
+
+// A restore that won its CAS and crashed before removing the GC marker leaves the
+// canonical row ACTIVE with the marker still at D. The cascade for D must treat
+// the canonical generation as authoritative: stale, clear marker D, stop.
+func TestLibraryTrashBoundary_StaleMarkerOverRestoredCanonicalIsSettled(t *testing.T) {
+	store, w, orgID, libID, deletedAt := newLibraryTrashBoundaryFixture(t)
+	store.mu.Lock()
+	store.libraries[libID].DeletedAt = time.Time{}
+	store.mu.Unlock()
+	store.SeedQueueItemForTest(orgID, deletedAt, ItemLibraryCascade, libID.String(), uuid.Nil, "hot", 0)
+
+	drainLibraryTrashBoundaryQueue(t, store, w, orgID)
+
+	assertLibraryTrashBoundaryLibraryIntact(t, store, orgID, libID)
+	if marker, err := store.GetLibraryDeletedAt(libID); err != nil || marker != nil {
+		t.Fatalf("stale marker D over a restored canonical row must be cleared, got %v (err=%v)", marker, err)
+	}
+}
+
+// An ambiguous restore CAS may be settled as won only while this restore still
+// owns the lease: otherwise deleted_at == null may be another restore's commit.
+func TestSettleAmbiguousLibraryGenerationClear(t *testing.T) {
+	casErr := errors.New("cas outcome unknown")
+	readNull := func() (time.Time, bool, error) { return time.Time{}, true, nil }
+	readD := func() (time.Time, bool, error) { return time.Now(), true, nil }
+	owned := func() error { return nil }
+	lost := func() error { return errors.New("lost library restore lock") }
+
+	if won, err := settleAmbiguousLibraryGenerationClear(casErr, lost, readNull); won || err == nil {
+		t.Fatalf("lease lost: must not claim the clear (won=%v err=%v)", won, err)
+	}
+	if won, err := settleAmbiguousLibraryGenerationClear(casErr, owned, readD); won || err == nil {
+		t.Fatalf("deleted_at still set: must not claim the clear (won=%v err=%v)", won, err)
+	}
+	if won, err := settleAmbiguousLibraryGenerationClear(casErr, owned, func() (time.Time, bool, error) { return time.Time{}, false, nil }); won || err == nil {
+		t.Fatalf("row absent: must not claim the clear (won=%v err=%v)", won, err)
+	}
+	if won, err := settleAmbiguousLibraryGenerationClear(casErr, owned, readNull); !won || err != nil {
+		t.Fatalf("still owner and deleted_at null: the clear is ours (won=%v err=%v)", won, err)
 	}
 }

@@ -3600,6 +3600,19 @@ func (w *Worker) processLibraryCascade(ctx context.Context, item QueueItem) erro
 		log.Printf("[GC Worker] Skipping stale library cascade for %s after lock (current deleted_at=%v identity_at=%v queued_at=%v)", item.ItemID, deletedAt2, identityAt, item.QueuedAt)
 		return nil
 	}
+	// The marker matching D is not enough: the canonical generation is the authority.
+	// A restore that won its CAS and crashed before removing the marker leaves the row
+	// active (or re-trashed) under a marker still at D. That cascade is stale; clear
+	// marker D so it stops being rediscovered, and touch nothing else. An absent row is
+	// a permanent delete (or a crashed earlier pass) and proceeds.
+	canonicalAt, canonicalExists, err := w.store.GetCanonicalLibraryGeneration(item.OrgID, libraryID)
+	if err != nil {
+		return fmt.Errorf("failed to read canonical library generation for %s: %w", item.ItemID, err)
+	}
+	if canonicalExists && (canonicalAt == nil || !canonicalAt.Equal(identityAt)) {
+		log.Printf("[GC Worker] Skipping stale library cascade for %s: canonical deleted_at=%v is not generation %v; clearing its marker", item.ItemID, canonicalAt, identityAt)
+		return w.store.DeleteLibraryMarkerAtGeneration(libraryID, identityAt)
+	}
 	if err := lease.Check(); err != nil {
 		return err
 	}

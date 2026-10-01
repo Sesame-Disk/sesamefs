@@ -6803,13 +6803,16 @@ owner paused after renewal and resumed only after takeover. Keep it out of
 PC-D1B.4; `GC_ENABLED=false` is not protection from this API path.
 
 **Resolution (2026-10-01).** Instead of a token carried to a multi-table batch, the
-canonical `libraries.deleted_at` cell is the single linearization point. Restore
-(`ClearCanonicalLibraryGeneration`) and both hard deletes
-(`DeleteCanonicalLibraryAtGeneration`, shared by `hardDeleteLibraryRowsFn` and
-`CassandraStore.HardDeleteLibrary`) change it only through a conditional write on
-the generation they observed, so exactly one of them wins. The follow-up cleanup
-runs only after a won CAS. Restore removes the GC marker before its CAS so that a
-marker never outlives a restored row. Both requested characterizations are now
+canonical `libraries.deleted_at` cell is the single linearization point. Soft delete
+(`SoftDeleteCanonicalLibraryGeneration`), restore (`ClearCanonicalLibraryGeneration`)
+and both hard deletes (`DeleteCanonicalLibraryAtGeneration`, shared by
+`hardDeleteLibraryRowsFn` and `CassandraStore.HardDeleteLibrary`) change it only
+through a global-SERIAL conditional write on the generation they observed, so
+exactly one of them wins and no client timestamp can reorder them. Derived state
+(marker, read models, accounting) follows only a won CAS: restore removes the marker
+only while it is still its own generation and publishes read models from the
+current canonical row, and the GC cascade validates the canonical generation under
+its lease (settling a marker left over a restored row). Both requested characterizations are now
 integration tests against real Cassandra, each RED on the previous code:
 `TestPermanentDelete_LosesToRestoreAfterFence` (stale delete after restore) and
 `TestRestoreDeletedLibrary_LosesToPurgeAfterFence` (stale restore after delete). The
@@ -6817,6 +6820,25 @@ GC worker side is `TestLibraryTrashBoundary_RestoreAfterFenceWins`. Residuals
 (crash windows, client vs. Paxos timestamps) are in the contract document. The
 PR #240 redesign (lifecycle clocks, reapers, owner transfer) was closed unmerged
 and is not needed.
+
+### ISSUE-LIBRARY-PERMANENT-DELETE-LINK-CLEANUP-BEFORE-CAS-01: Permanent delete cleans links before its generation CAS
+
+**Status**: 🔴 Open — FOLLOW-UP / CURRENT-RUNTIME. Found in the PR #243 cross-audit (2026-10-01)
+**Severity**: High (P1)
+**Introduced by #243**: No
+**Blocks #243**: No
+**Affected**: `permanentlyDeleteTrashedLibraryCandidate` (`internal/api/v2/library_delete_helpers.go`), `cleanupLibraryLinksGuardedForDeleteFn`
+
+The API permanent delete removes the library's share/upload links before its final
+trash-generation CAS. A request that removes the links, pauses past the stale lease
+threshold and then loses the CAS to a restore leaves a restored library without its
+links. The generation CAS (PR #243) protects the canonical row and the content, not
+this pre-CAS side effect. Fix direction: move link cleanup after a won CAS, or make
+it recoverable from the generation; do not add lifecycle state for it.
+
+Related, also pre-existing and out of #243: other ordinary client-timestamped writers
+of the `libraries` row (owner transfer, rename, size updates) can upsert partial
+cells after a hard delete; see `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01`.
 
 ### ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01: User restore does not serialize with the user hard-delete lease
 
