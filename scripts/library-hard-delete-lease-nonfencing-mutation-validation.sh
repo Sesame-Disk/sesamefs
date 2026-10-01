@@ -265,7 +265,7 @@ mutate 'M34 trash reconciliation deletes on a weak canonical read' internal/db/a
 	'deletes without the lifecycle authority'
 
 mutate 'M35 permanent-delete completion stamped before its LWT' "$DH" \
-	's{\t\tbatch := database\.Session\(\)\.Batch\(gocql\.LoggedBatch\)\n(\t\tif err := addPermanentDeleteCompletionQueries\()}{\t\tbatch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt, deletedAt))\n$1}; s{\t\tbatch\.WithTimestamp\(permanentDeleteCompletionTimestamp\(deletedAt, lifecycleFloor\)\)\n}{\t\t_ = lifecycleFloor\n}' \
+	's{\t\tbatch := database\.Session\(\)\.Batch\(gocql\.LoggedBatch\)\n(\t\tif err := addPermanentDeleteCompletionQueries\()}{\t\tbatch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt, deletedAt))\n$1}; s{\t\tbatch\.WithTimestamp\(stamp\)\n(\t\tif err := dbpkg\.ExecLibraryLifecycleCompletionFn\(batch\))}{\t\t_ = stamp\n$1}' \
 	./internal/api/v2 '^TestNonfencingA12PermanentDeleteCompletionAfterFenceRemovesRepairedRows$' '-tags integration' \
 	'survived the permanent delete completed after a fence'
 
@@ -278,5 +278,22 @@ mutate 'M36 resumed permanent delete does not recover the lifecycle floor' "$DH"
 	's{(func permanentDeleteLifecycleFloor\([^\n]*\n)}{$1\treturn time.Time{}, nil\n}' \
 	./internal/api/v2 '^TestNonfencingA13ResumedPermanentDeleteRecoversLifecycleFloor$' '-tags integration' \
 	'the resumed completion lost to the rows repaired at the fence value'
+
+OWNER=internal/db/library_owner_transfer.go
+
+mutate 'M38 owner transfer writes the canonical row as a plain upsert' "$OWNER" \
+	's{applied, err := session\.Query\(`\n\t\t\tUPDATE libraries SET owner_id = \?, updated_at = \?\n\t\t\tWHERE org_id = \? AND library_id = \?\n\t\t\tIF created_at != null AND deleted_at = \? AND lifecycle_at = \?\n\t\t`, newOwnerID, updatedAt, orgID, libraryID, nullableTime\(state\.DeletedAt\), nullableTime\(state\.LifecycleAt\)\)\.\n\t\t\tSerialConsistency\(LibraryHeadSerialConsistency\)\.\n\t\t\tMapScanCAS\(map\[string\]interface\{\}\{\}\)}{err = session.Query(`UPDATE libraries SET owner_id = ?, updated_at = ? WHERE org_id = ? AND library_id = ?`, newOwnerID, updatedAt, orgID, libraryID).Exec()\n\t\tapplied := err == nil}' \
+	./internal/api/v2 '^TestNonfencingA15OwnerTransferCannotRecreateDeletedLibrary$' '-tags integration' \
+	'the canonical library row exists after its permanent delete'
+
+mutate 'M39 owner transfer keeps derived rows written after a permanent delete' "$WH" \
+	's{\tif state\.Present \{\n\t\treturn nil\n\t\}\n\tcleanup := }{\tif state.Present || true {\n\t\treturn nil\n\t}\n\tcleanup := }' \
+	./internal/api/v2 '^TestNonfencingA16OwnerTransferDerivedRowsAfterDeleteAreRemoved$' '-tags integration' \
+	'libraries_by_id survived the permanent delete'
+
+mutate 'M40 permanent-delete completion ignores the lookup write times' "$DH" \
+	's{\tif lookupFloor > stamp \{}{\tif false \{}' \
+	./internal/api/v2 '^TestNonfencingA17FutureTimestampTransferDoesNotSurvivePermanentDelete$' '-tags integration' \
+	'libraries_by_id survived the permanent delete'
 
 green "All $count NONFENCING mutations went RED for their own reason."

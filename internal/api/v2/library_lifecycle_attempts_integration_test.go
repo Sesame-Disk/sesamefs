@@ -630,3 +630,124 @@ func TestNonfencingA14PermanentDeleteCompletionUsesWinningLifecycleFloor(t *test
 		t.Fatalf("continuation left after the completed delete: %+v", rows)
 	}
 }
+
+// parkOwnerTransferBeforeCanonicalWrite parks the first owner transfer of lib
+// after its canonical read and before its canonical write.
+func parkOwnerTransferBeforeCanonicalWrite(t *testing.T, lib nonfencingLibrary) (<-chan struct{}, func()) {
+	t.Helper()
+	parked, resume := make(chan struct{}), make(chan struct{})
+	var first, released sync.Once
+	original := dbpkg.BeforeLibraryOwnerTransferFn
+	dbpkg.BeforeLibraryOwnerTransferFn = func(orgID, libraryID string) {
+		if libraryID == lib.LibraryID {
+			park := false
+			first.Do(func() { park = true })
+			if park {
+				close(parked)
+				<-resume
+			}
+		}
+		original(orgID, libraryID)
+	}
+	release := func() { released.Do(func() { close(resume) }) }
+	t.Cleanup(func() {
+		release()
+		dbpkg.BeforeLibraryOwnerTransferFn = original
+	})
+	return parked, release
+}
+
+func assertNonfencingLibraryGone(t *testing.T, db *dbpkg.DB, lib nonfencingLibrary, newOwner, label string) {
+	t.Helper()
+	if present, _ := nonfencingCanonical(t, db, lib); present {
+		t.Fatalf("NONFENCING RED: %s: the canonical library row exists after its permanent delete", label)
+	}
+	var n int
+	if err := db.Session().Query(`SELECT COUNT(*) FROM libraries_by_id WHERE library_id = ?`, lib.LibraryID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("NONFENCING RED: %s: libraries_by_id survived the permanent delete (rows=%d err=%v)", label, n, err)
+	}
+	if newOwner != "" {
+		if n := nonfencingOwnerListing(t, db, lib, newOwner); n != 0 {
+			t.Fatalf("NONFENCING RED: %s: the new owner lists a permanently deleted library (rows=%d)", label, n)
+		}
+	}
+}
+
+// A15: an owner transfer reads the library, then a permanent delete commits and
+// completes, then the transfer writes. It must not recreate the canonical row
+// or the lookup.
+func TestNonfencingA15OwnerTransferCannotRecreateDeletedLibrary(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	parked, release := parkOwnerTransferBeforeCanonicalWrite(t, lib)
+	newOwner := uuid.NewString()
+	transfer := runOwner(func() error { return updateLibraryOwner(db, lib.OrgID, lib.LibraryID, newOwner, time.Now().UTC()) })
+	awaitParked(t, parked)
+	if err := nonfencingPermanentDelete(db, lib); err != nil {
+		t.Fatalf("permanent delete: %v", err)
+	}
+	release()
+	err := awaitOwner(t, transfer)
+	assertNonfencingLibraryGone(t, db, lib, newOwner, "owner transfer resumed after a permanent delete")
+	if !errors.Is(err, gocql.ErrNotFound) {
+		t.Fatalf("transfer of a deleted library returned %v, want not found", err)
+	}
+}
+
+// A16: the transfer's canonical LWT commits first; the permanent delete then
+// commits and completes before the transfer writes its lookup and read model.
+// The transfer must remove what it wrote once it sees the library gone.
+func TestNonfencingA16OwnerTransferDerivedRowsAfterDeleteAreRemoved(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	parked, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	original := execOwnerTransferDerivedFn
+	execOwnerTransferDerivedFn = func(batch *gocql.Batch) error {
+		once.Do(func() { close(parked); <-resume })
+		return original(batch)
+	}
+	t.Cleanup(func() {
+		select {
+		case <-resume:
+		default:
+			close(resume)
+		}
+		execOwnerTransferDerivedFn = original
+	})
+	newOwner := uuid.NewString()
+	transfer := runOwner(func() error { return updateLibraryOwner(db, lib.OrgID, lib.LibraryID, newOwner, time.Now().UTC()) })
+	awaitParked(t, parked)
+	if err := nonfencingPermanentDelete(db, lib); err != nil {
+		t.Fatalf("permanent delete after the transfer's canonical write: %v", err)
+	}
+	close(resume)
+	err := awaitOwner(t, transfer)
+	assertNonfencingLibraryGone(t, db, lib, newOwner, "transfer derived rows written after the permanent delete")
+	if !errors.Is(err, gocql.ErrNotFound) {
+		t.Fatalf("transfer racing a permanent delete returned %v, want not found", err)
+	}
+}
+
+// A17: an owner transfer on a node an hour ahead, then a soft delete and a
+// permanent delete on normal nodes: the canonical row and the lookup must be
+// gone.
+func TestNonfencingA17FutureTimestampTransferDoesNotSurvivePermanentDelete(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedActiveLibrary(t, db)
+	original := execOwnerTransferDerivedFn
+	execOwnerTransferDerivedFn = func(batch *gocql.Batch) error {
+		batch.WithTimestamp(time.Now().Add(time.Hour).UnixMicro())
+		return original(batch)
+	}
+	t.Cleanup(func() { execOwnerTransferDerivedFn = original })
+	if err := updateLibraryOwner(db, lib.OrgID, lib.LibraryID, uuid.NewString(), time.Now().UTC()); err != nil {
+		t.Fatalf("transfer: %v", err)
+	}
+	execOwnerTransferDerivedFn = original
+	lib.DeletedAt = nonfencingSoftDelete(t, db, lib)
+	if err := nonfencingPermanentDelete(db, lib); err != nil {
+		t.Fatalf("permanent delete: %v", err)
+	}
+	assertNonfencingLibraryGone(t, db, lib, "", "permanent delete after a future-timestamp transfer")
+}
