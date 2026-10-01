@@ -6750,7 +6750,7 @@ readiness.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01: A stale lease owner can resume its final lifecycle batch
 
-**Status**: ✅ Closed on 2026-10-01 (PR #240) — every canonical lifecycle transition (soft delete, restore, API permanent delete, GC library cascade) is a global-SERIAL LWT conditioned on a trash generation that is unique per library (`deleted_at`, driven by the `lifecycle_at` clock of migration 028), so an owner that lost the lease cannot change the canonical lifecycle state another owner committed; every transition has a durable continuation (migration 029) finished by a GC-independent reaper. Found in the PR #232 final cross-audit (2026-09-24)
+**Status**: ✅ Closed on 2026-10-01 (PR #240) — every canonical lifecycle transition (soft delete, restore, API permanent delete, GC library cascade) is a global-SERIAL LWT conditioned on a trash generation that is unique per library (`deleted_at`, driven by the `lifecycle_at` clock of migration 028), so an owner that lost the lease cannot change the canonical lifecycle state another owner committed (first committed transition wins; a lease takeover alone is not a fence); API/GC soft delete, restore and API permanent delete have a durable per-attempt continuation (migration 029) finished by a GC-independent reaper, and the GC hard delete keeps its durable `library_cascade` item. Found in the PR #232 final cross-audit (2026-09-24)
 **Severity**: High (P1)
 **Scope**: CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC (both discharged for the library lease; the user lease is the separate, open `ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`)
 **Introduced by #232**: No
@@ -6899,10 +6899,49 @@ So:
   is dropped.
 
 Semantics: the property is "no stale owner can change a lifecycle generation
-that another owner already transitioned". An old owner that resumes before the
-new owner commits can still win (the generation is unchanged); the new owner's
-own fenced mutation is then rejected with the normal conflict. Every generation
-has exactly one lifecycle transition.
+that another owner already transitioned". The lease only coordinates
+contenders; the global-SERIAL lifecycle LWT is the serialization authority. A
+lease takeover by itself is not a fence: an old owner that resumes before the
+new owner commits can still win (the generation is unchanged), and the new
+owner's own fenced mutation is then rejected with the normal conflict. Once the
+new owner has committed, the old owner can never undo or overwrite it. Every
+generation has exactly one lifecycle transition. A lease epoch/token in the
+LWT (strict takeover semantics) is not required for this property and is not
+part of this fix.
+
+**Continuation scope.** API and GC soft delete, restore and API permanent
+delete use the migration-029 per-attempt continuation. The GC library cascade
+hard delete (`CassandraStore.HardDeleteLibrary`) does not: its durable
+continuation is the `library_cascade` queue item, which the GC worker retries
+until the generation-fenced delete and its completion succeed.
+
+**Round 6 (cross-audit of `e34eb0c14`).**
+
+- Continuation rows are inserted `USING TIMESTAMP` of their recording time and
+  retired `USING TIMESTAMP max(now, insert + 1 µs)` (the reaper reads the insert
+  time back with `WRITETIME`). Rows are never re-inserted (unique
+  `attempt_id`), so a retirement always beats its insert, even from a node
+  whose clock is behind the producer's; global QUORUM alone fixed visibility,
+  not timestamp order.
+- The read model's `deleted_at` cell is lifecycle state: the ordinary owner/
+  org/global upsert no longer writes it with a client timestamp. A trashed row's
+  cell is set at `LibraryLifecycleWriteTimestamp(deleted_at)` (by lifecycle
+  publications and by ordinary writers that copy a trashed row), and the
+  restore (or any later transition) clears it at its own lifecycle value, so
+  the cell follows canonical order whatever the clocks: a restore after a soft
+  delete on a node an hour ahead no longer leaves the library projected as
+  deleted, nor the reverse.
+- The publication snapshot and its confirmation read the ordinary columns at
+  EACH_QUORUM (lifecycle state still at SERIAL): an owner transfer or rename
+  acknowledged at `LOCAL_QUORUM` in another datacenter is seen. If a datacenter
+  cannot be read the publication reports `ErrLibraryReadModelUnconfirmed`; a
+  user request then succeeds (its transition is committed) but keeps its
+  continuation, and the reaper publishes again once every datacenter answers.
+- The admin trash reconciliation keeps a row when the session read shows its
+  generation, but deletes on a generation mismatch only after
+  `ReadLibraryLifecycleSerial` confirms it, failing closed when that read
+  fails: a stale session read in one datacenter can no longer delete the
+  current generation's trash row.
 
 **Evidence** (Docker, real Cassandra, production helpers):
 `internal/api/v2/library_hard_delete_nonfencing_integration_test.go`:
@@ -6926,6 +6965,10 @@ has exactly one lifecycle transition.
 - the adverse-client-clock soft delete, the permanent-delete resume (function
   and HTTP handler) and the soft-delete repair legs, each primitive's outcomes
   and the GC store hard delete.
+- round 6 (same file): A9 a soft delete on a node an hour ahead (lifecycle and
+  client clock) then a restore on a normal node, A10 the reverse — the
+  projected `deleted_at` follows the canonical state; A11 a continuation
+  inserted by a node an hour ahead is retired by the reaper on a normal node.
 - round 5 (`library_lifecycle_attempts_integration_test.go`): A1 two soft
   deletes with the same target under a frozen clock, the winner dying after
   its LWT and the loser keeping the winner's continuation (counters converge);
@@ -6952,10 +6995,14 @@ mutations); R2, R5 and R6 were reproduced RED on the round-4 audited head
 lacks; mutations M13, M21 and M22 cover them); A1, A2, A5, A6 and A7 were
 reproduced RED on the round-5 audited head `ae273bf65` (in an isolated keyspace
 migrated by that head; A3, A4 and A8 need seams that head lacks and are covered
-by mutations M25, M26 and M29). `internal/db/library_lifecycle_test.go` pins the SERIAL domain of
+by mutations M25, M26 and M29); A9, A10 and A11 were reproduced RED on the
+round-6 audited head `e34eb0c14` (the EACH_QUORUM confirmation and the
+reconciliation authority need a second datacenter or a stale replica to show a
+difference and are pinned by `TestLibraryLifecycleRound6Pins` and mutations M33
+and M34). `internal/db/library_lifecycle_test.go` pins the SERIAL domain of
 every lifecycle LWT and read, the lifecycle clock and the ambiguous-outcome
 settlement. `scripts/library-hard-delete-lease-nonfencing-mutation-validation.sh`
-runs 31 directed mutations, each required to go RED for its own reason, including: lifecycle
+runs 35 directed mutations, each required to go RED for its own reason, including: lifecycle
 clock not advanced, soft delete as a plain write, trashed lifecycle rows not
 stamped with the generation value, reaper dropping a continuation that can
 still apply, soft delete without a continuation, ordinary read-model rows
@@ -6966,7 +7013,10 @@ GC retry only checking the marker, each lifecycle LWT downgraded to
 (M23), no fence of abandoned attempts (M24), restore/delete LWTs ignoring the
 lifecycle clock (M25, M26), unconfirmed read-model publication (M27, M28),
 bulk cleanup ignoring the continuations (M29) and continuations discovered at
-session consistency (M30). The round-4 mutation "completion not re-checked"
+session consistency (M30); for round 6: continuation retired at an implicit
+client timestamp (M31), projected `deleted_at` written with the client clock
+(M32), publication confirmed at SERIAL only (M33) and trash reconciliation
+deleting on a weak canonical read (M34). The round-4 mutation "completion not re-checked"
 was dropped: the completion no longer has a pre-LWT snapshot to re-check. `scripts/library-hard-delete-lease-nonfencing-multidc-validation.sh`
 runs the stale owner in dc-na against a new owner in dc-eu with `LOCAL_SERIAL`
 session defaults (positive evidence).
@@ -6976,10 +7026,17 @@ session defaults (positive evidence).
 - Storage counters converge when the reconciliation requests are processed
   (the GC scanner's reconciliation phase, as on `main`); the reaper guarantees
   the request exists once the transition is decided.
-- The ordinary read-model rows follow client clocks, as on `main`: two writes
-  from nodes whose clocks disagree by more than the time between them can
-  leave the older one visible until the next write or repair. The canonical
-  lifecycle, the marker and the trash listing are not affected.
+- The ordinary read-model columns (owner, name, size...) follow client
+  clocks, as on `main`: two writes from nodes whose clocks disagree by more
+  than the time between them can leave the older one visible until the next
+  write or repair. The canonical lifecycle, the marker, the trash listing and
+  the projected `deleted_at` are not affected.
+- A trashed row's `deleted_at` cell is stamped with its generation's lifecycle
+  value; if that value is ahead of real time (a node with a fast clock) and the
+  library is transferred within that lead, the superseded owner row's delete
+  (client timestamp) can leave that one cell behind until the generation's
+  restore or permanent delete. The same holds today for any write from a fast
+  node.
 - A continuation whose attempt never applied is retired only after
   `LibraryLifecycleAttemptAbandonAfter` (10 min) and a fence; a live producer
   fenced earlier (clock skew between nodes, or a pause longer than the
@@ -6995,7 +7052,9 @@ session defaults (positive evidence).
   generation.
 - Cost: every lifecycle transition writes and deletes a continuation row at
   global QUORUM, runs a SERIAL read and one global-SERIAL LWT, and its
-  completion two SERIAL reads (snapshot and confirmation); soft delete, which
+  completion two SERIAL and two EACH_QUORUM reads (snapshot and confirmation;
+  with a datacenter down the read model is confirmed later by the reaper); the
+  admin trash reconciliation adds a SERIAL read per row it is about to delete; soft delete, which
   wrote at `LOCAL_QUORUM` before, now needs a global quorum; recovery reads at
   EACH_QUORUM need every DC. The reaper scans 32 small partitions at QUORUM
   every 30 s; the bulk cleanups read the same 32 partitions and scan
@@ -7004,6 +7063,26 @@ session defaults (positive evidence).
 This does not close `ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01` (user
 lease), does not establish GC activation readiness, and `GC_ENABLED=false`
 remains mandatory.
+
+### ISSUE-GC-HARD-DELETE-MARKER-WRITETIME-XDC-01: The GC hard delete stamps its marker tombstone from a session-consistency WRITETIME read
+
+**Status**: 🔴 Open — PRE-GC / FOLLOW-UP. Registered in the PR #240 round-6 cross-audit (2026-10-01)
+**Severity**: Medium (P2)
+**Scope**: PRE-GC / FOLLOW-UP (GC cascade only; `GC_ENABLED=false`)
+**Introduced by #240**: No (the timestamp floor existed in essence before)
+**Blocks #240**: No
+**Affected**: `hardDeleteLibraryCompletionTimestamp` (`internal/gc/store_cassandra.go`), used by `CassandraStore.HardDeleteLibrary`
+
+The GC hard delete stamps its completion batch (which deletes the
+`deleted_libraries` marker) after `WRITETIME(deleted_at)` and
+`WRITETIME(purge_requested_at)` of the marker, read at the session's
+consistency. A newer marker write acknowledged only in another datacenter
+(for example an API permanent delete's purge request stamped with a faster
+node's clock) may not be observed, so the tombstone can carry a lower
+timestamp and lose to it, leaving a marker for a library whose canonical row
+is gone. Fix direction: read the write times at EACH_QUORUM (fail closed), or
+stamp the completion from the lifecycle value instead of observed write times.
+Must be decided before GC activation.
 
 ### ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01: A stale permanent delete can remove the links of a restored library
 

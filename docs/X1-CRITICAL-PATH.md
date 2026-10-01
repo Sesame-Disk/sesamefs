@@ -291,8 +291,11 @@ Status:
     API permanent delete and the GC library cascade move the canonical
     lifecycle only through global-SERIAL LWTs conditioned on a per-library
     unique trash generation (`lifecycle_at` clock, migration 028), so an owner
-    that lost the lease cannot undo or destroy another owner's transition;
-    every transition has a durable continuation (migration 029) that a
+    that lost the lease cannot undo or destroy another owner's committed
+    transition (a lease takeover alone is not a fence);
+    soft delete, restore and API permanent delete have a durable per-attempt
+    continuation (migration 029; the GC hard delete uses its durable
+    `library_cascade` item) that a
     GC-independent reaper finishes once it is decided, with `GC_ENABLED=false`.
   - Follow-ups (pre-existing): `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`
     (link cleanup of a stale permanent delete) and

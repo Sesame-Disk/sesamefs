@@ -2,14 +2,20 @@
 
 **Active branch — PR #240, `fix/gc-hard-delete-lease-nonfencing` (rebased onto `main@1a8f1e77c`; 2026-09-30/10-01):**
 Closes `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` only. PR #234 gave the library
-hard-delete lease one global SERIAL owner at a time; this closes the remaining
-stale-owner window. Every canonical lifecycle transition — soft delete, restore,
+hard-delete lease one global SERIAL owner at a time; this makes the canonical
+lifecycle LWT, not the lease, the serialization authority: once another owner
+has committed a lifecycle transition, an owner that lost the lease can never
+undo or overwrite it (first committed transition wins). A lease takeover alone
+is not a fence: until the new owner commits, the old one can still win the
+canonical race. Every canonical lifecycle transition — soft delete, restore,
 API permanent delete, GC library cascade — is a global-SERIAL LWT conditioned
 on a trash generation that is unique per library: migration 028 adds
 `libraries.lifecycle_at`, a per-library lifecycle clock advanced strictly
-inside each soft-delete/restore LWT and used as `deleted_at`. Every transition
-records a durable continuation first (migration 029,
-`library_lifecycle_pending`); a Server-owned, GC-independent reaper finishes it
+inside each soft-delete/restore LWT and used as `deleted_at`. API and GC soft
+delete, restore and API permanent delete record a durable per-attempt
+continuation first (migration 029, `library_lifecycle_pending`; the GC hard
+delete's continuation is its durable `library_cascade` item); a Server-owned,
+GC-independent reaper finishes it
 once the transition is decided, rebuilding derived state and recording the
 storage reconciliation request after the canonical change. Marker and trash
 rows follow the lifecycle clock; ordinary read-model rows keep client
@@ -20,10 +26,16 @@ identity (an attempt only deletes its own row), abandoned attempts are fenced
 by a global-SERIAL `lifecycle_at` advance before retirement (every lifecycle
 LWT is conditioned on the clock it read), and continuations are written and
 discovered at global QUORUM, which the bulk permanent-delete cleanup now uses
-as its discovery source. Five cross-audit rounds; every confirmed finding was
+as its discovery source. Round 6 (cross-audit of `e34eb0c14`): continuation
+rows are inserted and retired with explicit timestamps (a retirement always
+beats its insert, whatever the clocks), the read model's `deleted_at` cell is
+stamped with lifecycle values instead of client clocks, the publication
+confirms ordinary columns at EACH_QUORUM (keeping the continuation when a DC
+is unreachable), and the trash reconciliation deletes on a generation mismatch
+only after a SERIAL lifecycle read. Six cross-audit rounds; every confirmed finding was
 reproduced RED on the audited head (or covered by a directed mutation where
 that head lacks the seam) and fixed. Evidence: RED→GREEN integration legs
-(T1–T7, G1–G9, R1–R6, A1–A8), 31 directed mutations RED, 3-DC legs including
+(T1–T7, G1–G9, R1–R6, A1–A11), 35 directed mutations RED, 3-DC legs including
 recovery and bulk discovery with a DC down; details in
 [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md#issue-gc-hard-delete-lease-nonfencing-01).
 Registered follow-ups (pre-existing): `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`,
