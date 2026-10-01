@@ -264,4 +264,19 @@ mutate 'M34 trash reconciliation deletes on a weak canonical read' internal/db/a
 	./internal/db '^TestLibraryLifecycleRound6Pins$' '' \
 	'deletes without the lifecycle authority'
 
+mutate 'M35 permanent-delete completion stamped before its LWT' "$DH" \
+	's{\t\tbatch := database\.Session\(\)\.Batch\(gocql\.LoggedBatch\)\n(\t\tif err := addPermanentDeleteCompletionQueries\()}{\t\tbatch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt, deletedAt))\n$1}; s{\t\tbatch\.WithTimestamp\(permanentDeleteCompletionTimestamp\(deletedAt, lifecycleFloor\)\)\n}{\t\t_ = lifecycleFloor\n}' \
+	./internal/api/v2 '^TestNonfencingA12PermanentDeleteCompletionAfterFenceRemovesRepairedRows$' '-tags integration' \
+	'survived the permanent delete completed after a fence'
+
+mutate 'M37 permanent-delete completion ignores the winning lifecycle floor' "$DH" \
+	's{\tif lifecycleFloor\.Before\(deletedAt\) \{}{\tif true \{}' \
+	./internal/api/v2 '^TestNonfencingA14PermanentDeleteCompletionUsesWinningLifecycleFloor$' '-tags integration' \
+	'the completion lost to the rows repaired at a fence value ahead of real time'
+
+mutate 'M36 resumed permanent delete does not recover the lifecycle floor' "$DH" \
+	's{(func permanentDeleteLifecycleFloor\([^\n]*\n)}{$1\treturn time.Time{}, nil\n}' \
+	./internal/api/v2 '^TestNonfencingA13ResumedPermanentDeleteRecoversLifecycleFloor$' '-tags integration' \
+	'the resumed completion lost to the rows repaired at the fence value'
+
 green "All $count NONFENCING mutations went RED for their own reason."

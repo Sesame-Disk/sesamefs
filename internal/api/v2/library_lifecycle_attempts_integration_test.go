@@ -497,3 +497,136 @@ func TestNonfencingA11PendingRetirementBeatsFastInsert(t *testing.T) {
 		t.Fatalf("NONFENCING RED: retired continuation still visible (its insert carried a later client timestamp): %+v", rows)
 	}
 }
+
+// A12: a permanent delete parks before its LWT and is fenced by the reaper,
+// whose repair rewrites the trashed library's derived rows at the fence value;
+// the resumed delete then retries, commits and completes normally. Its
+// completion must land after those rows: nothing of the library may survive.
+func TestNonfencingA12PermanentDeleteCompletionAfterFenceRemovesRepairedRows(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	parked, release := parkFirstLifecycleAttempt(t, lib, "permanent-delete")
+	owner := runOwner(func() error { return nonfencingPermanentDelete(db, lib) })
+	awaitParked(t, parked)
+
+	withLifecycleAttemptsAbandoned(t)
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	if state, err := dbpkg.ReadLibraryLifecycleSerial(db.Session(), lib.OrgID, lib.LibraryID); err != nil || !state.DeletedAt.Equal(lib.DeletedAt) || !state.LifecycleAt.After(lib.DeletedAt) {
+		t.Fatalf("setup: fence did not move the lifecycle clock: %+v err=%v", state, err)
+	}
+	dbpkg.LibraryLifecycleAttemptAbandonAfter = time.Hour
+
+	release()
+	if err := awaitOwner(t, owner); err != nil {
+		t.Fatalf("permanent delete after the fence: %v", err)
+	}
+	if present, _ := nonfencingCanonical(t, db, lib); present {
+		t.Fatal("setup: the canonical delete did not apply")
+	}
+	var n int
+	for _, q := range []struct{ name, cql string }{
+		{"libraries_by_id", `SELECT COUNT(*) FROM libraries_by_id WHERE library_id = ?`},
+		{"libraries_by_owner", `SELECT COUNT(*) FROM libraries_by_owner WHERE org_id = ? AND owner_id = ? AND library_id = ?`},
+		{"libraries_by_org_updated", `SELECT COUNT(*) FROM libraries_by_org_updated WHERE org_id = ? AND library_id = ?`},
+		{"libraries_deleted_by_org", `SELECT COUNT(*) FROM libraries_deleted_by_org WHERE org_id = ? AND deleted_at = ? AND library_id = ?`},
+	} {
+		var args []interface{}
+		switch q.name {
+		case "libraries_by_id":
+			args = []interface{}{lib.LibraryID}
+		case "libraries_by_owner":
+			args = []interface{}{lib.OrgID, lib.OwnerID, lib.LibraryID}
+		case "libraries_by_org_updated":
+			args = []interface{}{lib.OrgID, lib.LibraryID}
+		default:
+			args = []interface{}{lib.OrgID, lib.DeletedAt, lib.LibraryID}
+		}
+		if err := db.Session().Query(q.cql, args...).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("NONFENCING RED: %s survived the permanent delete completed after a fence (rows=%d err=%v)", q.name, n, err)
+		}
+	}
+	if marker := nonfencingReadMarker(t, db, lib); !marker.Present || marker.PurgeRequestedAt.IsZero() {
+		t.Fatalf("marker = %+v, want a purge request", marker)
+	}
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 0 {
+		t.Fatalf("continuation left after the completed delete: %+v", rows)
+	}
+}
+
+// A13: the same after a crash. The generation was created on a node an hour
+// ahead, so the fence value (and the repaired rows) are ahead of real time; the
+// delete commits but its completion fails, and the reaper resumes it on a
+// normal clock. The resumed completion must recover the winning lifecycle floor
+// from the durable continuation and still remove the repaired rows.
+func TestNonfencingA13ResumedPermanentDeleteRecoversLifecycleFloor(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedActiveLibrary(t, db)
+	withLibraryLifecycleClock(t, func() time.Time { return time.Now().Add(time.Hour) })
+	lib.DeletedAt = nonfencingSoftDelete(t, db, lib)
+	libraryLifecycleNow = time.Now
+
+	parked, release := parkFirstLifecycleAttempt(t, lib, "permanent-delete")
+	owner := runOwner(func() error { return nonfencingPermanentDelete(db, lib) })
+	awaitParked(t, parked)
+	withLifecycleAttemptsAbandoned(t)
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	dbpkg.LibraryLifecycleAttemptAbandonAfter = time.Hour
+
+	restore := failLibraryLifecycleCompletions(t)
+	release()
+	if err := awaitOwner(t, owner); !errors.Is(err, errHardDeleteLibraryBatchExec) {
+		t.Fatalf("permanent delete with a failing completion = %v", err)
+	}
+	restore()
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	var n int
+	if err := db.Session().Query(`SELECT COUNT(*) FROM libraries_deleted_by_org WHERE org_id = ? AND deleted_at = ? AND library_id = ?`,
+		lib.OrgID, lib.DeletedAt, lib.LibraryID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("NONFENCING RED: the resumed completion lost to the rows repaired at the fence value (trash rows=%d err=%v)", n, err)
+	}
+	if err := db.Session().Query(`SELECT COUNT(*) FROM libraries_by_id WHERE library_id = ?`, lib.LibraryID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("resumed completion left libraries_by_id (rows=%d err=%v)", n, err)
+	}
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 0 {
+		t.Fatalf("continuation left after recovery: %+v", rows)
+	}
+}
+
+// A14: A12 with the generation created on a node an hour ahead, so the fence
+// value and the rows the reaper repairs at it are ahead of real time; the
+// resumed delete completes normally on a normal clock. Only the winning
+// lifecycle floor orders its completion after those rows.
+func TestNonfencingA14PermanentDeleteCompletionUsesWinningLifecycleFloor(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedActiveLibrary(t, db)
+	withLibraryLifecycleClock(t, func() time.Time { return time.Now().Add(time.Hour) })
+	lib.DeletedAt = nonfencingSoftDelete(t, db, lib)
+	libraryLifecycleNow = time.Now
+
+	parked, release := parkFirstLifecycleAttempt(t, lib, "permanent-delete")
+	owner := runOwner(func() error { return nonfencingPermanentDelete(db, lib) })
+	awaitParked(t, parked)
+	withLifecycleAttemptsAbandoned(t)
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	dbpkg.LibraryLifecycleAttemptAbandonAfter = time.Hour
+	release()
+	if err := awaitOwner(t, owner); err != nil {
+		t.Fatalf("permanent delete after the fence: %v", err)
+	}
+	var n int
+	if err := db.Session().Query(`SELECT COUNT(*) FROM libraries_deleted_by_org WHERE org_id = ? AND deleted_at = ? AND library_id = ?`,
+		lib.OrgID, lib.DeletedAt, lib.LibraryID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("NONFENCING RED: the completion lost to the rows repaired at a fence value ahead of real time (trash rows=%d err=%v)", n, err)
+	}
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 0 {
+		t.Fatalf("continuation left after the completed delete: %+v", rows)
+	}
+}
