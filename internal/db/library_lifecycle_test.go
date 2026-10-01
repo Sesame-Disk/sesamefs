@@ -345,3 +345,61 @@ func TestLibraryLifecyclePendingIsGlobalQuorum(t *testing.T) {
 		}
 	}
 }
+
+func libraryLifecycleFuncBody(t *testing.T, file, name string) string {
+	t.Helper()
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	i := strings.Index(src, "func "+name+"(")
+	if i < 0 {
+		t.Fatalf("%s not found in %s", name, file)
+	}
+	body := src[i:]
+	if j := strings.Index(body, "\n}\n"); j >= 0 {
+		body = body[:j+3]
+	}
+	return body
+}
+
+// Round 6: the read-model publication confirms the ordinary columns at
+// EACH_QUORUM (an owner transfer acknowledged at LOCAL_QUORUM in another
+// datacenter is seen); the trash reconciliation deletes on a generation
+// mismatch only after the lifecycle authority confirms it; continuation rows
+// are written and retired with explicit timestamps; the ordinary read-model
+// columns never carry deleted_at, which is stamped with lifecycle values.
+func TestLibraryLifecycleRound6Pins(t *testing.T) {
+	const reason = "library lifecycle round-6 property no longer pinned"
+	overlay := libraryLifecycleFuncBody(t, "library_lifecycle.go", "overlayOrdinaryColumnsEachQuorum")
+	if !strings.Contains(overlay, ".Consistency(gocql.EachQuorum)") {
+		t.Errorf("%s: overlayOrdinaryColumnsEachQuorum does not read at EACH_QUORUM", reason)
+	}
+	if !strings.Contains(libraryLifecycleFuncBody(t, "library_lifecycle.go", "publishLibraryReadModel"), "overlayOrdinaryColumnsEachQuorum(") ||
+		!strings.Contains(libraryLifecycleFuncBody(t, "library_lifecycle.go", "publishLibraryReadModel"), "readLibraryProjectionSnapshot(") ||
+		!strings.Contains(libraryLifecycleFuncBody(t, "library_lifecycle.go", "readLibraryProjectionSnapshot"), "overlayOrdinaryColumnsEachQuorum(") {
+		t.Errorf("%s: publishLibraryReadModel does not snapshot and confirm the ordinary columns at EACH_QUORUM", reason)
+	}
+	if !strings.Contains(libraryLifecycleFuncBody(t, "admin_library_read_models.go", "ReconcileDeletedAdminLibraryRowsByOrg"), "ReadLibraryLifecycleSerial(") {
+		t.Errorf("%s: ReconcileDeletedAdminLibraryRowsByOrg deletes without the lifecycle authority", reason)
+	}
+	for _, name := range []string{"InsertLibraryLifecyclePending", "DeleteLibraryLifecyclePending"} {
+		if !strings.Contains(libraryLifecycleFuncBody(t, "library_lifecycle_pending.go", name), "USING TIMESTAMP ?") {
+			t.Errorf("%s: %s relies on an implicit client timestamp", reason, name)
+		}
+	}
+	if strings.Contains(libraryLifecycleFuncBody(t, "admin_library_read_models.go", "AddUpsertAdminLibraryOrdinaryRowsQuery"), "deleted_at") {
+		t.Errorf("%s: the ordinary read-model upsert writes deleted_at with a client timestamp", reason)
+	}
+}
+
+func TestLibraryLifecyclePendingRetireTimestamp(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	if got := libraryLifecyclePendingRetireTimestamp(LibraryLifecyclePending{WriteTimestamp: now.Add(time.Hour).UnixMicro()}, now); got != now.Add(time.Hour).UnixMicro()+1 {
+		t.Errorf("retirement after a fast insert = %d, want insert + 1", got)
+	}
+	if got := libraryLifecyclePendingRetireTimestamp(LibraryLifecyclePending{WriteTimestamp: now.Add(-time.Hour).UnixMicro()}, now); got != now.UnixMicro() {
+		t.Errorf("retirement after an old insert = %d, want now", got)
+	}
+}

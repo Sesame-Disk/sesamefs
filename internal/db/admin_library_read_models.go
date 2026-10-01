@@ -182,45 +182,75 @@ func AddInsertDeletedAdminLibraryRowQuery(batch *gocql.Batch, row AdminLibraryPr
 }
 
 // AddUpsertAdminLibraryActiveRowsQuery adds the owner, org and global read-model
-// rows (every column, including deleted_at), but not the trash listing row.
+// rows (but not the trash listing row). Their ordinary columns (owner, name,
+// size...) carry the batch's client timestamp. Their deleted_at cell is
+// lifecycle state, so it is never written with a client timestamp: for a
+// trashed row it is set at the lifecycle write timestamp of its generation
+// (AddAdminLibraryDeletedAtCellQueries); for an active row it is left alone,
+// since only the lifecycle transition that made it active clears it
+// (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01). The batch must not carry a batch
+// timestamp when the row is trashed.
 func AddUpsertAdminLibraryActiveRowsQuery(batch *gocql.Batch, row AdminLibraryProjectionRow) {
+	AddUpsertAdminLibraryOrdinaryRowsQuery(batch, row)
+	if row.DeletedAt != nil && !row.DeletedAt.IsZero() {
+		AddAdminLibraryDeletedAtCellQueries(batch, row, *row.DeletedAt)
+	}
+}
+
+// AddUpsertAdminLibraryOrdinaryRowsQuery adds the ordinary columns of the
+// owner, org and global read-model rows, without deleted_at.
+func AddUpsertAdminLibraryOrdinaryRowsQuery(batch *gocql.Batch, row AdminLibraryProjectionRow) {
 	bucketDay := AdminLibraryBucketDay(row.CreatedAt)
 	batch.Query(`INSERT INTO library_admin_global_buckets (bucket_day) VALUES (?)`, bucketDay)
 	batch.Query(`
 		INSERT INTO libraries_by_owner (
 			org_id, owner_id, library_id, name, encrypted, storage_class,
-			size_bytes, file_count, created_at, updated_at, deleted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			size_bytes, file_count, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, row.OrgID, row.OwnerID, row.LibraryID, row.Name, row.Encrypted, row.StorageClass,
-		row.SizeBytes, row.FileCount, row.CreatedAt, row.UpdatedAt, row.DeletedAt)
+		row.SizeBytes, row.FileCount, row.CreatedAt, row.UpdatedAt)
 	batch.Query(`
 		INSERT INTO libraries_by_org_updated (
 			org_id, library_id, owner_id, owner_email, owner_name, name,
-			encrypted, storage_class, size_bytes, file_count, created_at, updated_at, deleted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			encrypted, storage_class, size_bytes, file_count, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, row.OrgID, row.LibraryID, row.OwnerID, row.OwnerEmail, row.OwnerName, row.Name,
-		row.Encrypted, row.StorageClass, row.SizeBytes, row.FileCount, row.CreatedAt, row.UpdatedAt, row.DeletedAt)
+		row.Encrypted, row.StorageClass, row.SizeBytes, row.FileCount, row.CreatedAt, row.UpdatedAt)
 	batch.Query(`
 		INSERT INTO libraries_admin_global_by_updated (
 			bucket_day, org_id, library_id, owner_id, owner_email, owner_name,
-			name, encrypted, storage_class, size_bytes, file_count, created_at, updated_at, deleted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			name, encrypted, storage_class, size_bytes, file_count, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, bucketDay, row.OrgID, row.LibraryID, row.OwnerID, row.OwnerEmail, row.OwnerName,
-		row.Name, row.Encrypted, row.StorageClass, row.SizeBytes, row.FileCount, row.CreatedAt, row.UpdatedAt, row.DeletedAt)
-	if row.DeletedAt == nil {
-		batch.Query(`
-			DELETE deleted_at FROM libraries_by_owner
-			WHERE org_id = ? AND owner_id = ? AND library_id = ?
-		`, row.OrgID, row.OwnerID, row.LibraryID)
-		batch.Query(`
-			DELETE deleted_at FROM libraries_by_org_updated
-			WHERE org_id = ? AND library_id = ?
-		`, row.OrgID, row.LibraryID)
-		batch.Query(`
-			DELETE deleted_at FROM libraries_admin_global_by_updated
-			WHERE bucket_day = ? AND org_id = ? AND library_id = ?
-		`, bucketDay, row.OrgID, row.LibraryID)
+		row.Name, row.Encrypted, row.StorageClass, row.SizeBytes, row.FileCount, row.CreatedAt, row.UpdatedAt)
+}
+
+// AddAdminLibraryDeletedAtCellQueries sets (row.DeletedAt != nil) or clears the
+// deleted_at cell of the owner, org and global read-model rows at
+// LibraryLifecycleWriteTimestamp(lifecycleAt), the lifecycle value of the
+// transition that produced that state: a trash generation's own value, or the
+// restore's. Lifecycle values only grow, so the cell follows canonical
+// transition order whatever the writers' clocks. Each statement carries its own
+// timestamp; the batch must not carry one.
+func AddAdminLibraryDeletedAtCellQueries(batch *gocql.Batch, row AdminLibraryProjectionRow, lifecycleAt time.Time) {
+	stamp := LibraryLifecycleWriteTimestamp(lifecycleAt)
+	bucketDay := AdminLibraryBucketDay(row.CreatedAt)
+	if row.DeletedAt != nil && !row.DeletedAt.IsZero() {
+		deletedAt := *row.DeletedAt
+		batch.Query(`UPDATE libraries_by_owner USING TIMESTAMP ? SET deleted_at = ? WHERE org_id = ? AND owner_id = ? AND library_id = ?`,
+			stamp, deletedAt, row.OrgID, row.OwnerID, row.LibraryID)
+		batch.Query(`UPDATE libraries_by_org_updated USING TIMESTAMP ? SET deleted_at = ? WHERE org_id = ? AND library_id = ?`,
+			stamp, deletedAt, row.OrgID, row.LibraryID)
+		batch.Query(`UPDATE libraries_admin_global_by_updated USING TIMESTAMP ? SET deleted_at = ? WHERE bucket_day = ? AND org_id = ? AND library_id = ?`,
+			stamp, deletedAt, bucketDay, row.OrgID, row.LibraryID)
+		return
 	}
+	batch.Query(`DELETE deleted_at FROM libraries_by_owner USING TIMESTAMP ? WHERE org_id = ? AND owner_id = ? AND library_id = ?`,
+		stamp, row.OrgID, row.OwnerID, row.LibraryID)
+	batch.Query(`DELETE deleted_at FROM libraries_by_org_updated USING TIMESTAMP ? WHERE org_id = ? AND library_id = ?`,
+		stamp, row.OrgID, row.LibraryID)
+	batch.Query(`DELETE deleted_at FROM libraries_admin_global_by_updated USING TIMESTAMP ? WHERE bucket_day = ? AND org_id = ? AND library_id = ?`,
+		stamp, bucketDay, row.OrgID, row.LibraryID)
 }
 
 func ListAdminLibraryBucketDays(session *gocql.Session) ([]string, error) {
@@ -469,15 +499,25 @@ func ReconcileDeletedAdminLibraryRowsByOrg(session *gocql.Session, orgID string)
 	}
 
 	for _, row := range rows {
-		liveRow, err := ReadAdminLibraryProjectionRow(session, row.OrgID, row.LibraryID)
 		// Keep only the row of the library's current trash generation: a row of an
-		// older generation (restored and trashed again) is stale too.
+		// older generation (restored and trashed again) is stale too. Keeping is
+		// never destructive, so a session-consistency read may decide it; deleting
+		// on a mismatch needs the lifecycle authority, because such a read in one
+		// datacenter can still show an older generation while the row being judged
+		// is already the current one. A failed authority read fails the whole
+		// reconciliation instead of deleting anything.
+		liveRow, err := ReadAdminLibraryProjectionRow(session, row.OrgID, row.LibraryID)
 		if err == nil && liveRow.DeletedAt != nil && liveRow.DeletedAt.Equal(row.DeletedAt) {
 			kept = append(kept, row)
 			continue
 		}
-		if err != nil && err != gocql.ErrNotFound {
+		state, err := ReadLibraryLifecycleSerial(session, row.OrgID, row.LibraryID)
+		if err != nil {
 			return nil, cleaned, err
+		}
+		if state.Present && state.DeletedAt.Equal(row.DeletedAt) {
+			kept = append(kept, row)
+			continue
 		}
 
 		AddDeleteDeletedAdminLibraryReadModelQuery(batch, row)

@@ -5837,10 +5837,10 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 	var intents []db.LibraryLifecyclePending
 	deletedAt, outcome, casErr := db.SoftDeleteLibraryGenerationWithIntent(session, orgID.String(), libraryID.String(), deletedBy.String(), now,
 		func(previous db.LibraryLifecycleState, target time.Time) error {
-			intent := db.LibraryLifecyclePending{
+			intent := db.NewLibraryLifecycleAttempt(db.LibraryLifecyclePending{
 				OrgID: orgID.String(), LibraryID: libraryID.String(), Operation: db.LibraryLifecycleOpSoftDelete,
-				TargetAt: target, AttemptID: uuid.NewString(), OwnerID: ownerID, PrevLifecycleAt: previous.LifecycleAt,
-			}
+				TargetAt: target, OwnerID: ownerID, PrevLifecycleAt: previous.LifecycleAt,
+			}, uuid.NewString())
 			if err := db.InsertLibraryLifecyclePending(session, intent); err != nil {
 				return err
 			}
@@ -5884,6 +5884,12 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 		return err
 	}
 	if err := db.CompleteLibraryLifecycleDerivedState(session, orgID.String(), libraryID.String(), deletedAt, nil, repair); err != nil {
+		if errors.Is(err, db.ErrLibraryReadModelUnconfirmed) {
+			// Trashed, but the read model is not confirmed in every datacenter: the
+			// continuation stays and the lifecycle reaper confirms it later.
+			log.Printf("[gc] soft delete %s/%s: %v", orgID, libraryID, err)
+			return nil
+		}
 		return err
 	}
 	clearIntents()

@@ -80,11 +80,10 @@ var (
 		var intents []dbpkg.LibraryLifecyclePending
 		outcome, err := dbpkg.DeleteTrashedLibraryGenerationWithIntent(database.Session(), orgID, libraryID, deletedAt,
 			func(previous dbpkg.LibraryLifecycleState) error {
-				intent := dbpkg.LibraryLifecyclePending{
+				intent := dbpkg.NewLibraryLifecycleAttempt(dbpkg.LibraryLifecyclePending{
 					OrgID: orgID, LibraryID: libraryID, Operation: dbpkg.LibraryLifecycleOpPermanentDelete,
-					TargetAt: deletedAt, AttemptID: uuid.NewString(),
-					PrevLifecycleAt: previous.LifecycleAt, PrevDeletedAt: deletedAt,
-				}
+					TargetAt: deletedAt, PrevLifecycleAt: previous.LifecycleAt, PrevDeletedAt: deletedAt,
+				}, uuid.NewString())
 				if err := dbpkg.InsertLibraryLifecyclePending(database.Session(), intent); err != nil {
 					return errors.Join(errHardDeleteLibraryBatchExec, err)
 				}

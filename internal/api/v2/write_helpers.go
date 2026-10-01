@@ -989,10 +989,10 @@ func softDeleteLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID,
 	var intents []dbpkg.LibraryLifecyclePending
 	deletedAt, outcome, err := dbpkg.SoftDeleteLibraryGenerationWithIntent(db.Session(), orgID, libraryID, deletedBy, now,
 		func(previous dbpkg.LibraryLifecycleState, target time.Time) error {
-			intent := dbpkg.LibraryLifecyclePending{
+			intent := dbpkg.NewLibraryLifecycleAttempt(dbpkg.LibraryLifecyclePending{
 				OrgID: orgID, LibraryID: libraryID, Operation: dbpkg.LibraryLifecycleOpSoftDelete,
-				TargetAt: target, AttemptID: uuid.NewString(), OwnerID: ownerID, PrevLifecycleAt: previous.LifecycleAt,
-			}
+				TargetAt: target, OwnerID: ownerID, PrevLifecycleAt: previous.LifecycleAt,
+			}, uuid.NewString())
 			if err := dbpkg.InsertLibraryLifecyclePending(db.Session(), intent); err != nil {
 				return err
 			}
@@ -1033,7 +1033,9 @@ func softDeleteLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID,
 // (dbpkg.CompleteLibraryLifecycleDerivedState: lifecycle-owned rows, then the
 // confirmed ordinary read model, or a full repair if a later transition already
 // committed), and only then clears the attempt's continuations. On any error
-// the continuations stay for the reaper.
+// the continuations stay for the reaper; a read model that could not be
+// confirmed in every datacenter (dbpkg.ErrLibraryReadModelUnconfirmed) is not
+// an error for the caller, but its continuation stays too.
 func completeLibraryLifecycleTransition(db interface{ Session() *gocql.Session }, orgID, ownerID, libraryID string, lifecycleAt, now time.Time, trashRows []dbpkg.AdminDeletedLibraryProjectionRow, resolveBlockRepresentation func() string, intents []dbpkg.LibraryLifecyclePending) error {
 	reconciliation := db.Session().Batch(gocql.LoggedBatch)
 	traffic.AddAggregateStorageReconciliationQueries(reconciliation, orgID, ownerID, now)
@@ -1041,6 +1043,13 @@ func completeLibraryLifecycleTransition(db interface{ Session() *gocql.Session }
 		return err
 	}
 	if err := dbpkg.CompleteLibraryLifecycleDerivedState(db.Session(), orgID, libraryID, lifecycleAt, trashRows, resolveBlockRepresentation); err != nil {
+		if errors.Is(err, dbpkg.ErrLibraryReadModelUnconfirmed) {
+			// The transition and its derived rows are written, but the read model is
+			// not confirmed in every datacenter: keep the continuation so the reaper
+			// publishes it again once they are reachable.
+			log.Printf("[libraryLifecycle] %s/%s: %v; the reaper will confirm it", orgID, libraryID, err)
+			return nil
+		}
 		return err
 	}
 	clearLibraryLifecycleIntents(db, intents)
@@ -1177,11 +1186,11 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	var intents []dbpkg.LibraryLifecyclePending
 	restoredAt, outcome, err := dbpkg.RestoreTrashedLibraryGenerationWithIntent(db.Session(), orgID, libraryID, canonicalDeletedAt, now,
 		func(previous dbpkg.LibraryLifecycleState, target time.Time) error {
-			intent := dbpkg.LibraryLifecyclePending{
+			intent := dbpkg.NewLibraryLifecycleAttempt(dbpkg.LibraryLifecyclePending{
 				OrgID: orgID, LibraryID: libraryID, Operation: dbpkg.LibraryLifecycleOpRestore,
-				TargetAt: target, AttemptID: uuid.NewString(), OwnerID: ownerID,
+				TargetAt: target, OwnerID: ownerID,
 				PrevLifecycleAt: previous.LifecycleAt, PrevDeletedAt: canonicalDeletedAt,
-			}
+			}, uuid.NewString())
 			if err := dbpkg.InsertLibraryLifecyclePending(db.Session(), intent); err != nil {
 				return err
 			}

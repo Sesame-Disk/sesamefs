@@ -627,17 +627,73 @@ func addDeleteSupersededAdminLibraryRowsQuery(batch *gocql.Batch, published, row
 	}
 }
 
-// publishLibraryReadModel publishes the ordinary owner, org and global
-// read-model rows of the canonical snapshot (row, state), read at SERIAL, and
-// proves the snapshot is still current with a second SERIAL read. Those rows
-// carry client timestamps, as every other writer of their columns does, so a
-// snapshot that went stale while this publication was paused would otherwise
-// land over a newer writer (an owner transfer, a rename, a later lifecycle
-// transition) and stay. When the canonical row changed, the newer snapshot is
-// published, removing what the stale one wrote under keys that no longer exist,
-// until a round is confirmed. It returns an error (the caller keeps its
-// continuation) if the row keeps changing. An absent row publishes nothing.
+// ErrLibraryReadModelUnconfirmed reports a read-model publication whose
+// snapshot could not be confirmed against ordinary writers in every datacenter
+// (an EACH_QUORUM read failed). The rows written are not proven current: the
+// caller keeps its continuation, so the reaper publishes again later.
+var ErrLibraryReadModelUnconfirmed = errors.New("library read model not confirmed in every datacenter")
+
+// overlayOrdinaryColumnsEachQuorum replaces the ordinary columns of a SERIAL
+// snapshot with an EACH_QUORUM read of them. Owner transfers, renames and size
+// updates are plain writes (LOCAL_QUORUM in their datacenter); a global SERIAL
+// read need not intersect one acknowledged in another datacenter, an
+// EACH_QUORUM read always does. The lifecycle columns stay from the SERIAL
+// read, their authority. It fails with ErrLibraryReadModelUnconfirmed when a
+// datacenter is unreachable.
+func overlayOrdinaryColumnsEachQuorum(session *gocql.Session, row *AdminLibraryProjectionRow, state LibraryLifecycleState) error {
+	if !state.Present {
+		return nil
+	}
+	ordinary := *row
+	err := session.Query(`
+		SELECT owner_id, name, encrypted, storage_class, size_bytes, file_count, created_at, updated_at
+		FROM libraries WHERE org_id = ? AND library_id = ?
+	`, row.OrgID, row.LibraryID).Consistency(gocql.EachQuorum).Scan(
+		&ordinary.OwnerID, &ordinary.Name, &ordinary.Encrypted, &ordinary.StorageClass, &ordinary.SizeBytes, &ordinary.FileCount,
+		&ordinary.CreatedAt, &ordinary.UpdatedAt)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return nil // removed since the SERIAL read; the next confirmation sees it
+	}
+	if err != nil {
+		return fmt.Errorf("%w: library %s: %w", ErrLibraryReadModelUnconfirmed, row.LibraryID, err)
+	}
+	if ordinary.OwnerID != row.OwnerID {
+		ordinary.OwnerEmail, ordinary.OwnerName = ResolveAdminLibraryOwnerFields(session, row.OrgID, ordinary.OwnerID)
+	}
+	*row = ordinary
+	return nil
+}
+
+// readLibraryProjectionSnapshot reads the canonical row for a read-model
+// publication: lifecycle state at SERIAL, ordinary columns at EACH_QUORUM.
+func readLibraryProjectionSnapshot(session *gocql.Session, orgID, libraryID string) (AdminLibraryProjectionRow, LibraryLifecycleState, error) {
+	row, state, err := readCanonicalLibraryRowSerial(session, orgID, libraryID)
+	if err != nil {
+		return row, state, err
+	}
+	return row, state, overlayOrdinaryColumnsEachQuorum(session, &row, state)
+}
+
+// publishLibraryReadModel publishes the owner, org and global read-model rows
+// of the canonical snapshot (row, state) and proves the snapshot is still
+// current with a second read. The ordinary columns carry client timestamps, as
+// every other writer of them does, so a snapshot that went stale while this
+// publication was paused would otherwise land over a newer writer (an owner
+// transfer, a rename, a later lifecycle transition) and stay; snapshot and
+// confirmation therefore read the ordinary columns at EACH_QUORUM (a writer
+// acknowledged in any datacenter is seen) and the lifecycle state at SERIAL.
+// When the canonical row changed, the newer snapshot is published, removing
+// what the stale one wrote under keys that no longer exist, until a round is
+// confirmed. The deleted_at cell is written apart, stamped with the lifecycle
+// value of the state it shows (AddAdminLibraryDeletedAtCellQueries), so it
+// follows canonical order whatever the clocks. It returns an error (the caller
+// keeps its continuation) if the row keeps changing, or
+// ErrLibraryReadModelUnconfirmed if a datacenter cannot be read. An absent row
+// publishes nothing.
 func publishLibraryReadModel(session *gocql.Session, orgID, libraryID string, row AdminLibraryProjectionRow, state LibraryLifecycleState) error {
+	if err := overlayOrdinaryColumnsEachQuorum(session, &row, state); err != nil {
+		return err
+	}
 	var published *AdminLibraryProjectionRow
 	for attempt := 0; attempt < libraryReadModelPublishAttempts; attempt++ {
 		batch := session.Batch(gocql.LoggedBatch)
@@ -645,7 +701,7 @@ func publishLibraryReadModel(session *gocql.Session, orgID, libraryID string, ro
 			addDeleteSupersededAdminLibraryRowsQuery(batch, *published, row, state.Present)
 		}
 		if state.Present {
-			AddUpsertAdminLibraryActiveRowsQuery(batch, row)
+			AddUpsertAdminLibraryOrdinaryRowsQuery(batch, row)
 		}
 		if len(batch.Entries) > 0 {
 			if err := ExecLibraryLifecycleCompletionFn(batch); err != nil {
@@ -655,7 +711,14 @@ func publishLibraryReadModel(session *gocql.Session, orgID, libraryID string, ro
 		if !state.Present {
 			return nil
 		}
-		next, nextState, err := readCanonicalLibraryRowSerial(session, orgID, libraryID)
+		if cellAt := projectedLifecycleValue(state); !cellAt.IsZero() {
+			cells := session.Batch(gocql.LoggedBatch)
+			AddAdminLibraryDeletedAtCellQueries(cells, row, cellAt)
+			if err := ExecLibraryLifecycleCompletionFn(cells); err != nil {
+				return fmt.Errorf("publish library %s lifecycle state: %w", libraryID, err)
+			}
+		}
+		next, nextState, err := readLibraryProjectionSnapshot(session, orgID, libraryID)
 		if err != nil {
 			return fmt.Errorf("confirm library %s read model: %w", libraryID, err)
 		}
@@ -667,6 +730,16 @@ func publishLibraryReadModel(session *gocql.Session, orgID, libraryID string, ro
 		row, state = next, nextState
 	}
 	return fmt.Errorf("publish library %s read model: canonical row kept changing", libraryID)
+}
+
+// projectedLifecycleValue is the lifecycle value of the state a read model
+// shows: a trashed row's generation, or the clock of an active row that went
+// through a transition (zero for a row that never did).
+func projectedLifecycleValue(state LibraryLifecycleState) time.Time {
+	if !state.DeletedAt.IsZero() {
+		return state.DeletedAt
+	}
+	return state.LifecycleAt
 }
 
 // RepairLibraryLifecycleDerivedState rewrites the derived state (marker, trash

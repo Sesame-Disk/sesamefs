@@ -58,6 +58,11 @@ type LibraryLifecyclePending struct {
 	PrevLifecycleAt time.Time // zero: no lifecycle transition before
 	PrevDeletedAt   time.Time
 	RecordedAt      time.Time
+	// WriteTimestamp is the row's write timestamp (microseconds): set by
+	// InsertLibraryLifecyclePending from RecordedAt and read back by
+	// ListLibraryLifecyclePending (WRITETIME), so a retirement is always stamped
+	// after the insert whatever the deleting node's clock.
+	WriteTimestamp int64
 }
 
 func (p LibraryLifecyclePending) bucket() int {
@@ -93,16 +98,23 @@ func nullableTime(t time.Time) interface{} {
 	return t.UTC()
 }
 
+// NewLibraryLifecycleAttempt stamps a continuation with a fresh attempt id and
+// its recording time, which is also its insert write timestamp.
+func NewLibraryLifecycleAttempt(p LibraryLifecyclePending, attemptID string) LibraryLifecyclePending {
+	p.AttemptID = attemptID
+	p.RecordedAt = time.Now().UTC()
+	p.WriteTimestamp = p.RecordedAt.UnixMicro()
+	return p
+}
+
 // InsertLibraryLifecyclePending makes the attempt's continuation durable before
-// its canonical transition.
+// its canonical transition. The row is written at p.WriteTimestamp (from
+// NewLibraryLifecycleAttempt), never at an implicit client timestamp.
 func InsertLibraryLifecyclePending(session *gocql.Session, p LibraryLifecyclePending) error {
-	if p.AttemptID == "" {
-		return errors.New("record library lifecycle continuation: missing attempt id")
+	if p.AttemptID == "" || p.RecordedAt.IsZero() || p.WriteTimestamp == 0 {
+		return errors.New("record library lifecycle continuation: attempt not stamped (NewLibraryLifecycleAttempt)")
 	}
 	recordedAt := p.RecordedAt
-	if recordedAt.IsZero() {
-		recordedAt = time.Now().UTC()
-	}
 	var owner interface{}
 	if p.OwnerID != "" {
 		owner = p.OwnerID
@@ -111,21 +123,33 @@ func InsertLibraryLifecyclePending(session *gocql.Session, p LibraryLifecyclePen
 		INSERT INTO library_lifecycle_pending (
 			recovery_bucket, org_id, library_id, operation, target_at, attempt_id,
 			owner_id, prev_lifecycle_at, prev_deleted_at, recorded_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) USING TIMESTAMP ?
 	`, p.bucket(), p.OrgID, p.LibraryID, p.Operation, p.TargetAt.UTC(), p.AttemptID,
-		owner, nullableTime(p.PrevLifecycleAt), nullableTime(p.PrevDeletedAt), recordedAt.UTC()).
+		owner, nullableTime(p.PrevLifecycleAt), nullableTime(p.PrevDeletedAt), recordedAt.UTC(), p.WriteTimestamp).
 		Consistency(LibraryLifecyclePendingConsistency).Exec(); err != nil {
 		return fmt.Errorf("record library lifecycle continuation %s/%s %s: %w", p.OrgID, p.LibraryID, p.Operation, err)
 	}
 	return nil
 }
 
+// libraryLifecyclePendingRetireTimestamp stamps a retirement after the row's
+// insert (whose timestamp is known exactly) and not before the local clock.
+// Rows are never re-inserted (attempt_id is unique), so the tombstone always
+// wins, even when the retiring node's clock is behind the producer's.
+func libraryLifecyclePendingRetireTimestamp(p LibraryLifecyclePending, now time.Time) int64 {
+	stamp := now.UnixMicro()
+	if p.WriteTimestamp >= stamp {
+		stamp = p.WriteTimestamp + 1
+	}
+	return stamp
+}
+
 // DeleteLibraryLifecyclePending removes exactly this attempt's row.
 func DeleteLibraryLifecyclePending(session *gocql.Session, p LibraryLifecyclePending) error {
 	if err := session.Query(`
-		DELETE FROM library_lifecycle_pending
+		DELETE FROM library_lifecycle_pending USING TIMESTAMP ?
 		WHERE recovery_bucket = ? AND org_id = ? AND library_id = ? AND operation = ? AND target_at = ? AND attempt_id = ?
-	`, p.bucket(), p.OrgID, p.LibraryID, p.Operation, p.TargetAt.UTC(), p.AttemptID).
+	`, libraryLifecyclePendingRetireTimestamp(p, time.Now()), p.bucket(), p.OrgID, p.LibraryID, p.Operation, p.TargetAt.UTC(), p.AttemptID).
 		Consistency(LibraryLifecyclePendingConsistency).Exec(); err != nil {
 		return fmt.Errorf("clear library lifecycle continuation %s/%s %s: %w", p.OrgID, p.LibraryID, p.Operation, err)
 	}
@@ -135,13 +159,13 @@ func DeleteLibraryLifecyclePending(session *gocql.Session, p LibraryLifecyclePen
 // ListLibraryLifecyclePending returns the rows of one recovery bucket.
 func ListLibraryLifecyclePending(session *gocql.Session, bucket int) ([]LibraryLifecyclePending, error) {
 	iter := session.Query(`
-		SELECT org_id, library_id, operation, target_at, attempt_id, owner_id, prev_lifecycle_at, prev_deleted_at, recorded_at
+		SELECT org_id, library_id, operation, target_at, attempt_id, owner_id, prev_lifecycle_at, prev_deleted_at, recorded_at, WRITETIME(recorded_at)
 		FROM library_lifecycle_pending WHERE recovery_bucket = ?
 	`, bucket).Consistency(LibraryLifecyclePendingConsistency).Iter()
 	var out []LibraryLifecyclePending
 	var row LibraryLifecyclePending
 	var owner *string
-	for iter.Scan(&row.OrgID, &row.LibraryID, &row.Operation, &row.TargetAt, &row.AttemptID, &owner, &row.PrevLifecycleAt, &row.PrevDeletedAt, &row.RecordedAt) {
+	for iter.Scan(&row.OrgID, &row.LibraryID, &row.Operation, &row.TargetAt, &row.AttemptID, &owner, &row.PrevLifecycleAt, &row.PrevDeletedAt, &row.RecordedAt, &row.WriteTimestamp) {
 		if owner != nil {
 			row.OwnerID = *owner
 		}
