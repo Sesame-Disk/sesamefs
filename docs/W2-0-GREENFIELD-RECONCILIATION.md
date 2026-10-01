@@ -13,8 +13,11 @@ production data, historical attempts, old processes or old in-flight requests.
 This is an operational obligation; no automatic version enforcement is claimed.
 
 Final audit baseline: merged #241, origin/main@302d3418e6596774d48eb7ac98b6be170803ab83.
-#240 remains in progress and is outside this PR. The updated work order opens
-this docs-only reconciliation first; no dependency on its merge remains.
+#240 was outside this PR and has since been closed unmerged (2026-10-01): its
+lifecycle redesign misread the trash design, and the one real gap is closed by the
+trash-generation CAS ([LIBRARY-TRASH-LIFECYCLE.md](./LIBRARY-TRASH-LIFECYCLE.md)).
+The updated work order opens this docs-only reconciliation first; no dependency on
+it remains.
 
 ## Current-version continuity argument
 

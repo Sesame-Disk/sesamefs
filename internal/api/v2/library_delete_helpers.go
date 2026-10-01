@@ -54,7 +54,6 @@ var (
 		if err := addDeleteAdminLibraryReadModelQueries(database, batch, orgID, libraryID); err != nil {
 			return errors.Join(errHardDeleteLibraryReadModel, err)
 		}
-		batch.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, libraryID)
 		batch.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, libraryID)
 		// This is a *permanent* delete. Two invariants:
 		//   1. PRESERVE the original deleted_at (the library's trash time). Phase 13 dedups
@@ -72,6 +71,18 @@ var (
 			markerDeletedAt = time.Now()
 		}
 		batch.Query(`INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id, purge_requested_at) VALUES (?, ?, ?, ?, ?, ?)`, libraryID, orgID, markerDeletedAt, storageClass, blockRepresentationID, time.Now())
+		// The canonical row goes first, through the same generation CAS restore uses:
+		// the caller's lease fence cannot stop a restore that took the lease over while
+		// this request paused. Only after winning it may the marker be rewritten — a
+		// marker must never outlive a restored canonical row, because cascade children
+		// trust it as their generation authority.
+		applied, _, err := gcpkg.DeleteCanonicalLibraryAtGeneration(database.Session(), orgID, libraryID, deletedAt)
+		if err != nil {
+			return errors.Join(errHardDeleteLibraryBatchExec, err)
+		}
+		if !applied {
+			return errPermanentDeleteCandidateStale
+		}
 		if err := batch.Exec(); err != nil {
 			return errors.Join(errHardDeleteLibraryBatchExec, err)
 		}

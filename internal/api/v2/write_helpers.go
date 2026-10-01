@@ -995,6 +995,67 @@ func softDeleteLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID,
 	return nil
 }
 
+// deletedLibraryMarker is a deleted_libraries row as restore found it.
+type deletedLibraryMarker struct {
+	orgID                 string
+	deletedAt             time.Time
+	storageClass          string
+	blockRepresentationID string
+	purgeRequestedAt      time.Time
+}
+
+// readDeletedLibraryMarker returns nil when the library has no GC marker.
+func readDeletedLibraryMarker(session *gocql.Session, libraryID string) (*deletedLibraryMarker, error) {
+	var m deletedLibraryMarker
+	err := session.Query(`
+		SELECT org_id, deleted_at, storage_class, block_representation_id, purge_requested_at
+		FROM deleted_libraries WHERE library_id = ?`, libraryID,
+	).Scan(&m.orgID, &m.deletedAt, &m.storageClass, &m.blockRepresentationID, &m.purgeRequestedAt)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// reinstateLostRestoreMarker puts back the GC marker a losing restore removed, but
+// only once the canonical row is confirmed absent: a marker must never sit over a
+// live row. Best effort — the restore has already failed; a missed reinstatement
+// leaves content unreclaimed, never deletes it.
+func reinstateLostRestoreMarker(session *gocql.Session, orgID, libraryID string, marker *deletedLibraryMarker) {
+	if marker == nil {
+		return
+	}
+	var deletedAt time.Time
+	err := session.Query(`SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?`,
+		orgID, libraryID).Consistency(gocql.Serial).Scan(&deletedAt)
+	if err == nil {
+		return
+	}
+	if !errors.Is(err, gocql.ErrNotFound) {
+		log.Printf("[restoreDeletedLibrary] cannot confirm canonical absence of %s to reinstate its GC marker: %v", libraryID, err)
+		return
+	}
+	var purgeRequestedAt interface{}
+	if !marker.purgeRequestedAt.IsZero() {
+		purgeRequestedAt = marker.purgeRequestedAt
+	}
+	if err := session.Query(`
+		INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id, purge_requested_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		libraryID, marker.orgID, marker.deletedAt, marker.storageClass, marker.blockRepresentationID, purgeRequestedAt,
+	).Exec(); err != nil {
+		log.Printf("[restoreDeletedLibrary] failed to reinstate GC marker of purged library %s: %v", libraryID, err)
+	}
+}
+
+// restoreDeletedLibraryAfterFenceHook is a test seam: it runs after restore's
+// final lease fence, modelling a restorer that pauses past the stale threshold
+// while a hard delete takes the lease over.
+var restoreDeletedLibraryAfterFenceHook func()
+
 // restoreDeletedLibrary clears deleted_at, removes the GC marker, and re-adds
 // the library's storage to aggregate counters. Mirror image of softDeleteLibrary.
 func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID, libraryID string) error {
@@ -1043,23 +1104,27 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	if err != nil {
 		return fmt.Errorf("read library projection row: %w", err)
 	}
+	// Snapshot the GC marker while the lease is still ours, so a restore that loses
+	// its generation CAS can hand it back (see reinstateLostRestoreMarker).
+	marker, err := readDeletedLibraryMarker(db.Session(), libraryID)
+	if err != nil {
+		return fmt.Errorf("read deleted library marker for restore: %w", err)
+	}
 	nextRow := previousRow
 	nextRow.UpdatedAt = now
 	nextRow.DeletedAt = nil
-	batch := db.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`
+	// Aggregate reconciliation recomputes from canonical rows, so requesting it ahead
+	// of the generation CAS is harmless even if this restore then loses.
+	preCAS := db.Session().Batch(gocql.LoggedBatch)
+	preCAS.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, libraryID)
+	traffic.AddAggregateStorageReconciliationQueries(preCAS, orgID, ownerID, now)
+	readModels := db.Session().Batch(gocql.LoggedBatch)
+	readModels.Query(`
 		UPDATE libraries SET updated_at = ?
 		WHERE org_id = ? AND library_id = ?`,
 		now, orgID, libraryID,
 	)
-	batch.Query(`
-		DELETE deleted_at, deleted_by FROM libraries
-		WHERE org_id = ? AND library_id = ?`,
-		orgID, libraryID,
-	)
-	batch.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, libraryID)
-	traffic.AddAggregateStorageReconciliationQueries(batch, orgID, ownerID, now)
-	addAdminLibraryReadModelRefreshQueries(batch, nextRow, &previousRow)
+	addAdminLibraryReadModelRefreshQueries(readModels, nextRow, &previousRow)
 	owned, err := gcpkg.RenewLibraryHardDeleteLockLease(db.Session(), libraryUUID, leaseToken)
 	if err != nil {
 		return fmt.Errorf("fence library restore lock for %s: %w", libraryID, err)
@@ -1067,12 +1132,42 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	if !owned {
 		return fmt.Errorf("lost library restore lock for %s", libraryID)
 	}
-	if err := batch.Exec(); err != nil {
-		return fmt.Errorf("restore library: %w", err)
+	if restoreDeletedLibraryAfterFenceHook != nil {
+		restoreDeletedLibraryAfterFenceHook()
 	}
 
-	// Re-add the library's storage to aggregates after the canonical row and
-	// deleted marker have been restored.
+	// The fence cannot close the boundary on its own: past it, this restore can still
+	// pause long enough to lose the lease to a hard delete. The canonical deleted_at
+	// cell decides instead — restore and every hard delete change it only through a
+	// conditional write on the expected generation, so exactly one of them wins.
+	//
+	// The GC marker goes first. Cascade children trust it as their generation
+	// authority, so it must never outlive a restored canonical row: "marker at D
+	// implies canonical at D or absent". A crash right after this delete leaves the
+	// library in trash (visible, restorable or permanently deletable) but no longer
+	// auto-purged — the safe direction.
+	if err := preCAS.Exec(); err != nil {
+		return fmt.Errorf("remove deleted library marker for restore: %w", err)
+	}
+	restored, err := gcpkg.ClearCanonicalLibraryGeneration(db.Session(), orgID, libraryID, canonicalDeletedAt)
+	if err != nil {
+		return fmt.Errorf("restore library: %w", err)
+	}
+	if !restored {
+		// A hard delete won this generation while restore was paused. If it already
+		// removed the canonical row, the marker deleted above may have been the one the
+		// GC needs to reclaim the content: put it back. A marker over an absent row
+		// keeps the invariant, and an extra cascade pass over a purged library is
+		// idempotent.
+		reinstateLostRestoreMarker(db.Session(), orgID, libraryID, marker)
+		return fmt.Errorf("library is pending permanent deletion")
+	}
+	if err := readModels.Exec(); err != nil {
+		return fmt.Errorf("refresh restored library read models: %w", err)
+	}
+
+	// Re-add the library's storage to aggregates after the canonical row has been
+	// restored and the deleted marker removed.
 	traffic.AdjustAggregateStorageCounters(db, orgID, ownerID, libraryID, true)
 	return nil
 }

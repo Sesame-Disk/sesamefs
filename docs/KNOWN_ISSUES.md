@@ -6768,7 +6768,7 @@ readiness.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01: A stale lease owner can resume its final lifecycle batch
 
-**Status**: 🔴 Open — CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC. Found in the PR #232 final cross-audit (2026-09-24); not part of the PC-D1B.4 decision
+**Status**: ✅ Closed on branch `fix/library-trash-cas-boundary` (2026-10-01). The final write of restore, the API permanent delete and the GC library cascade is now a global-SERIAL LWT conditioned on the trash generation (`IF deleted_at = D`), so a paused stale lease holder loses instead of applying its old batch. See [LIBRARY-TRASH-LIFECYCLE.md](./LIBRARY-TRASH-LIFECYCLE.md). Both CURRENT-RUNTIME and PRE-GC classifications are discharged. Originally found in the PR #232 final cross-audit (2026-09-24)
 **Severity**: High (P1)
 **Scope**: CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC
 **Introduced by #232**: No
@@ -6801,6 +6801,22 @@ prove current ownership, or another equivalent fencing protocol. Characterize
 both stale-delete-after-restore and stale-restore-after-delete with the old
 owner paused after renewal and resumed only after takeover. Keep it out of
 PC-D1B.4; `GC_ENABLED=false` is not protection from this API path.
+
+**Resolution (2026-10-01).** Instead of a token carried to a multi-table batch, the
+canonical `libraries.deleted_at` cell is the single linearization point. Restore
+(`ClearCanonicalLibraryGeneration`) and both hard deletes
+(`DeleteCanonicalLibraryAtGeneration`, shared by `hardDeleteLibraryRowsFn` and
+`CassandraStore.HardDeleteLibrary`) change it only through a conditional write on
+the generation they observed, so exactly one of them wins. The follow-up cleanup
+runs only after a won CAS. Restore removes the GC marker before its CAS so that a
+marker never outlives a restored row. Both requested characterizations are now
+integration tests against real Cassandra, each RED on the previous code:
+`TestPermanentDelete_LosesToRestoreAfterFence` (stale delete after restore) and
+`TestRestoreDeletedLibrary_LosesToPurgeAfterFence` (stale restore after delete). The
+GC worker side is `TestLibraryTrashBoundary_RestoreAfterFenceWins`. Residuals
+(crash windows, client vs. Paxos timestamps) are in the contract document. The
+PR #240 redesign (lifecycle clocks, reapers, owner transfer) was closed unmerged
+and is not needed.
 
 ### ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01: User restore does not serialize with the user hard-delete lease
 

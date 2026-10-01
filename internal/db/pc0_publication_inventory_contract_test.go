@@ -415,6 +415,9 @@ var pc0ExpectedHeadColumnWriters = []pc0HeadColumnWriter{
 // cas-shaped column writer plus these guards.
 var pc0ExpectedHeadAuthorityGuards = []pc0HeadColumnWriter{
 	{path: "internal/api/v2/write_helpers.go", decl: "deleteUnpublishedLibraryRow", shape: pc0HeadWriteCAS},
+	// Trash-generation hard delete: DELETE IF deleted_at = <generation>, shared by
+	// the GC library cascade and the API permanent delete.
+	{path: "internal/gc/store_cassandra.go", decl: "DeleteCanonicalLibraryAtGeneration", shape: pc0HeadWriteCAS},
 }
 
 // pc0ReceiverTypeName returns the receiver's base type name (pointer and

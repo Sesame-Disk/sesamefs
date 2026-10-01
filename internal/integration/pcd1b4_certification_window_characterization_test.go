@@ -461,8 +461,12 @@ func TestPCD1B4Characterization_PostWitnessLifecycle(t *testing.T) {
 		f := newPCD1B4Fixture(t, "r9")
 		requirePCD1B4Outcome(t, "R9 baseline", f.certify(t, dbpkg.LibraryBaselineCertifierIntegrationHooks{}), dbpkg.LibraryBaselineCertificationCertified, dbpkg.LibraryBaselineReasonApplied)
 		f.softDelete(t)
-		if err := gcpkg.NewCassandraStore(f.database).HardDeleteLibrary(uuid.MustParse(f.orgID), uuid.MustParse(f.libraryID)); err != nil {
-			t.Fatalf("production hard delete: %v", err)
+		var generation time.Time
+		if err := f.database.Session().Query(`SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?`, f.orgID, f.libraryID).Consistency(gocql.Serial).Scan(&generation); err != nil {
+			t.Fatalf("read trash generation: %v", err)
+		}
+		if purged, err := gcpkg.NewCassandraStore(f.database).HardDeleteLibrary(uuid.MustParse(f.orgID), uuid.MustParse(f.libraryID), generation); err != nil || !purged {
+			t.Fatalf("production hard delete: purged=%v err=%v", purged, err)
 		}
 		var remaining string
 		err := f.database.Session().Query(`SELECT library_id FROM libraries WHERE org_id = ? AND library_id = ?`, f.orgID, f.libraryID).Consistency(gocql.Serial).Scan(&remaining)

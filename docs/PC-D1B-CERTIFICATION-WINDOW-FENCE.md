@@ -180,7 +180,8 @@ UNKNOWN settlement (SERIAL read)        :483-507, :1032-1062
 | Witness CAS (×2), frontier advance | LWT `IF head_commit_id = ? … AND deleted_at = null` | global SERIAL (pinned) |
 | Sync `updateLibraryHeadWithStats`, v2 `UpdateLibraryHead`, `InitializeLibraryHeadIfUnset` | LWT `IF head_commit_id = ?` / `= null` | global SERIAL (pinned) |
 | Unpublished rollback `deleteUnpublishedLibraryRow` | LWT `DELETE … IF head_commit_id = null` | global SERIAL (pinned) |
-| Soft-delete, restore, hard delete | plain writes in a LoggedBatch | **none** (client timestamps) |
+| Restore, GC cascade hard delete, API permanent delete | trash-generation LWT `DELETE deleted_at … IF deleted_at = ?` / `DELETE … IF deleted_at = ?` (`ClearCanonicalLibraryGeneration` / `DeleteCanonicalLibraryAtGeneration`), follow-up cleanup in plain batches | global SERIAL (pinned) — see [LIBRARY-TRASH-LIFECYCLE.md](./LIBRARY-TRASH-LIFECYCLE.md) |
+| Soft-delete | plain writes in a LoggedBatch | **none** (client timestamps) |
 | Hard-delete lease `gc_library_hard_delete_locks` | LWT on another table | **inherits `database.serial_consistency`** (may be LOCAL_SERIAL) — side finding F2 |
 
 ## 5. Lifecycle mutation inventory
@@ -202,9 +203,9 @@ which is the structural boundary. The inventory is defense in depth.
 |---|---|---|---|---|---|---|---|---|---|---|
 | L1 | User/admin soft-delete | `api/v2/write_helpers.go:954` `softDeleteLibrary` | libraries.deleted_at, deleted_libraries, aggregates, admin read models | session (LOCAL_QUORUM) | no | no | yes (R1, R12) | yes (R8) | no | no |
 | L2 | GC user/org cascade soft-delete | `gc/store_cassandra.go:5730` `SoftDeleteLibrary` | same as L1 | session | no | no | yes | yes | no | no |
-| L3 | Restore from trash | `api/v2/write_helpers.go:1000` `restoreDeletedLibrary` | libraries (updated_at, DELETE deleted_at), deleted_libraries | session | no (hard-delete lease LWT on another table) | reads canonical row under lease | yes (R3) | yes (R10) | no | no |
-| L4 | Permanent delete (API) | `api/v2/library_delete_helpers.go:52` `hardDeleteLibraryRowsFn` | DELETE libraries row, libraries_by_id, read models; marker | session | no | no | yes (R9, R9g) | yes | no | no (row + witness removed) |
-| L5 | GC cascade hard delete | `gc/store_cassandra.go:6161` `HardDeleteLibrary` | same as L4 + policy rows | session | no | no | yes | yes | no | no |
+| L3 | Restore from trash | `api/v2/write_helpers.go` `restoreDeletedLibrary` → `gc/store_cassandra.go` `ClearCanonicalLibraryGeneration` | deleted_libraries (first), libraries (LWT DELETE deleted_at), then updated_at + read models | LWT + session | LWT, global SERIAL, under the hard-delete lease | `IF deleted_at = <generation>` | yes (R3) | yes (R10) | no | no |
+| L4 | Permanent delete (API) | `api/v2/library_delete_helpers.go` `hardDeleteLibraryRowsFn` → `DeleteCanonicalLibraryAtGeneration` | libraries row (LWT, first), then libraries_by_id, read models, marker | LWT + session | LWT, global SERIAL | `IF deleted_at = <generation>` | yes (R9, R9g) | yes | no | no (row + witness removed) |
+| L5 | GC cascade hard delete | `gc/store_cassandra.go` `HardDeleteLibrary` → `DeleteCanonicalLibraryAtGeneration` | same as L4 + policy rows | LWT + session | LWT, global SERIAL | `IF deleted_at = <generation>` (absent row = finish cleanup) | yes | yes | no | no |
 | L6 | Unpublished-library rollback | `api/v2/write_helpers.go:896` + `library_rollback.go` batch | libraries row (LWT), then whole commits/fs_objects partitions | LWT + session | LWT, global SERIAL | `IF head_commit_id = null` | no (no HEAD ⇒ no witness) | no | no | only of a never-published library |
 | D1 | GC commit delete | `gc/worker.go:3135` → `store_cassandra.go` `DeleteCommit` → `DeleteCommitIdentity` | commits row | EACH_QUORUM | claim SERIAL read | guard modes | never the HEAD commit (Phase 5 keeps the HEAD chain; Phase 3/cascade need canonical absence), but its cascade feeds D2/D3 | yes | no (claim survives) | **yes** |
 | D2 | GC fs_object delete | `gc/worker.go:3201` → `DeleteFSObject` → `DeleteFSObjectIdentity` | fs_objects row | EACH_QUORUM | claim SERIAL read | guard modes | **yes**: Phase 5 cascade, Phase 6 execute-time TOCTOU | yes | no | **yes** |

@@ -528,7 +528,10 @@ type GCStore interface {
 
 	// Library trash auto-purge (soft-deleted libraries past retention period)
 	ListExpiredDeletedLibraries(retentionDays int) ([]DeletedLibraryInfo, error)
-	HardDeleteLibrary(orgID, libraryID uuid.UUID) error
+	// HardDeleteLibrary purges trash generation deletedAt. It returns false, touching
+	// nothing, when the canonical row exists under another generation (restored or
+	// re-trashed); see CassandraStore.HardDeleteLibrary for the boundary.
+	HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt time.Time) (bool, error)
 
 	// Storage counter cleanup after permanent library deletion.
 	// Deletes the lib-scope counter row. Aggregate scopes (org, user, platform)

@@ -6216,22 +6216,99 @@ func (s *CassandraStore) ListExpiredDeletedLibraries(retentionDays int) ([]Delet
 	return result, nil
 }
 
-func (s *CassandraStore) HardDeleteLibrary(orgID, libraryID uuid.UUID) error {
+// HardDeleteLibrary purges a trashed library for trash generation deletedAt.
+//
+// The canonical libraries.deleted_at cell is the single linearization point shared
+// with restore (and the API permanent delete): each side changes it only through a
+// SERIAL conditional write on the expected generation, so exactly one of them wins
+// however long the loser paused after its lease fence. It returns false, touching
+// nothing, when the canonical row still exists under another generation (restored
+// or re-trashed). A canonical row that is already absent — the API permanent
+// delete removed it, or a previous pass crashed after winning the CAS — can no
+// longer be restored, so the remaining cleanup is finished idempotently.
+func (s *CassandraStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt time.Time) (bool, error) {
 	session := s.db.Session()
+	// Build the follow-up cleanup before the CAS: the read-model keys are resolved
+	// from the canonical row while it still exists (with a deleted-projection
+	// fallback once it is gone).
 	batch := session.Batch(gocql.LoggedBatch)
 	if err := db.AddDeleteAdminLibraryReadModelQueries(session, batch, orgID.String(), libraryID.String()); err != nil {
-		return err
+		return false, err
 	}
-
 	db.AddDeleteLibraryPolicyQuery(batch, db.GCLibraryPolicyVersionTTL, orgID.String(), libraryID.String())
 	db.AddDeleteLibraryPolicyQuery(batch, db.GCLibraryPolicyAutoDelete, orgID.String(), libraryID.String())
-	batch.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`,
-		orgID.String(), libraryID.String())
 	batch.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`,
 		libraryID.String())
 	batch.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`,
 		libraryID.String())
-	return batch.Exec()
+
+	applied, absent, err := DeleteCanonicalLibraryAtGeneration(session, orgID.String(), libraryID.String(), deletedAt)
+	if err != nil || (!applied && !absent) {
+		return false, err
+	}
+	if err := batch.Exec(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// DeleteCanonicalLibraryAtGeneration removes the canonical libraries row only
+// while its deleted_at still equals generation deletedAt. applied reports that
+// this call removed it; absent reports that there was no row to remove (it was
+// already purged). Neither means the row exists under another generation
+// (restored or re-trashed) and nothing was changed.
+//
+// Every hard delete of a trashed library goes through it and restore clears
+// deleted_at with the matching ClearCanonicalLibraryGeneration, so the two can
+// never both succeed for the same generation, however long either side paused
+// after its lease fence.
+func DeleteCanonicalLibraryAtGeneration(session *gocql.Session, orgID, libraryID string, deletedAt time.Time) (applied, absent bool, err error) {
+	current := map[string]interface{}{}
+	applied, err = session.Query(`
+		DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF deleted_at = ?
+	`, orgID, libraryID, deletedAt).SerialConsistency(db.LibraryHeadSerialConsistency).MapScanCAS(current)
+	if err != nil {
+		return false, false, fmt.Errorf("conditional delete of canonical library %s/%s at generation %s: %w", orgID, libraryID, deletedAt.Format(time.RFC3339Nano), err)
+	}
+	if applied {
+		return true, false, nil
+	}
+	// A non-applied LWT returns the current row's columns; an absent row returns none.
+	_, rowExists := current["deleted_at"]
+	return false, !rowExists, nil
+}
+
+// ClearCanonicalLibraryGeneration is restore's side of the boundary: it clears the
+// canonical deleted_at only while it still equals generation deletedAt, and never
+// recreates an absent row (a conditional cell delete, unlike an UPDATE, cannot
+// upsert). It reports whether this call won the generation. It runs in the same
+// global-SERIAL libraries Paxos domain as the hard delete it competes with.
+//
+// The caller must hold the library hard-delete lease. That is what makes an
+// ambiguous LWT outcome resolvable: a SERIAL re-read that finds the row present
+// with deleted_at cleared can only be this restore's own committed proposal.
+func ClearCanonicalLibraryGeneration(session *gocql.Session, orgID, libraryID string, deletedAt time.Time) (bool, error) {
+	applied, err := session.Query(`
+		DELETE deleted_at, deleted_by FROM libraries
+		WHERE org_id = ? AND library_id = ? IF deleted_at = ?
+	`, orgID, libraryID, deletedAt).SerialConsistency(db.LibraryHeadSerialConsistency).MapScanCAS(map[string]interface{}{})
+	if err == nil {
+		return applied, nil
+	}
+	casErr := fmt.Errorf("conditional restore of canonical library %s/%s at generation %s: %w", orgID, libraryID, deletedAt.Format(time.RFC3339Nano), err)
+	if !isAmbiguousHardDeleteLockCASError(err) {
+		return false, casErr
+	}
+	var current time.Time
+	if readErr := session.Query(`
+		SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, libraryID).Consistency(gocql.Serial).Scan(&current); readErr != nil {
+		return false, errors.Join(casErr, fmt.Errorf("settle ambiguous restore: %w", readErr))
+	}
+	if current.IsZero() {
+		return true, nil
+	}
+	return false, casErr
 }
 
 // --- Org cascade (Fase 4) ---

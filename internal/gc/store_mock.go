@@ -212,6 +212,13 @@ type MockStore struct {
 	startBlockDeleteOrphanProjectionErrOnce   error
 	startBlockDeleteOrphanRecoveryRootErrOnce error
 	releaseBlockClaimHook                     func()
+	// renewLibraryHardDeleteLockHook runs after a successful library lease renew
+	// (the fence) without the store mutex held, so a test can model the holder
+	// pausing past the stale threshold and a restore stealing the lease.
+	renewLibraryHardDeleteLockHook func(libraryID uuid.UUID)
+	// acquireLibraryHardDeleteLockHook runs before a library lease acquire, so a
+	// test can land a restore between the worker's first stale check and its lease.
+	acquireLibraryHardDeleteLockHook func(libraryID uuid.UUID)
 	// requeueItemErr, when non-nil, forces RequeueItem to return this error
 	// without mutating state. Used to exercise IncrementRetry failure paths
 	// where the LoggedBatch never applied.
@@ -1419,7 +1426,8 @@ func (m *MockStore) AddGroupMembership(orgID, userID, groupID uuid.UUID) {
 func (m *MockStore) AddDeletedLibrary(orgID, libraryID uuid.UUID, storageClass string, deletedAt time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.libraries[libraryID] = &mockLibrary{OrgID: orgID, LibraryID: libraryID, BlockRepresentationID: db.PlainBlockRepresentationID, StorageClass: storageClass}
+	// Canonical deleted_at and the marker carry the same generation, as softDeleteLibrary writes them.
+	m.libraries[libraryID] = &mockLibrary{OrgID: orgID, LibraryID: libraryID, BlockRepresentationID: db.PlainBlockRepresentationID, StorageClass: storageClass, DeletedAt: deletedAt}
 	m.deletedLibraries[libraryID] = &mockDeletedLibrary{OrgID: orgID, LibraryID: libraryID, BlockRepresentationID: db.PlainBlockRepresentationID, StorageClass: storageClass, DeletedAt: deletedAt}
 }
 
@@ -3950,13 +3958,18 @@ func (m *MockStore) ListExpiredDeletedLibraries(retentionDays int) ([]DeletedLib
 	}
 	return result, nil
 }
-func (m *MockStore) HardDeleteLibrary(orgID, libraryID uuid.UUID) error {
+func (m *MockStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.libraryDestructiveCalls = append(m.libraryDestructiveCalls, "HardDeleteLibrary")
+	// Mirrors the conditional canonical delete: only generation deletedAt (or an
+	// already-absent canonical row) may be purged.
+	if lib, ok := m.libraries[libraryID]; ok && !lib.DeletedAt.Equal(deletedAt) {
+		return false, nil
+	}
 	delete(m.libraries, libraryID)
 	delete(m.deletedLibraries, libraryID)
-	return nil
+	return true, nil
 }
 
 // --- User cascade (Fase 1) ---
@@ -4152,6 +4165,9 @@ func (m *MockStore) ReleaseUserHardDeleteLock(userID, leaseToken uuid.UUID) erro
 }
 
 func (m *MockStore) AcquireLibraryHardDeleteLock(libraryID, leaseToken uuid.UUID) (bool, error) {
+	if hook := m.acquireLibraryHardDeleteLockHook; hook != nil {
+		hook(libraryID)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return mockAcquireHardDeleteLock(m.libraryHardDeleteLocks, libraryID, leaseToken), nil
@@ -4159,18 +4175,38 @@ func (m *MockStore) AcquireLibraryHardDeleteLock(libraryID, leaseToken uuid.UUID
 
 func (m *MockStore) RenewLibraryHardDeleteLock(libraryID, leaseToken uuid.UUID) (bool, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.forceRenewLibraryLockNotOwned {
+		m.mu.Unlock()
 		// Simulate a lease lost to TTL expiry or a concurrent restore between acquire and fence.
 		return false, nil
 	}
 	lock, locked := m.libraryHardDeleteLocks[libraryID]
 	if !locked || lock.LeaseToken != leaseToken {
+		m.mu.Unlock()
 		return false, nil
 	}
 	lock.Heartbeat = time.Now().UTC()
 	m.libraryHardDeleteLocks[libraryID] = lock
+	hook := m.renewLibraryHardDeleteLockHook
+	m.mu.Unlock()
+	if hook != nil {
+		hook(libraryID)
+	}
 	return true, nil
+}
+
+// StealLibraryLeaseAndRestoreForTest models a restore that took over a stale
+// library hard-delete lease, cleared the trash generation and released the
+// lease: the original holder no longer owns it, the canonical deleted_at is
+// cleared and the deleted_libraries marker is gone.
+func (m *MockStore) StealLibraryLeaseAndRestoreForTest(libraryID uuid.UUID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.libraryHardDeleteLocks, libraryID)
+	if lib, ok := m.libraries[libraryID]; ok {
+		lib.DeletedAt = time.Time{}
+	}
+	delete(m.deletedLibraries, libraryID)
 }
 
 func (m *MockStore) ReleaseLibraryHardDeleteLock(libraryID, leaseToken uuid.UUID) error {

@@ -3673,11 +3673,21 @@ func (w *Worker) cascadeDeleteLibrary(orgID, libraryID uuid.UUID, blockRepresent
 	// restore cannot observe a deleted storage counter and reactivate an
 	// under-counted library. Deleting the counter before the hard delete (the old
 	// order) left exactly that window. See DEBT-GC-COUNTER-ORDERING history.
+	//
+	// The fence alone cannot close the boundary: a worker that pauses past the stale
+	// threshold after it can lose the lease to a restore. HardDeleteLibrary therefore
+	// purges only while the canonical deleted_at still equals this generation, through
+	// the same conditional cell restore clears; losing it means this work is stale.
 	if err := fenceLibrary(); err != nil {
 		return err
 	}
-	if err := w.store.HardDeleteLibrary(orgID, libraryID); err != nil {
+	purged, err := w.store.HardDeleteLibrary(orgID, libraryID, libraryDeletedAt)
+	if err != nil {
 		return fmt.Errorf("failed to hard-delete library %s: %w", libraryID, err)
+	}
+	if !purged {
+		log.Printf("[GC Worker] Skipping stale library cascade for %s at hard delete: canonical deleted_at no longer matches generation %v", libraryID, libraryDeletedAt)
+		return nil
 	}
 
 	// The library is now definitively gone — record the audit here (not after the

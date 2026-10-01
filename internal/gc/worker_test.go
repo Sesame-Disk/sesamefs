@@ -1786,7 +1786,7 @@ func TestWorker_ProcessCommit_DeletedAtIdentityDeletesAfterCanonicalGone(t *test
 	deletedAt := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Millisecond)
 	store.AddDeletedLibrary(orgID, libID, "hot", deletedAt)
 	store.AddCommit(libID, "commit-1", "")
-	if err := store.HardDeleteLibrary(orgID, libID); err != nil { // canonical + marker removed
+	if purged, err := store.HardDeleteLibrary(orgID, libID, deletedAt); err != nil || !purged { // canonical + marker removed
 		t.Fatalf("HardDeleteLibrary: %v", err)
 	}
 
@@ -3183,8 +3183,12 @@ func TestWorker_ProcessFSObject_HardDeletedLibraryUsesQueuedRepresentation(t *te
 	if err := store.SoftDeleteLibrary(orgID, libID, uuid.Nil); err != nil {
 		t.Fatalf("SoftDeleteLibrary failed: %v", err)
 	}
-	if err := store.HardDeleteLibrary(orgID, libID); err != nil {
-		t.Fatalf("HardDeleteLibrary failed: %v", err)
+	generation, genErr := store.GetLibraryDeletedAt(libID)
+	if genErr != nil || generation == nil {
+		t.Fatalf("read soft-delete generation: %v (%v)", generation, genErr)
+	}
+	if purged, err := store.HardDeleteLibrary(orgID, libID, *generation); err != nil || !purged {
+		t.Fatalf("HardDeleteLibrary failed: purged=%v err=%v", purged, err)
 	}
 
 	err := w.processFSObject(context.Background(), QueueItem{

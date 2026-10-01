@@ -259,7 +259,7 @@ added here to count.
 | HEAD-less ghost `libraries` row counts as canonically absent for GC/restore | `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` |
 | Repair-liveness residual (35-day `pub:` TTL): the fail-closed GC health gate, if W2-11 is closed as `CLOSED-GATED` through it, must exist and be enabled before activation | `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` (W2-11) |
 | GC mapping resolver `CassandraStore.lookupBlockMapping()` reclassified from session consistency | `PCD1B3-PRE-GC-SESSION-CONSISTENCY-EXCEPTION` marker |
-| Library hard-delete lease: global SERIAL (✅ closed by PR #234) and fenced final batch | `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` (closed), `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (open; current-runtime, §7) |
+| Library hard-delete lease: global SERIAL (✅ closed by PR #234) and fenced final batch (✅ closed by the trash-generation CAS, [LIBRARY-TRASH-LIFECYCLE.md](./LIBRARY-TRASH-LIFECYCLE.md)) | `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` (closed), `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (closed) |
 | Startup check refusing `GC_ENABLED=true` while any A1 gate item (tagged entry or row above) is open | first A1 item |
 
 Closed by the greenfield precondition, not carried into A1: Technical Debt
@@ -283,5 +283,8 @@ final batch (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`). The SERIAL pin alone
 does not close the non-fencing race.
 
 Status: the global SERIAL pin landed in PR #234 for the library, user and org
-leases (`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` closed); the generation-fenced
-final batch (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`) remains open.
+leases (`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` closed). The generation-fenced
+final write (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`) is closed by the
+trash-generation CAS shared by restore, the API permanent delete and the GC library
+cascade ([LIBRARY-TRASH-LIFECYCLE.md](./LIBRARY-TRASH-LIFECYCLE.md)). PR #240's
+lifecycle redesign was closed unmerged and is not part of the path.

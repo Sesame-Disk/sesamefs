@@ -131,6 +131,185 @@ func TestRestoreDeletedLibrary_RejectsWhenCanonicalRowActive(t *testing.T) {
 	}
 }
 
+// seedTrashedLibraryForRestoreGuard writes a soft-deleted canonical row plus its
+// deleted_libraries marker, both at generation deletedAt, the way softDeleteLibrary does.
+//
+// The seed is written USING TIMESTAMP at the trash time, not "now": the generation
+// CAS writes carry Paxos (server-clock) timestamps, and a client-clock seed written
+// milliseconds earlier on a host whose clock runs ahead of Cassandra's (Docker
+// Desktop/WSL drifts by hundreds of ms) would otherwise shadow them. Real trash
+// generations are always far older than the CAS that settles them.
+func seedTrashedLibraryForRestoreGuard(t *testing.T, session *gocql.Session, orgID, libraryID, ownerID uuid.UUID, name string, deletedAt time.Time) {
+	t.Helper()
+	seededAt := deletedAt.UnixMicro()
+	if err := session.Query(`
+		INSERT INTO libraries (org_id, library_id, owner_id, name, created_at, updated_at, deleted_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?) USING TIMESTAMP ?`,
+		orgID.String(), libraryID.String(), ownerID.String(), name,
+		deletedAt.Add(-4*time.Hour), deletedAt, deletedAt, seededAt).Exec(); err != nil {
+		t.Fatalf("seed trashed library: %v", err)
+	}
+	if err := session.Query(`
+		INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class)
+		VALUES (?, ?, ?, ?) USING TIMESTAMP ?`,
+		libraryID.String(), orgID.String(), deletedAt, "hot", seededAt).Exec(); err != nil {
+		t.Fatalf("seed deleted_libraries marker: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Query(`DELETE FROM gc_library_hard_delete_locks WHERE library_id = ?`, libraryID.String()).Exec()
+		_ = session.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, libraryID.String()).Exec()
+		_ = session.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID.String(), libraryID.String()).Exec()
+		_ = session.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, libraryID.String()).Exec()
+	})
+}
+
+// Restore passes every check and fences its lease, then pauses past the stale
+// threshold. The GC takes the lease over and purges generation D. When restore
+// resumes it must lose: its write must not recreate a partial canonical row over
+// a library whose purge already won.
+func TestRestoreDeletedLibrary_LosesToPurgeAfterFence(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	session := db.Session()
+	orgID, libraryID, ownerID := uuid.New(), uuid.New(), uuid.New()
+	deletedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
+	seedTrashedLibraryForRestoreGuard(t, session, orgID, libraryID, ownerID, "restore-guard-after-fence", deletedAt)
+
+	restoreDeletedLibraryAfterFenceHook = func() {
+		// The GC's stale takeover: the restore's lease token no longer owns the lock.
+		if err := session.Query(`UPDATE gc_library_hard_delete_locks SET lease_token = ?, heartbeat = ? WHERE library_id = ?`,
+			uuid.New().String(), time.Now().UTC(), libraryID.String()).Exec(); err != nil {
+			t.Errorf("steal restore lease: %v", err)
+		}
+		applied, err := gcpkg.NewCassandraStore(db).HardDeleteLibrary(orgID, libraryID, deletedAt)
+		if err != nil || !applied {
+			t.Errorf("GC purge of generation D: applied=%v err=%v", applied, err)
+		}
+	}
+	t.Cleanup(func() { restoreDeletedLibraryAfterFenceHook = nil })
+
+	if err := restoreDeletedLibrary(db, orgID.String(), ownerID.String(), libraryID.String()); err == nil {
+		t.Fatal("restore must fail once the purge of its generation has won")
+	}
+
+	var got string
+	scanErr := session.Query(`SELECT library_id FROM libraries WHERE org_id = ? AND library_id = ?`,
+		orgID.String(), libraryID.String()).Scan(&got)
+	if !errors.Is(scanErr, gocql.ErrNotFound) {
+		t.Fatalf("canonical libraries row must stay purged after the losing restore; scanErr=%v got=%q", scanErr, got)
+	}
+}
+
+// A restore that loses to a permanent delete must not strand the purge. Restore
+// removes the GC marker before its CAS; if the permanent delete already won (and
+// rewrote the marker) while restore was paused, the losing restore must leave a
+// marker behind, or nothing would ever reclaim the library's content.
+func TestRestoreDeletedLibrary_LosingRestoreKeepsGCMarker(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	session := db.Session()
+	orgID, libraryID, ownerID := uuid.New(), uuid.New(), uuid.New()
+	deletedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
+	seedTrashedLibraryForRestoreGuard(t, session, orgID, libraryID, ownerID, "restore-loses-keeps-marker", deletedAt)
+
+	restoreDeletedLibraryAfterFenceHook = func() {
+		if err := hardDeleteLibraryRowsFn(db, orgID.String(), libraryID.String(), "hot", dbpkg.PlainBlockRepresentationID, deletedAt); err != nil {
+			t.Errorf("permanent delete wins generation D: %v", err)
+		}
+	}
+	t.Cleanup(func() { restoreDeletedLibraryAfterFenceHook = nil })
+
+	if err := restoreDeletedLibrary(db, orgID.String(), ownerID.String(), libraryID.String()); err == nil {
+		t.Fatal("restore must fail once the permanent delete of its generation has won")
+	}
+
+	var marker time.Time
+	if err := session.Query(`SELECT deleted_at FROM deleted_libraries WHERE library_id = ?`, libraryID.String()).Scan(&marker); err != nil {
+		t.Fatalf("losing restore must leave the GC marker for the purged library: %v", err)
+	}
+	if !marker.Equal(deletedAt) {
+		t.Fatalf("GC marker generation = %s, want %s", marker, deletedAt)
+	}
+}
+
+// The GC side of the same boundary against real Cassandra: once the library was
+// restored (deleted_at cleared), a hard delete for generation D is a no-op.
+func TestCassandraHardDeleteLibrary_StaleGenerationIsNoOp(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	session := db.Session()
+	orgID, libraryID, ownerID := uuid.New(), uuid.New(), uuid.New()
+	deletedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
+	seedTrashedLibraryForRestoreGuard(t, session, orgID, libraryID, ownerID, "hard-delete-stale-generation", deletedAt)
+
+	if err := restoreDeletedLibrary(db, orgID.String(), ownerID.String(), libraryID.String()); err != nil {
+		t.Fatalf("restore trashed library: %v", err)
+	}
+
+	applied, err := gcpkg.NewCassandraStore(db).HardDeleteLibrary(orgID, libraryID, deletedAt)
+	if err != nil {
+		t.Fatalf("HardDeleteLibrary: %v", err)
+	}
+	if applied {
+		t.Fatal("hard delete of a restored library's old generation must not apply")
+	}
+	var canonicalDeletedAt time.Time
+	if err := session.Query(`SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?`,
+		orgID.String(), libraryID.String()).Scan(&canonicalDeletedAt); err != nil {
+		t.Fatalf("restored library must survive the stale hard delete: %v", err)
+	}
+	if !canonicalDeletedAt.IsZero() {
+		t.Fatalf("restored library must stay active, deleted_at=%s", canonicalDeletedAt)
+	}
+}
+
+// The API permanent delete is the third writer of the same boundary
+// (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01). The request renews its lease (the
+// final fence) and pauses past the stale threshold; a restore takes the lease
+// over and restores the library. The resumed delete must not remove the restored
+// row nor rewrite the GC marker over it.
+func TestPermanentDelete_LosesToRestoreAfterFence(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	session := db.Session()
+	orgID, libraryID, ownerID := uuid.New(), uuid.New(), uuid.New()
+	deletedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
+	seedTrashedLibraryForRestoreGuard(t, session, orgID, libraryID, ownerID, "permanent-delete-stale-generation", deletedAt)
+
+	realRenew := renewLibraryHardDeleteLockLeaseFn
+	renewLibraryHardDeleteLockLeaseFn = func(database *dbpkg.DB, libraryUUID, leaseToken uuid.UUID) (bool, error) {
+		owned, err := realRenew(database, libraryUUID, leaseToken)
+		if err != nil || !owned {
+			return owned, err
+		}
+		// Paused past the stale threshold: age the heartbeat (through the lease's own
+		// SERIAL domain) so restore's real stale takeover wins the lease, then the
+		// restore wins the generation while this request sleeps.
+		staleAt := time.Now().UTC().Add(-2 * time.Hour)
+		if _, err := session.Query(`UPDATE gc_library_hard_delete_locks SET heartbeat = ? WHERE library_id = ? IF lease_token = ?`,
+			staleAt, libraryUUID.String(), leaseToken.String()).SerialConsistency(gocql.Serial).MapScanCAS(map[string]interface{}{}); err != nil {
+			t.Errorf("age permanent-delete lease: %v", err)
+		}
+		if err := restoreDeletedLibrary(database, orgID.String(), ownerID.String(), libraryID.String()); err != nil {
+			t.Errorf("restore while the permanent delete is paused: %v", err)
+		}
+		return true, nil
+	}
+	t.Cleanup(func() { renewLibraryHardDeleteLockLeaseFn = realRenew })
+
+	_, err := permanentlyDeleteTrashedLibraryCandidate(db, trashLibraryCandidate{
+		OrgID: orgID.String(), LibraryID: libraryID.String(), StorageClass: "hot", DeletedAt: deletedAt,
+	}, "permanent_delete", "PermanentDeleteRepo", false)
+	if !errors.Is(err, errPermanentDeleteCandidateStale) {
+		t.Fatalf("resumed permanent delete of a restored generation: err=%v, want errPermanentDeleteCandidateStale", err)
+	}
+	var canonicalDeletedAt time.Time
+	if err := session.Query(`SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?`,
+		orgID.String(), libraryID.String()).Scan(&canonicalDeletedAt); err != nil {
+		t.Fatalf("restored library must survive the stale permanent delete: %v", err)
+	}
+	var marker time.Time
+	if err := session.Query(`SELECT deleted_at FROM deleted_libraries WHERE library_id = ?`, libraryID.String()).Scan(&marker); !errors.Is(err, gocql.ErrNotFound) {
+		t.Fatalf("stale permanent delete must not rewrite the GC marker over a restored library; err=%v marker=%s", err, marker)
+	}
+}
+
 // While a fresh permanent-delete lease is actively owned, restore must reject
 // instead of clearing deleted_at and resurrecting a library whose hard delete is
 // already in progress.
