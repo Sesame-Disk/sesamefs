@@ -84,6 +84,15 @@ func nonfencingSeedActiveLibrary(t *testing.T, db *dbpkg.DB) nonfencingLibrary {
 		if nonfencingKeepSeeds {
 			return
 		}
+		// Continuations left by legs that fail a completion on purpose: drop them so
+		// the servers' lifecycle reaper does not finish them during later tests.
+		if pending, err := dbpkg.ListLibraryLifecyclePending(session, dbpkg.GCDiscoveryBucket(lib.OrgID, lib.LibraryID)); err == nil {
+			for _, p := range pending {
+				if p.LibraryID == lib.LibraryID {
+					_ = dbpkg.DeleteLibraryLifecyclePending(session, p)
+				}
+			}
+		}
 		_ = session.Query(`DELETE FROM gc_library_hard_delete_locks WHERE library_id = ?`, lib.LibraryID).Exec()
 		_ = session.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, lib.LibraryID).Exec()
 		_ = session.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, lib.LibraryID).Exec()
