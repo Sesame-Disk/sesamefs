@@ -292,10 +292,11 @@ Status:
     lifecycle only through global-SERIAL LWTs conditioned on a per-library
     unique trash generation (`lifecycle_at` clock, migration 028), so an owner
     that lost the lease cannot undo or destroy another owner's transition;
-    derived writes follow the same clock, and half-committed transitions
-    complete on a repeated single or bulk request with `GC_ENABLED=false`.
-  - Follow-up (pre-existing): `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`
-    (link cleanup of a stale permanent delete).
+    every transition has a durable continuation (migration 029) that a
+    GC-independent reaper finishes once it is decided, with `GC_ENABLED=false`.
+  - Follow-ups (pre-existing): `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`
+    (link cleanup of a stale permanent delete) and
+    `ISSUE-LIBRARY-TRANSFER-DROPS-ORG-READ-MODEL-01` (owner transfer).
 
 This does not make GC ready or close A1: the user lease
 (`ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`) and the rest of the §6

@@ -1,26 +1,28 @@
 # Current Work - SesameFS
 
-**Active branch — PR #240, `fix/gc-hard-delete-lease-nonfencing` (rebased onto `main@1a8f1e77c`, 2026-09-30; originally based on `main@76d68c928`):**
+**Active branch — PR #240, `fix/gc-hard-delete-lease-nonfencing` (rebased onto `main@1a8f1e77c`; 2026-09-30/10-01):**
 Closes `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` only. PR #234 gave the library
 hard-delete lease one global SERIAL owner at a time; this closes the remaining
 stale-owner window. Every canonical lifecycle transition — soft delete, restore,
 API permanent delete, GC library cascade — is a global-SERIAL LWT conditioned
 on a trash generation that is unique per library: migration 028 adds
 `libraries.lifecycle_at`, a per-library lifecycle clock advanced strictly
-inside each soft-delete/restore LWT and used as `deleted_at`. Derived writes
-(marker, read model, lookup) carry the transition's lifecycle value, so they are
-ordered like the canonical transitions. The reconciliation request and the
-permanent-delete continuation marker are durable before the canonical
-transition; half-committed transitions complete on a repeated single or bulk
-request (or the GC retry) with `GC_ENABLED=false`. Three cross-audit rounds;
-every confirmed finding was reproduced RED on the audited head and fixed.
-Evidence: RED→GREEN integration legs (T1–T7, G1–G9), 20 directed mutations RED,
-a 3-DC leg with `LOCAL_SERIAL` sessions; details in
+inside each soft-delete/restore LWT and used as `deleted_at`. Every transition
+records a durable continuation first (migration 029,
+`library_lifecycle_pending`); a Server-owned, GC-independent reaper finishes it
+once the transition is decided, rebuilding derived state and recording the
+storage reconciliation request after the canonical change. Marker and trash
+rows follow the lifecycle clock; ordinary read-model rows keep client
+timestamps and each completion re-checks the canonical row; recovery reads at
+SERIAL/EACH_QUORUM and fails closed. Four cross-audit rounds; every confirmed
+finding was reproduced RED on the audited head and fixed. Evidence: RED→GREEN
+integration legs (T1–T7, G1–G9, R1–R6), 24 directed mutations RED, 3-DC legs
+including recovery with a DC down; details in
 [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md#issue-gc-hard-delete-lease-nonfencing-01).
-Registered follow-up: `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`
-(pre-existing). Not in scope: W2, PC-D1B.5, user restore serialization
-(`ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`, still open PRE-GC), GC
-activation. `GC_ENABLED=false` remains mandatory.
+Registered follow-ups (pre-existing): `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`,
+`ISSUE-LIBRARY-TRANSFER-DROPS-ORG-READ-MODEL-01`. Not in scope: W2, PC-D1B.5,
+user restore serialization (`ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`,
+still open PRE-GC), GC activation. `GC_ENABLED=false` remains mandatory.
 
 ## Merged PR #242: docs/x1-greenfield-w2-reset
 

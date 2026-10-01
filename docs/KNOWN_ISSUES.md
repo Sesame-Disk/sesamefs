@@ -6750,7 +6750,7 @@ readiness.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01: A stale lease owner can resume its final lifecycle batch
 
-**Status**: ✅ Closed on 2026-09-30 (PR #240) — every canonical lifecycle transition (soft delete, restore, API permanent delete, GC library cascade) is a global-SERIAL LWT conditioned on a trash generation that is unique per library (`deleted_at`, driven by the `lifecycle_at` clock of migration 028), so an owner that lost the lease cannot change the canonical lifecycle state another owner committed; derived writes are ordered by the same clock and every transition has a durable continuation. Found in the PR #232 final cross-audit (2026-09-24)
+**Status**: ✅ Closed on 2026-10-01 (PR #240) — every canonical lifecycle transition (soft delete, restore, API permanent delete, GC library cascade) is a global-SERIAL LWT conditioned on a trash generation that is unique per library (`deleted_at`, driven by the `lifecycle_at` clock of migration 028), so an owner that lost the lease cannot change the canonical lifecycle state another owner committed; every transition has a durable continuation (migration 029) finished by a GC-independent reaper. Found in the PR #232 final cross-audit (2026-09-24)
 **Severity**: High (P1)
 **Scope**: CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC (both discharged for the library lease; the user lease is the separate, open `ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01`)
 **Introduced by #232**: No
@@ -6813,38 +6813,50 @@ lifecycle clock:
   millisecond, or on a node whose clock is behind — so every existing
   `deleted_at`-based identity (the fences, the marker, the GC queue identity)
   can no longer confuse an old generation with a new one.
-- Derived writes (marker, admin read model, lookup) of a transition carry
-  `LibraryLifecycleWriteTimestamp(lifecycle_at of that transition)`: a durable
-  value bound to the transition. Canonical order is derived-write order,
-  whenever a paused, retried or repaired completion lands, on any node or DC.
-  No read-model observation or client clock orders them.
+- Lifecycle-owned derived rows — the `deleted_libraries` marker and the org
+  trash listing rows — carry `LibraryLifecycleWriteTimestamp(lifecycle_at of
+  that transition)`: they are ordered like the canonical transitions whatever
+  the clocks. The owner/org/global read-model rows hold ordinary mutable
+  columns (owner, name, size...) written by other code with client
+  timestamps; a lifecycle completion writes them with its client timestamp too
+  (never with the lifecycle clock, which can run ahead of real time after a
+  fast node), and then re-checks the canonical lifecycle at SERIAL
+  (`VerifyLibraryLifecycleCompletion`), repairing the derived state if a later
+  transition committed meanwhile.
 - A permanent delete's completion is stamped after its generation's writes and
   not before the client clock; the GC hard delete's after every marker write.
   Both also delete the canonical row with a plain client-timestamp delete, so
   cells written under either clock are covered.
 
-**Durable continuation before every canonical transition.**
+**Durable continuation of every transition (migration 029,
+`library_lifecycle_pending`).** Soft delete (API and GC), restore and permanent
+delete record a row before their canonical LWT and delete it only after their
+completion (counter adjustment, derived rows, storage reconciliation request,
+re-check). The Server-owned `LibraryLifecycleReaper` (independent of
+`GC_ENABLED`, like the library rollback reaper) finishes a row only once its
+transition can no longer commit (the canonical lifecycle moved past its
+precondition): it rebuilds the derived state from the canonical row (or
+resumes the permanent delete), then records the storage reconciliation request.
+So:
 
-- Accounting: soft delete and restore make their storage reconciliation
-  request durable *before* the canonical LWT (`requestStorageReconciliation`),
-  then adjust the counters. A process that dies right after the transition
-  leaves a request that `ReconcilePendingStorageCounters` resolves from the
-  canonical rows (its consumer is the GC scanner's reconciliation phase, as on
-  `main`).
-- Permanent delete: before the canonical LWT it writes its generation's
-  soft-delete marker (at that generation's own timestamp, so it can never
-  outlive a restore). A completion that fails after the canonical delete is
-  rediscovered from that marker by the single routes (`PermanentDeleteRepo`,
-  `DeleteOrgTrashLibrary`) and by both bulk cleanups
-  (`resumeCommittedPermanentDeletes` scans the markers before the canonical
-  candidate scan), even when the soft delete's own marker write had failed.
-- Soft delete / restore: `db.RepairLibraryLifecycleDerivedState` takes the
-  canonical row as the only authority and rewrites the marker (replacing a
-  marker of any other generation), the admin read-model rows and the trash
-  rows of other generations, at the generation's own lifecycle timestamp. It
-  runs on a repeated delete or restore request, and on the GC soft-delete
-  retry (full derived state, not only the marker). A restore's leftover marker
-  is also cleared by the GC cascade (`db.ClearRestoredLibraryMarker`).
+- The reconciliation request is written only after the canonical transition
+  (in the completion, or by the reaper); a reconciler that runs before the LWT
+  cannot consume the continuation, which survives until the transition is
+  decided.
+- A soft delete that dies right after its LWT, with no second request, gets its
+  marker and read model back from the reaper, so trash retention (Phase 13)
+  discovers it.
+- Permanent delete also writes its generation's marker before the canonical
+  delete; the single routes and both bulk cleanups resume committed but
+  incomplete deletes from it, and a delete that finds the row already gone
+  resumes it instead of answering 409.
+- `RepairLibraryLifecycleDerivedState` reads the whole canonical row at SERIAL
+  and the trash listing at EACH_QUORUM; the resume reads the marker and lookup
+  at EACH_QUORUM. A state acknowledged in another datacenter is therefore seen,
+  and when a datacenter is unreachable the recovery returns an error (retry)
+  instead of reporting nothing to do. The admin trash reconciliation now keeps
+  only the current generation's trash row, so a late row of an old generation
+  is dropped.
 
 Semantics: the property is "no stale owner can change a lifecycle generation
 that another owner already transitioned". An old owner that resumes before the
@@ -6866,20 +6878,34 @@ has exactly one lifecycle transition.
 - G7 a permanent delete of a library whose marker was never written;
 - G8 a stale D1 marker repaired to D2;
 - G9 a GC soft-delete retry that restores the full derived state;
+- R1 (in G4/G5) the reaper and the reconciliation run right before the LWT and
+  the counters still converge after a death; R2 an owner transfer after a
+  lifecycle clock pushed ahead by a fast node; R5 a soft delete that dies with
+  no retry, recovered by the reaper and discovered by Phase 13; R6 a late trash
+  row of an old generation; G2b a slow soft delete after a fast restore;
 - the adverse-client-clock soft delete, the permanent-delete resume (function
   and HTTP handler) and the soft-delete repair legs, each primitive's outcomes
   and the GC store hard delete.
+- 3-DC (`scripts/library-hard-delete-lease-nonfencing-multidc-validation.sh`):
+  besides the stale-owner legs, transitions whose completion failed in dc-na
+  are recovered from dc-eu: while the dc-na node is paused every recovery
+  (soft-delete and restore repair, permanent-delete resume, reaper) returns an
+  error, and once it is back the same recovery converges.
 
 T3, T4, both T5 legs and T7 were RED on `main`; the round-2 findings were RED
 on `1e10070c5`; G1, G2, G3, G6, G7 and G8 were reproduced RED on the round-3
 audited head `133092971` (G4, G5 and G9 have no seam there and are covered by
-mutations). `internal/db/library_lifecycle_test.go` pins the SERIAL domain of
+mutations); R2, R5 and R6 were reproduced RED on the round-4 audited head
+`2445880b7` (R1 and the cross-DC legs need seams or the 3-DC fixture that head
+lacks; mutations M13, M21 and M22 cover them). `internal/db/library_lifecycle_test.go` pins the SERIAL domain of
 every lifecycle LWT and read, the lifecycle clock and the ambiguous-outcome
 settlement. `scripts/library-hard-delete-lease-nonfencing-mutation-validation.sh`
-runs 20 directed mutations, each RED for its own reason, including: lifecycle
+runs 24 directed mutations, each RED for its own reason, including: lifecycle
 clock not advanced, soft delete as a plain write, soft-delete completion
-stamped with the client clock, reconciliation request after the transition
-(soft delete and restore), no continuation marker, bulk without resume, repair
+stamped with the client clock, reaper dropping a continuation that can still
+apply, soft delete without a continuation, completion not re-checked, ordinary
+read-model rows stamped with the lifecycle clock, recovery reads downgraded
+from EACH_QUORUM, no continuation marker, bulk without resume, repair
 not rewriting the marker, GC retry only checking the marker, and each lifecycle
 LWT downgraded to `LOCAL_SERIAL`. `scripts/library-hard-delete-lease-nonfencing-multidc-validation.sh`
 runs the stale owner in dc-na against a new owner in dc-eu with `LOCAL_SERIAL`
@@ -6887,26 +6913,31 @@ session defaults (positive evidence).
 
 **Residuals (accepted):**
 
-- Recovery is triggered by a repeated request (single or bulk) or by the GC
-  cascade; nothing re-drives a half-completed transition on its own while
-  `GC_ENABLED=false`. Storage counters converge when the reconciliation
-  requests are processed (the GC scanner's reconciliation phase, as on `main`).
+- Storage counters converge when the reconciliation requests are processed
+  (the GC scanner's reconciliation phase, as on `main`); the reaper guarantees
+  the request exists once the transition is decided.
+- The ordinary read-model rows follow client clocks, as on `main`: two writes
+  from nodes whose clocks disagree by more than the time between them can
+  leave the older one visible until the next write or repair. The canonical
+  lifecycle, the marker and the trash listing are not affected.
+- A continuation whose canonical transition never applied and whose library is
+  never touched again stays in `library_lifecycle_pending` (its LWT could still
+  commit, so it is not dropped); each reaper sweep re-reads it.
 - Pre-existing, not changed here: a permanent delete that pauses inside its
   share/upload link cleanup and resumes after a restore took over can still
-  remove links of the restored library before its fenced delete is rejected
-  (`ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`).
-- Non-lifecycle writers of the read-model rows (renames, size refreshes) keep
-  their client timestamps, as on `main`; a lifecycle clock that ran ahead
-  because of a fast node can shadow them the same way a fast node's client
-  timestamps already could.
+  remove links of the restored library
+  (`ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`); an owner transfer drops
+  the org/global read-model row (`ISSUE-LIBRARY-TRANSFER-DROPS-ORG-READ-MODEL-01`).
 - An ambiguous outcome settled as applied can duplicate the completion writes
   of a concurrent owner of the same generation (possible only if the lease was
   taken over while the LWT was in flight); the writes are idempotent for that
   generation.
-- Cost: every lifecycle transition runs one global-SERIAL LWT plus a SERIAL
-  read (soft delete) and a reconciliation-request write; soft delete, which
-  wrote at `LOCAL_QUORUM` before, now needs a global quorum. The bulk cleanups
-  scan `deleted_libraries` once per call.
+- Cost: every lifecycle transition writes and deletes a continuation row, runs
+  one global-SERIAL LWT plus a SERIAL re-check (and a SERIAL read for soft
+  delete); soft delete, which wrote at `LOCAL_QUORUM` before, now needs a
+  global quorum; recovery reads at EACH_QUORUM need every DC. The reaper scans
+  32 small partitions every 30 s; the bulk cleanups scan `deleted_libraries`
+  once per call.
 
 This does not close `ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01` (user
 lease), does not establish GC activation readiness, and `GC_ENABLED=false`
@@ -6931,6 +6962,25 @@ library survives, but without the links it had. Fix direction: condition the
 link cleanup on the lifecycle generation too (for example run it after the
 fenced canonical delete, when the library can no longer be restored), with a
 stale-owner characterization like the lifecycle legs.
+
+### ISSUE-LIBRARY-TRANSFER-DROPS-ORG-READ-MODEL-01: An owner transfer deletes the org and global read-model rows it rewrites
+
+**Status**: 🔴 Open — FOLLOW-UP. Pre-existing on `main@1a8f1e77c`; found while writing the PR #240 round-4 legs (2026-10-01)
+**Severity**: Medium — admin listings lose the library
+**Scope**: CURRENT-RUNTIME / FOLLOW-UP
+**Introduced by #240**: No
+**Blocks #240**: No
+**Affected**: `updateLibraryOwner` (`internal/api/v2/write_helpers.go`) and `AddRefreshAdminLibraryReadModelQueries` (`internal/db/admin_library_read_models.go`)
+
+When the owner changes, `AddRefreshAdminLibraryReadModelQueries` deletes the
+previous projection rows and upserts the new ones in the same logged batch,
+with one timestamp. `libraries_by_org_updated` and
+`libraries_admin_global_by_updated` are not keyed by owner, so the delete and the
+insert hit the same row at the same timestamp and the tombstone wins: after a
+transfer the library disappears from the org and global admin listings (the
+owner listings are correct). Reproduced on `main` with a direct call. Fix
+direction: only delete the rows whose key changes, or stamp the deletes before
+the inserts.
 
 ### ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01: User restore does not serialize with the user hard-delete lease
 
