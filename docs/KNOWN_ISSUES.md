@@ -5979,6 +5979,24 @@ The shared post-HEAD repair cold path now has an explicit `REACHABLE` / `DEFINIT
 
 **Extension (2026-09-07, W2 Sync `PutBlock` -> HEAD slice):** direct-HEAD repair rows are shared by every writer of the target `commit_id`. A readiness failure creates no durable repair row; after readiness succeeds and the shared row is queued, queue ambiguity, ambiguous-CAS, and divergent-CAS request-local outcomes retain it. Only positive settlement clears the row. Auto-merge uses a fresh UUID attempt ID, so its cleanup is structurally unique. The real residuals are retained bookkeeping rows after abandoned/ambiguous attempts and expired-provenance continuity before the readiness gate. This branch does not add durable known-loser authority or close R31.
 
+### ISSUE-W2-SYNC-NOPUTBLOCK-PREHEAD-01: Sync can publish HEAD after GC commits D for a block without PutBlock provenance
+
+**Status**: Confirmed current-runtime W2 violation; fix needed
+**Severity**: P1 — a supported Sync dedup/reuse flow can publish durable liveness for a condemned physical placement
+**Affected**: W2-4, direct Sync HEAD promotion and auto-merge, `internal/api/sync.go`
+
+#### Finding
+
+Real `CheckBlocks` can resolve a web-uploaded SHA-1 alias and canonical SHA-256 block as already present. The Sync commit then receives file metadata through `RecvFS` without any Sync `PutBlock`. Its HEAD readiness scope gate finds no `up:sync:<repo>:<block>` and returns no placement to validate. Attempt-local `pub:` and the durable repair row are staged later. Once the web upload's TTL-bound `up:` has expired, a current GC worker can observe zero at EACH_QUORUM, prepare the exact orphan and commit D(P) before the repair appears. Sync subsequently queues repair and publishes HEAD, then promotes `fs:` for that same P. The final check only covers the empty PutBlock-provenanced subset, so it does not reject the committed or fully retired placement.
+
+This is separate from expired Sync PutBlock provenance: W2-4 has no Sync PutBlock at all. It also shows that `CheckBlocks` success is only an observation of existence at check time, not publication continuity.
+
+#### Evidence and disposition
+
+`internal/integration/w2_sync_no_putblock_test.go` executes ten real Cassandra/MinIO legs: direct and auto-merge, each with writer-first, GC before attempt staging, GC between initial readiness and durable repair, repair-first, and fully retired P before HEAD. The normal SHA-1 dedup path and a canonical SHA-256 path after physical retirement both reproduce D(P)+HEAD. The repair-first control prevents GC from establishing zero. `scripts/w2-sync-no-putblock-validation.sh` creates a unique Docker project and requires the full named-leg gate; `SESAMEFS_W24_ASSERT_SAFETY=1` is verified RED on the counterexample.
+
+See [the W2-4 investigation](W2-4-SYNC-NO-PUTBLOCK.md) and [the X1 exit row](X1-CRITICAL-PATH.md#4-w2-exit-checklist). W2-4 remains OPEN pending a focused fix and post-fix evidence. No W2-5 inference, R31 closure, or GC activation follows from this finding.
+
 ### ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01: Expired PutBlock provenance is outside the scoped HEAD guarantee
 
 **Status**: Confirmed residual follow-up (2026-09-07); not introduced by this branch
