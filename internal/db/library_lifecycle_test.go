@@ -2,13 +2,13 @@ package db
 
 import (
 	"errors"
-	"os"
-	"strings"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
