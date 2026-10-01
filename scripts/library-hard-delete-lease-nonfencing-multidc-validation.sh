@@ -34,9 +34,14 @@ done
 step() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 fail() { printf '\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
 
+PAUSED=0
+
 cleanup() {
 	local rc=$?
 	set +e
+	if [ "$PAUSED" -eq 1 ]; then
+		docker unpause "$CASSANDRA_3DC_CONTAINER_PREFIX-na" >/dev/null 2>&1 || true
+	fi
 	docker rm -f "$RUNNER" >/dev/null 2>&1 || true
 	if [ "$KEEP" -eq 0 ]; then
 		"${THREE_DC[@]}" down -v >/dev/null 2>&1 || true
@@ -142,5 +147,29 @@ echo "$output"
 require_pass "$output" TestNonfencing3DCStaleDeleteAfterRestore
 require_pass "$output" TestNonfencing3DCStaleRestoreAfterDelete
 
+run_phase() {
+	local phase="$1" output
+	if ! output="$(runner_env env NONFENCING_3DC_PHASE="$phase" \
+		go test -tags integration -count=1 ./internal/api/v2/ -run '^TestNonfencing3DCRecoveryFailsClosed$' -v 2>&1)"; then
+		echo "$output"
+		fail "3-DC recovery phase $phase failed"
+	fi
+	echo "$output"
+	require_pass "$output" TestNonfencing3DCRecoveryFailsClosed
+}
+
+step "Recovery across DCs: transitions commit in dc-na with a failed completion"
+run_phase prepare
+step "dc-na unreachable: recovery from dc-eu must fail closed, never report success"
+docker pause "$CASSANDRA_3DC_CONTAINER_PREFIX-na" >/dev/null
+PAUSED=1
+run_phase na-down
+docker unpause "$CASSANDRA_3DC_CONTAINER_PREFIX-na" >/dev/null
+PAUSED=0
+for n in na eu asia; do wait_gossip_stable "$n"; done
+for n in na eu asia; do wait_each_quorum_ready "$n"; done
+step "dc-na back: the same recovery from dc-eu converges"
+run_phase after
+
 echo
-echo "ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01 3-DC evidence passed: a stale owner in dc-na cannot delete a library restored in dc-eu or resurrect a library permanently deleted in dc-eu."
+echo "ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01 3-DC evidence passed: a stale owner in dc-na cannot delete a library restored in dc-eu or resurrect a library permanently deleted in dc-eu; recovery from dc-eu fails closed while dc-na is unreachable and converges once it is back."

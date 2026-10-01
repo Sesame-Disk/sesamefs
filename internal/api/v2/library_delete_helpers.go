@@ -51,6 +51,16 @@ var (
 		return gcpkg.ReleaseLibraryHardDeleteLockLease(database.Session(), libraryID, leaseToken)
 	}
 	hardDeleteLibraryRowsFn = func(database *dbpkg.DB, orgID, libraryID, storageClass, blockRepresentationID string, deletedAt time.Time) error {
+		// Durable continuation of the transition: the lifecycle reaper resumes the
+		// completion if this process dies after the canonical delete.
+		intent := dbpkg.LibraryLifecyclePending{
+			OrgID: orgID, LibraryID: libraryID, Operation: dbpkg.LibraryLifecycleOpPermanentDelete,
+			TargetAt: deletedAt, PrevDeletedAt: deletedAt,
+		}
+		if err := dbpkg.InsertLibraryLifecyclePending(database.Session(), intent); err != nil {
+			return errors.Join(errHardDeleteLibraryBatchExec, err)
+		}
+		intents := []dbpkg.LibraryLifecyclePending{intent}
 		// Continuation anchor: the generation's soft-delete marker exists before the
 		// canonical row can disappear, so a completion that fails below is always
 		// rediscoverable (resumeCommittedPermanentDelete, single and bulk). It repeats
@@ -60,12 +70,14 @@ var (
 			INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id)
 			VALUES (?, ?, ?, ?, ?) USING TIMESTAMP ?`,
 			libraryID, orgID, deletedAt, storageClass, blockRepresentationID, dbpkg.LibraryLifecycleWriteTimestamp(deletedAt)).Exec(); err != nil {
+			clearLibraryLifecycleIntents(database, intents) // the canonical LWT never ran
 			return errors.Join(errHardDeleteLibraryBatchExec, fmt.Errorf("write permanent-delete continuation marker: %w", err))
 		}
 		// The completion batch is built first because the admin read-model delete keys
 		// are read from the canonical row, which the fenced delete removes.
 		batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt))
 		if err := addPermanentDeleteCompletionQueries(database, batch, orgID, libraryID, storageClass, blockRepresentationID, deletedAt); err != nil {
+			clearLibraryLifecycleIntents(database, intents) // the canonical LWT never ran
 			return err
 		}
 
@@ -78,16 +90,33 @@ var (
 		if err != nil {
 			return errors.Join(errHardDeleteLibraryLifecycle, err)
 		}
-		if outcome != dbpkg.LibraryLifecycleApplied {
+		switch outcome {
+		case dbpkg.LibraryLifecycleApplied:
+		case dbpkg.LibraryLifecycleTargetAbsent:
+			// The row is already gone: a delete of this generation committed earlier
+			// (possibly from another datacenter) and may still be incomplete. Finish it
+			// rather than reporting a conflict.
+			_, _, resumed, err := resumeCommittedPermanentDelete(database, orgID, libraryID)
+			if err != nil {
+				return err
+			}
+			clearLibraryLifecycleIntents(database, intents)
+			if !resumed {
+				return errPermanentDeleteCandidateStale
+			}
+			return nil
+		default:
+			clearLibraryLifecycleIntents(database, intents)
 			return errPermanentDeleteCandidateStale
 		}
 		// Completion writes run only after this generation's canonical row is gone. A
 		// hard delete is terminal, so they cannot touch a newer generation and are
-		// idempotent. If they fail, a repeated permanent delete (single or bulk)
-		// completes them (resumeCommittedPermanentDelete).
+		// idempotent. If they fail, the reaper or a repeated permanent delete (single
+		// or bulk) completes them (resumeCommittedPermanentDelete).
 		if err := dbpkg.ExecLibraryLifecycleCompletionFn(batch); err != nil {
 			return errors.Join(errHardDeleteLibraryBatchExec, err)
 		}
+		clearLibraryLifecycleIntents(database, intents)
 		return nil
 	}
 	cleanupAllLibraryTagsForDeleteFn       = CleanupAllLibraryTags
@@ -216,8 +245,11 @@ func permanentDeleteCompletionTimestamp(deletedAt time.Time) int64 {
 func resumeCommittedPermanentDelete(database *dbpkg.DB, orgID, libraryID string) (trashLibraryCandidate, string, bool, error) {
 	var markerOrgID, storageClass, blockRepresentationID string
 	var deletedAt, purgeRequestedAt time.Time
+	// EACH_QUORUM: the marker may have been acknowledged in another datacenter; a
+	// local miss must not read as "nothing to resume", and an unreachable DC fails
+	// the resume (retry later) instead of reporting nothing to do.
 	err := database.Session().Query(`SELECT org_id, deleted_at, storage_class, block_representation_id, purge_requested_at FROM deleted_libraries WHERE library_id = ?`,
-		libraryID).Scan(&markerOrgID, &deletedAt, &storageClass, &blockRepresentationID, &purgeRequestedAt)
+		libraryID).Consistency(gocql.EachQuorum).Scan(&markerOrgID, &deletedAt, &storageClass, &blockRepresentationID, &purgeRequestedAt)
 	if errors.Is(err, gocql.ErrNotFound) {
 		return trashLibraryCandidate{}, "", false, nil
 	}
@@ -229,7 +261,7 @@ func resumeCommittedPermanentDelete(database *dbpkg.DB, orgID, libraryID string)
 	}
 	if !purgeRequestedAt.IsZero() {
 		var lookupOrgID string
-		err = database.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, libraryID).Scan(&lookupOrgID)
+		err = database.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, libraryID).Consistency(gocql.EachQuorum).Scan(&lookupOrgID)
 		if errors.Is(err, gocql.ErrNotFound) {
 			return trashLibraryCandidate{}, "", false, nil // completed
 		}
@@ -305,7 +337,7 @@ func resumeCommittedPermanentDeletes(database *dbpkg.DB, orgIDs []string) ([]res
 // a library whose canonical row is gone, for the permission check of a resumed
 // permanent delete.
 func readPermanentDeleteResumeOwner(database *dbpkg.DB, libraryID string) (orgID, ownerID string, err error) {
-	err = database.Session().Query(`SELECT org_id, owner_id FROM libraries_by_id WHERE library_id = ?`, libraryID).Scan(&orgID, &ownerID)
+	err = database.Session().Query(`SELECT org_id, owner_id FROM libraries_by_id WHERE library_id = ?`, libraryID).Consistency(gocql.EachQuorum).Scan(&orgID, &ownerID)
 	return orgID, ownerID, err
 }
 
@@ -442,6 +474,12 @@ func (h *DeletedLibraryHandler) permanentDeleteResolvedRepo(c *gin.Context, orgI
 // (resumeCommittedPermanentDelete). It reports whether it answered the request.
 func (h *DeletedLibraryHandler) resumePermanentDelete(c *gin.Context, orgID, repoID, userID string, callerRole middleware.OrganizationRole) bool {
 	lookupOrgID, ownerID, err := readPermanentDeleteResumeOwner(h.db, repoID)
+	if err != nil && !errors.Is(err, gocql.ErrNotFound) {
+		// Cannot tell whether a committed delete is waiting: fail, do not answer 404.
+		log.Printf("[PermanentDeleteRepo] cannot check for a committed permanent delete of %s/%s: %v", orgID, repoID, err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "library state unavailable, retry"})
+		return true
+	}
 	if err != nil || lookupOrgID != orgID {
 		return false
 	}

@@ -3,6 +3,7 @@
 package v2
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +59,9 @@ func nonfencingSeedTrashedLibrary(t *testing.T, db *dbpkg.DB) nonfencingLibrary 
 	return lib
 }
 
+// nonfencingKeepSeeds keeps seeded rows past the test (multi-phase 3-DC legs).
+var nonfencingKeepSeeds bool
+
 // nonfencingSeedActiveLibrary creates an active library with its lookup row.
 func nonfencingSeedActiveLibrary(t *testing.T, db *dbpkg.DB) nonfencingLibrary {
 	t.Helper()
@@ -77,6 +81,9 @@ func nonfencingSeedActiveLibrary(t *testing.T, db *dbpkg.DB) nonfencingLibrary {
 		t.Fatalf("seed libraries_by_id: %v", err)
 	}
 	t.Cleanup(func() {
+		if nonfencingKeepSeeds {
+			return
+		}
 		_ = session.Query(`DELETE FROM gc_library_hard_delete_locks WHERE library_id = ?`, lib.LibraryID).Exec()
 		_ = session.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, lib.LibraryID).Exec()
 		_ = session.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, lib.LibraryID).Exec()
@@ -1068,6 +1075,21 @@ func TestNonfencingG2FastOldCompletionSlowNewTransition(t *testing.T) {
 	assertNonfencingTrashedDerivedState(t, db, lib, d2, "NONFENCING RED: late restore completion from a fast node over a newer generation")
 }
 
+// G2b: a restore on a node an hour ahead completes; then a soft delete on a
+// node an hour behind. Its marker and trash row must not lose to the restore's
+// earlier, future-stamped marker removal.
+func TestNonfencingG2bSlowSoftDeleteAfterFastRestore(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	withLibraryLifecycleClock(t, func() time.Time { return time.Now().Add(time.Hour) })
+	if err := nonfencingRestore(db, lib); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	libraryLifecycleNow = func() time.Time { return time.Now().Add(-time.Hour) }
+	d2 := nonfencingSoftDelete(t, db, lib)
+	assertNonfencingTrashedDerivedState(t, db, lib, d2, "NONFENCING RED: slow soft delete after a fast restore")
+}
+
 // G3: the same schedule with one frozen clock (both transitions would get the
 // same client time): the lifecycle clock still orders them.
 func TestNonfencingG3EqualClockOldCompletion(t *testing.T) {
@@ -1121,11 +1143,47 @@ func simulateDeathAfterLifecycleTransition(t *testing.T, operation string) {
 	t.Cleanup(func() { afterLibraryLifecycleTransitionFn = original })
 }
 
-// G4: a soft delete whose process dies right after its canonical transition
-// leaves a durable reconciliation request; reconciling converges the counters.
+// reconcileBeforeLifecycleTransition runs the storage reconciliation and the
+// lifecycle reaper right before the canonical LWT of the given operation (R1:
+// the consumer is as early as it can be). The pending continuation must
+// survive: its transition can still apply.
+func reconcileBeforeLifecycleTransition(t *testing.T, db *dbpkg.DB, operation string) {
+	t.Helper()
+	original := beforeLibraryLifecycleTransitionFn
+	beforeLibraryLifecycleTransitionFn = func(op, libraryID string) error {
+		if op == operation {
+			if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+				t.Errorf("early reaper sweep: %v", err)
+			}
+			if _, err := gcpkg.NewCassandraStore(db).ReconcilePendingStorageCounters(); err != nil {
+				t.Errorf("early reconciliation: %v", err)
+			}
+		}
+		return original(op, libraryID)
+	}
+	t.Cleanup(func() { beforeLibraryLifecycleTransitionFn = original })
+}
+
+// nonfencingRecover runs what a later, independent pass does: the lifecycle
+// reaper, then the storage reconciliation.
+func nonfencingRecover(t *testing.T, db *dbpkg.DB) {
+	t.Helper()
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	if _, err := gcpkg.NewCassandraStore(db).ReconcilePendingStorageCounters(); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+}
+
+// G4 / R1: the storage reconciliation runs right before the canonical soft
+// delete (consuming every pending request), the process dies right after the
+// transition, and nobody retries. The continuation survives the early pass;
+// the next independent pass (reaper + reconciliation) converges the counters.
 func TestNonfencingG4SoftDeleteDeathAccountingConverges(t *testing.T) {
 	db := restoreGuardDBForTest(t)
 	lib := nonfencingSeedCountedLibrary(t, db)
+	reconcileBeforeLifecycleTransition(t, db, "soft-delete")
 	simulateDeathAfterLifecycleTransition(t, "soft-delete")
 	if err := softDeleteLibrary(db, lib.OrgID, lib.OwnerID, lib.OwnerID, lib.LibraryID); err == nil {
 		t.Fatal("expected the simulated death to surface")
@@ -1134,18 +1192,15 @@ func TestNonfencingG4SoftDeleteDeathAccountingConverges(t *testing.T) {
 		t.Fatalf("canonical soft delete did not commit: present=%v deleted_at=%v", present, deletedAt)
 	}
 	if org, user := nonfencingOrgAndUserBytes(db, lib); org != 1000 || user != 1000 {
-		t.Fatalf("setup: counters before reconciliation org=%d user=%d, want the unadjusted 1000", org, user)
+		t.Fatalf("setup: counters before recovery org=%d user=%d, want the unadjusted 1000", org, user)
 	}
-	if _, err := gcpkg.NewCassandraStore(db).ReconcilePendingStorageCounters(); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
+	nonfencingRecover(t, db)
 	if org, user := nonfencingOrgAndUserBytes(db, lib); org != 0 || user != 0 {
-		t.Fatalf("NONFENCING RED: counters after reconciliation org=%d user=%d, want 0 (library trashed)", org, user)
+		t.Fatalf("NONFENCING RED: counters after recovery org=%d user=%d, want 0 (library trashed)", org, user)
 	}
 }
 
-// G5: the same for a restore: the reconciliation request is durable before the
-// canonical restore, so the restored library is counted again.
+// G5 / R1: the same for a restore.
 func TestNonfencingG5RestoreDeathAccountingConverges(t *testing.T) {
 	db := restoreGuardDBForTest(t)
 	lib := nonfencingSeedCountedLibrary(t, db)
@@ -1153,9 +1208,7 @@ func TestNonfencingG5RestoreDeathAccountingConverges(t *testing.T) {
 	if org, user := nonfencingOrgAndUserBytes(db, lib); org != 0 || user != 0 {
 		t.Fatalf("setup: counters after soft delete org=%d user=%d, want 0", org, user)
 	}
-	if _, err := gcpkg.NewCassandraStore(db).ReconcilePendingStorageCounters(); err != nil {
-		t.Fatalf("drain earlier reconciliation requests: %v", err)
-	}
+	reconcileBeforeLifecycleTransition(t, db, "restore")
 	simulateDeathAfterLifecycleTransition(t, "restore")
 	if err := nonfencingRestore(db, lib); err == nil {
 		t.Fatal("expected the simulated death to surface")
@@ -1163,11 +1216,99 @@ func TestNonfencingG5RestoreDeathAccountingConverges(t *testing.T) {
 	if present, deletedAt := nonfencingCanonical(t, db, lib); !present || !deletedAt.IsZero() {
 		t.Fatalf("canonical restore did not commit: present=%v deleted_at=%v", present, deletedAt)
 	}
-	if _, err := gcpkg.NewCassandraStore(db).ReconcilePendingStorageCounters(); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
+	nonfencingRecover(t, db)
 	if org, user := nonfencingOrgAndUserBytes(db, lib); org != 1000 || user != 1000 {
-		t.Fatalf("NONFENCING RED: counters after reconciliation org=%d user=%d, want 1000 (library active)", org, user)
+		t.Fatalf("NONFENCING RED: counters after recovery org=%d user=%d, want 1000 (library active)", org, user)
+	}
+}
+
+// R5: a soft delete whose process dies right after the canonical transition,
+// with no second request: the independent reaper pass rebuilds its marker and
+// read model, so trash retention (Phase 13) discovers the library.
+func TestNonfencingR5SoftDeleteDeathRecoveredByReaper(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedActiveLibrary(t, db)
+	simulateDeathAfterLifecycleTransition(t, "soft-delete")
+	if err := softDeleteLibrary(db, lib.OrgID, lib.OwnerID, lib.OwnerID, lib.LibraryID); err == nil {
+		t.Fatal("expected the simulated death to surface")
+	}
+	_, d := nonfencingCanonical(t, db, lib)
+	if marker := nonfencingReadMarker(t, db, lib); marker.Present {
+		t.Fatalf("setup: marker written before the simulated death: %+v", marker)
+	}
+	afterLibraryLifecycleTransitionFn = func(string, string) error { return nil }
+
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	assertNonfencingTrashedDerivedState(t, db, lib, d, "NONFENCING RED: reaper after a soft delete died")
+	expired, err := gcpkg.NewCassandraStore(db).ListExpiredDeletedLibraries(0)
+	if err != nil {
+		t.Fatalf("phase 13 listing: %v", err)
+	}
+	found := false
+	for _, e := range expired {
+		if e.LibraryID.String() == lib.LibraryID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("NONFENCING RED: Phase 13 does not discover the trashed library")
+	}
+}
+
+// R2: a soft delete on a node an hour ahead pushes the lifecycle clock ahead;
+// the restore that follows on a normal node inherits it. Ordinary writers on a
+// normal clock (an owner transfer) must still win in every read model.
+func TestNonfencingR2LifecycleClockDoesNotPoisonOrdinaryWrites(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedActiveLibrary(t, db)
+	withLibraryLifecycleClock(t, func() time.Time { return time.Now().Add(time.Hour) })
+	lib.DeletedAt = nonfencingSoftDelete(t, db, lib)
+	libraryLifecycleNow = time.Now
+	if err := nonfencingRestore(db, lib); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	newOwner := uuid.NewString()
+	if err := updateLibraryOwner(db, lib.OrgID, lib.LibraryID, newOwner, time.Now().UTC()); err != nil {
+		t.Fatalf("transfer: %v", err)
+	}
+	var count int
+	if err := db.Session().Query(`SELECT COUNT(*) FROM libraries_by_owner WHERE org_id = ? AND owner_id = ? AND library_id = ?`, lib.OrgID, lib.OwnerID, lib.LibraryID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("NONFENCING RED: old owner still lists the library (rows=%d, err=%v)", count, err)
+	}
+	if err := db.Session().Query(`SELECT COUNT(*) FROM libraries_by_owner WHERE org_id = ? AND owner_id = ? AND library_id = ?`, lib.OrgID, newOwner, lib.LibraryID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("new owner does not list the library (rows=%d, err=%v)", count, err)
+	}
+}
+
+// R6: a trash listing row of an old generation that reappears late (for example
+// a delayed write from another datacenter) is dropped by the admin trash
+// reconciliation, which keeps only the current generation's row.
+func TestNonfencingR6LateOldGenerationTrashRowIsReconciled(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	d1 := lib.DeletedAt
+	if err := nonfencingRestore(db, lib); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	d2 := nonfencingSoftDelete(t, db, lib)
+	if err := db.Session().Query(`INSERT INTO libraries_deleted_by_org (org_id, deleted_at, library_id, owner_id, name) VALUES (?, ?, ?, ?, ?)`,
+		lib.OrgID, d1, lib.LibraryID, lib.OwnerID, "late").Exec(); err != nil {
+		t.Fatalf("late D1 row: %v", err)
+	}
+	kept, _, err := dbpkg.ReconcileDeletedAdminLibraryRowsByOrg(db.Session(), lib.OrgID)
+	if err != nil {
+		t.Fatalf("reconcile trash listing: %v", err)
+	}
+	for _, row := range kept {
+		if row.LibraryID == lib.LibraryID && !row.DeletedAt.Equal(d2) {
+			t.Fatalf("NONFENCING RED: trash listing kept generation %s next to the current %s", row.DeletedAt, d2)
+		}
+	}
+	if rows := nonfencingTrashRows(t, db, lib); len(rows) != 1 || !rows[0].Equal(d2) {
+		t.Fatalf("trash rows after reconciliation = %v, want only %s", rows, d2)
 	}
 }
 

@@ -2,6 +2,8 @@ package db
 
 import (
 	"errors"
+	"os"
+	"strings"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -41,7 +43,7 @@ func TestLibraryLifecycleFencePinsGlobalSerial(t *testing.T) {
 		{name: "RestoreTrashedLibraryGeneration", domain: "LibraryHeadSerialConsistency", lwts: 1},
 		{name: "readLibraryDeletedAtSerial", domain: "LibraryHeadSerialConsistency", serial: 1},
 		{name: "ReadLibraryLifecycleSerial", domain: "LibraryHeadSerialConsistency", serial: 1},
-		{name: "SoftDeleteLibraryGeneration", domain: "LibraryHeadSerialConsistency", lwts: 1},
+		{name: "SoftDeleteLibraryGenerationWithIntent", domain: "LibraryHeadSerialConsistency", lwts: 1},
 	} {
 		var decl *ast.FuncDecl
 		for _, d := range file.Decls {
@@ -194,5 +196,31 @@ func TestNextLibraryLifecycleAt(t *testing.T) {
 	}
 	if got := NextLibraryLifecycleAt(base, base.Add(time.Second)); !got.Equal(base.Add(time.Second)) {
 		t.Fatalf("clock ahead = %s, want now", got)
+	}
+}
+
+// Recovery takes the canonical row at SERIAL and the trash listing at
+// EACH_QUORUM, so a state another datacenter acknowledged is never read as
+// "nothing to repair".
+func TestLibraryLifecycleRepairReadsAreStrong(t *testing.T) {
+	const reason = "lifecycle recovery no longer reads at a strength that sees other datacenters"
+	raw, err := os.ReadFile("library_lifecycle.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	i := strings.Index(src, "func RepairLibraryLifecycleDerivedState(")
+	j := strings.Index(src[i+1:], "\nfunc ")
+	repair := src[i : i+1+j]
+	if !strings.Contains(repair, "readCanonicalLibraryRowSerial(") || !strings.Contains(repair, "ListDeletedAdminLibraryRowsByOrgEachQuorum(") || strings.Contains(repair, "ListDeletedAdminLibraryRowsByOrg(") {
+		t.Errorf("%s: RepairLibraryLifecycleDerivedState must read the canonical row at SERIAL and the trash listing at EACH_QUORUM", reason)
+	}
+	read, err := os.ReadFile("admin_library_read_models.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := strings.Index(string(read), "func ListDeletedAdminLibraryRowsByOrgEachQuorum(")
+	if k < 0 || !strings.Contains(string(read)[k:k+600], ".Consistency(gocql.EachQuorum)") {
+		t.Errorf("%s: ListDeletedAdminLibraryRowsByOrgEachQuorum is not EACH_QUORUM", reason)
 	}
 }

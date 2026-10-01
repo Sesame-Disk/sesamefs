@@ -152,25 +152,26 @@ func (s *clientSSOStore) cleanupLoop() {
 
 // Server represents the HTTP API server
 type Server struct {
-	config                *config.Config
-	downloadAdmission     *downloadadmission.Coordinator
-	db                    *db.DB
-	storage               *storage.S3Store // Legacy single S3 store
-	storageManager        *storage.Manager // Multi-backend storage manager
-	tokenStore            TokenStore
-	permMiddleware        *middleware.PermissionMiddleware
-	authHandler           *v2.AuthHandler           // OIDC authentication handler
-	gcService             *gc.Service               // Garbage collection service
-	ssoStore              *clientSSOStore           // Pending desktop-client SSO tokens
-	authRateLimiter       *middleware.RateLimiter   // Per-IP rate limiter for auth endpoints
-	shareLinkRateLimiter  *middleware.RateLimiter   // Per-IP rate limiter for public share-link endpoints
-	zipRateLimiter        *middleware.RateLimiter   // Per-IP rate limiter for streamed ZIP downloads
-	seafHTTPHandler       *SeafHTTPHandler          // Held only so Shutdown can stop the limiters it owns
-	apiKeyManager         *apikeys.Manager          // API key manager for programmatic auth
-	libraryRollbackReaper *v2.LibraryRollbackReaper // Crash-recovery of new-library rollback cleanup
-	version               string                    // Build version string
-	router                *gin.Engine
-	server                *http.Server
+	config                 *config.Config
+	downloadAdmission      *downloadadmission.Coordinator
+	db                     *db.DB
+	storage                *storage.S3Store // Legacy single S3 store
+	storageManager         *storage.Manager // Multi-backend storage manager
+	tokenStore             TokenStore
+	permMiddleware         *middleware.PermissionMiddleware
+	authHandler            *v2.AuthHandler            // OIDC authentication handler
+	gcService              *gc.Service                // Garbage collection service
+	ssoStore               *clientSSOStore            // Pending desktop-client SSO tokens
+	authRateLimiter        *middleware.RateLimiter    // Per-IP rate limiter for auth endpoints
+	shareLinkRateLimiter   *middleware.RateLimiter    // Per-IP rate limiter for public share-link endpoints
+	zipRateLimiter         *middleware.RateLimiter    // Per-IP rate limiter for streamed ZIP downloads
+	seafHTTPHandler        *SeafHTTPHandler           // Held only so Shutdown can stop the limiters it owns
+	apiKeyManager          *apikeys.Manager           // API key manager for programmatic auth
+	libraryRollbackReaper  *v2.LibraryRollbackReaper  // Crash-recovery of new-library rollback cleanup
+	libraryLifecycleReaper *v2.LibraryLifecycleReaper // Completion of library lifecycle transitions after a crash
+	version                string                     // Build version string
+	router                 *gin.Engine
+	server                 *http.Server
 }
 
 var errLegacyS3NotConfigured = errors.New("legacy S3 storage not configured")
@@ -274,24 +275,26 @@ func NewServer(cfg *config.Config, database *db.DB, version string) *Server {
 	}
 	v2.StartPublishedBlockReferenceRepairer(database)
 	libraryRollbackReaper := v2.StartLibraryRollbackReaper(database)
+	libraryLifecycleReaper := v2.StartLibraryLifecycleReaper(database)
 
 	s := &Server{
-		config:                cfg,
-		db:                    database,
-		storage:               s3Store,
-		storageManager:        storageManager,
-		tokenStore:            tokenStore,
-		permMiddleware:        permMiddleware,
-		authHandler:           authHandler,
-		gcService:             gcService,
-		ssoStore:              newClientSSOStore(),
-		authRateLimiter:       authRL,
-		shareLinkRateLimiter:  shareLinkRL,
-		zipRateLimiter:        zipRL,
-		apiKeyManager:         apiKeyManager,
-		libraryRollbackReaper: libraryRollbackReaper,
-		version:               version,
-		router:                router,
+		config:                 cfg,
+		db:                     database,
+		storage:                s3Store,
+		storageManager:         storageManager,
+		tokenStore:             tokenStore,
+		permMiddleware:         permMiddleware,
+		authHandler:            authHandler,
+		gcService:              gcService,
+		ssoStore:               newClientSSOStore(),
+		authRateLimiter:        authRL,
+		shareLinkRateLimiter:   shareLinkRL,
+		zipRateLimiter:         zipRL,
+		apiKeyManager:          apiKeyManager,
+		libraryRollbackReaper:  libraryRollbackReaper,
+		libraryLifecycleReaper: libraryLifecycleReaper,
+		version:                version,
+		router:                 router,
 	}
 	s.initializeDownloadAdmissionCoordinator()
 
@@ -2078,6 +2081,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.authHandler != nil && s.authHandler.GetOIDCClient() != nil {
 		s.authHandler.GetOIDCClient().StopStateSweeper()
+	}
+	if s.libraryLifecycleReaper != nil {
+		s.libraryLifecycleReaper.StopWithContext(ctx)
 	}
 	if s.libraryRollbackReaper != nil {
 		s.libraryRollbackReaper.StopWithContext(ctx)

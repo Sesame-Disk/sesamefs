@@ -165,6 +165,25 @@ func AddRefreshAdminLibraryReadModelQueries(batch *gocql.Batch, row AdminLibrary
 }
 
 func AddUpsertAdminLibraryReadModelQuery(batch *gocql.Batch, row AdminLibraryProjectionRow) {
+	AddUpsertAdminLibraryActiveRowsQuery(batch, row)
+	AddInsertDeletedAdminLibraryRowQuery(batch, row)
+}
+
+// AddInsertDeletedAdminLibraryRowQuery adds the org trash listing row of a
+// trashed library (no-op for an active one).
+func AddInsertDeletedAdminLibraryRowQuery(batch *gocql.Batch, row AdminLibraryProjectionRow) {
+	if row.DeletedAt != nil && !row.DeletedAt.IsZero() {
+		batch.Query(`
+			INSERT INTO libraries_deleted_by_org (
+				org_id, deleted_at, library_id, owner_id, owner_email, owner_name, name, encrypted, size_bytes
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, row.OrgID, *row.DeletedAt, row.LibraryID, row.OwnerID, row.OwnerEmail, row.OwnerName, row.Name, row.Encrypted, row.SizeBytes)
+	}
+}
+
+// AddUpsertAdminLibraryActiveRowsQuery adds the owner, org and global read-model
+// rows (every column, including deleted_at), but not the trash listing row.
+func AddUpsertAdminLibraryActiveRowsQuery(batch *gocql.Batch, row AdminLibraryProjectionRow) {
 	bucketDay := AdminLibraryBucketDay(row.CreatedAt)
 	batch.Query(`INSERT INTO library_admin_global_buckets (bucket_day) VALUES (?)`, bucketDay)
 	batch.Query(`
@@ -201,13 +220,6 @@ func AddUpsertAdminLibraryReadModelQuery(batch *gocql.Batch, row AdminLibraryPro
 			DELETE deleted_at FROM libraries_admin_global_by_updated
 			WHERE bucket_day = ? AND org_id = ? AND library_id = ?
 		`, bucketDay, row.OrgID, row.LibraryID)
-	}
-	if row.DeletedAt != nil && !row.DeletedAt.IsZero() {
-		batch.Query(`
-			INSERT INTO libraries_deleted_by_org (
-				org_id, deleted_at, library_id, owner_id, owner_email, owner_name, name, encrypted, size_bytes
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, row.OrgID, *row.DeletedAt, row.LibraryID, row.OwnerID, row.OwnerEmail, row.OwnerName, row.Name, row.Encrypted, row.SizeBytes)
 	}
 }
 
@@ -384,11 +396,26 @@ func ListAdminOwnerLibraryRows(session *gocql.Session, orgID, ownerID string) ([
 }
 
 func ListDeletedAdminLibraryRowsByOrg(session *gocql.Session, orgID string) ([]AdminDeletedLibraryProjectionRow, error) {
-	iter := session.Query(`
+	return listDeletedAdminLibraryRowsByOrg(session.Query(`
 		SELECT deleted_at, library_id, owner_id, owner_email, owner_name, name, encrypted, size_bytes
 		FROM libraries_deleted_by_org
 		WHERE org_id = ?
-	`, orgID).Iter()
+	`, orgID), session, orgID)
+}
+
+// ListDeletedAdminLibraryRowsByOrgEachQuorum is ListDeletedAdminLibraryRowsByOrg
+// read at EACH_QUORUM, so it sees a row acknowledged at LOCAL_QUORUM in any
+// datacenter (and fails, instead of missing it, when a DC is unreachable).
+func ListDeletedAdminLibraryRowsByOrgEachQuorum(session *gocql.Session, orgID string) ([]AdminDeletedLibraryProjectionRow, error) {
+	return listDeletedAdminLibraryRowsByOrg(session.Query(`
+		SELECT deleted_at, library_id, owner_id, owner_email, owner_name, name, encrypted, size_bytes
+		FROM libraries_deleted_by_org
+		WHERE org_id = ?
+	`, orgID).Consistency(gocql.EachQuorum), session, orgID)
+}
+
+func listDeletedAdminLibraryRowsByOrg(query *gocql.Query, session *gocql.Session, orgID string) ([]AdminDeletedLibraryProjectionRow, error) {
+	iter := query.Iter()
 
 	var rows []AdminDeletedLibraryProjectionRow
 	var row AdminDeletedLibraryProjectionRow
@@ -443,7 +470,9 @@ func ReconcileDeletedAdminLibraryRowsByOrg(session *gocql.Session, orgID string)
 
 	for _, row := range rows {
 		liveRow, err := ReadAdminLibraryProjectionRow(session, row.OrgID, row.LibraryID)
-		if err == nil && liveRow.DeletedAt != nil && !liveRow.DeletedAt.IsZero() {
+		// Keep only the row of the library's current trash generation: a row of an
+		// older generation (restored and trashed again) is stale too.
+		if err == nil && liveRow.DeletedAt != nil && liveRow.DeletedAt.Equal(row.DeletedAt) {
 			kept = append(kept, row)
 			continue
 		}

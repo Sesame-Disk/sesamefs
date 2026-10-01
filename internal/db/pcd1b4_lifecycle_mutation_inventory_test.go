@@ -78,7 +78,7 @@ var pcd1b4ExpectedLifecycleStatements = []pcd1b4LifecycleSite{
 	// AND created_at != null`, reached from softDeleteLibrary (API) and
 	// CassandraStore.SoftDeleteLibrary (GC). It does not remove any certified
 	// dependency.
-	{path: "internal/db/library_lifecycle.go", decl: "SoftDeleteLibraryGeneration", kind: pcd1b4SoftDelete, role: pcd1b4NoChange},
+	{path: "internal/db/library_lifecycle.go", decl: "SoftDeleteLibraryGenerationWithIntent", kind: pcd1b4SoftDelete, role: pcd1b4NoChange},
 	// Restore: global-SERIAL LWT `SET deleted_at = null IF deleted_at = ?`
 	// (reached from restoreDeletedLibrary under the hard-delete lease). HEAD
 	// and the tree are untouched; any destroyer that ran during trash already

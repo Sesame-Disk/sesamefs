@@ -5826,27 +5826,47 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 	}
 
 	now := time.Now().UTC()
-	// Protocol (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01): the storage reconciliation
-	// request is durable before the canonical transition; the transition is a
-	// global-SERIAL LWT creating a unique trash generation; the derived writes carry
-	// the generation's lifecycle timestamp.
-	reconcile := s.db.Session().Batch(gocql.LoggedBatch)
-	traffic.AddAggregateStorageReconciliationQueries(reconcile, orgID.String(), ownerID, now)
-	if err := reconcile.Exec(); err != nil {
-		return fmt.Errorf("request storage reconciliation for %s: %w", libraryID, err)
-	}
-	deletedAt, outcome, casErr := db.SoftDeleteLibraryGeneration(s.db.Session(), orgID.String(), libraryID.String(), deletedBy.String(), now)
+	// Protocol (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01), as in the API soft delete:
+	// durable continuation, global-SERIAL LWT creating a unique trash generation,
+	// counter adjustment, completion (lifecycle-owned rows at the generation's
+	// lifecycle timestamp, ordinary rows and the reconciliation request at the
+	// client timestamp), SERIAL re-check, then the continuation is cleared. The
+	// API lifecycle reaper finishes it after a crash.
+	session := s.db.Session()
+	var intents []db.LibraryLifecyclePending
+	deletedAt, outcome, casErr := db.SoftDeleteLibraryGenerationWithIntent(session, orgID.String(), libraryID.String(), deletedBy.String(), now,
+		func(previous db.LibraryLifecycleState, target time.Time) error {
+			intent := db.LibraryLifecyclePending{
+				OrgID: orgID.String(), LibraryID: libraryID.String(), Operation: db.LibraryLifecycleOpSoftDelete,
+				TargetAt: target, OwnerID: ownerID, PrevLifecycleAt: previous.LifecycleAt,
+			}
+			if err := db.InsertLibraryLifecyclePending(session, intent); err != nil {
+				return err
+			}
+			intents = append(intents, intent)
+			return nil
+		})
 	if casErr != nil {
 		return casErr
 	}
+	clearIntents := func() {
+		for _, intent := range intents {
+			if err := db.DeleteLibraryLifecyclePending(session, intent); err != nil {
+				log.Printf("[gc] %v", err)
+			}
+		}
+	}
+	repair := func() string { return blockRepresentationID }
 	switch outcome {
 	case db.LibraryLifecycleApplied:
 	case db.LibraryLifecycleGenerationChanged:
 		// Already in the trash (a user delete, or a previous cascade pass whose
 		// completion failed): keep that generation and rewrite its full derived state
-		// (marker and read model) from the canonical row.
-		return db.RepairLibraryLifecycleDerivedState(s.db.Session(), orgID.String(), libraryID.String(), func() string { return blockRepresentationID })
+		// from the canonical row.
+		clearIntents()
+		return db.RepairLibraryLifecycleDerivedState(session, orgID.String(), libraryID.String(), repair)
 	default:
+		clearIntents()
 		return nil // gone: nothing left to soft-delete
 	}
 
@@ -5855,19 +5875,32 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 		traffic.AdjustAggregateStorageCounters(s.db, orgID.String(), ownerID, libraryID.String(), false)
 	}
 
-	batch := s.db.Session().Batch(gocql.LoggedBatch).WithTimestamp(db.LibraryLifecycleWriteTimestamp(deletedAt))
-	batch.Query(`
-		INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id) VALUES (?, ?, ?, ?, ?)
-	`, libraryID.String(), orgID.String(), deletedAt, storageClass, blockRepresentationID)
-	if err == nil {
-		nextRow := previousRow
-		nextRow.UpdatedAt = deletedAt
-		nextRow.DeletedAt = &deletedAt
-		db.AddRefreshAdminLibraryReadModelQueries(batch, nextRow, &previousRow)
+	nextRow := previousRow
+	nextRow.OrgID, nextRow.LibraryID = orgID.String(), libraryID.String()
+	nextRow.StorageClass = storageClass
+	nextRow.UpdatedAt = deletedAt
+	nextRow.DeletedAt = &deletedAt
+	lifecycle := session.Batch(gocql.LoggedBatch).WithTimestamp(db.LibraryLifecycleWriteTimestamp(deletedAt))
+	if err := db.AddTrashedLifecycleOwnedQueries(lifecycle, nextRow, blockRepresentationID, nil); err != nil {
+		return err
 	}
-	// On failure the cascade retries: the canonical row is then already trashed and
-	// RepairLibraryLifecycleDerivedState rewrites the marker and read model.
-	return db.ExecLibraryLifecycleCompletionFn(batch)
+	active := session.Batch(gocql.LoggedBatch)
+	traffic.AddAggregateStorageReconciliationQueries(active, orgID.String(), ownerID, now)
+	if err == nil {
+		db.AddUpsertAdminLibraryActiveRowsQuery(active, nextRow)
+	}
+	// On failure the continuation stays: the lifecycle reaper (or the cascade's
+	// retry, through RepairLibraryLifecycleDerivedState) completes it.
+	for _, batch := range []*gocql.Batch{lifecycle, active} {
+		if err := db.ExecLibraryLifecycleCompletionFn(batch); err != nil {
+			return err
+		}
+	}
+	if err := db.VerifyLibraryLifecycleCompletion(session, orgID.String(), libraryID.String(), deletedAt, repair); err != nil {
+		return err
+	}
+	clearIntents()
+	return nil
 }
 
 func (s *CassandraStore) ListGroupMembershipsByUser(orgID, userID uuid.UUID) ([]uuid.UUID, error) {

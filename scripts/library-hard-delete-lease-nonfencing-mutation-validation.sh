@@ -38,7 +38,7 @@ env_args=()
 docker run -d --name "$RUNNER" --network "$NETWORK" "${env_args[@]}" -e CASSANDRA_HOSTS=cassandra:9042 -e GOFLAGS=-buildvcs=false "$IMAGE" sleep 3600 >/dev/null ||
 	fail "could not start Docker Go test runner"
 
-INTEGRATION_TESTS='^(TestNonfencingT[0-9].*|TestNonfencingG[0-9].*|TestNonfencingGCHardDeleteLibraryIsGenerationFenced|TestNonfencingSoftDelete.*|TestNonfencingPermanentDelete.*)$'
+INTEGRATION_TESTS='^(TestNonfencingT[0-9].*|TestNonfencingG[0-9].*|TestNonfencingR[0-9].*|TestNonfencingGCHardDeleteLibraryIsGenerationFenced|TestNonfencingSoftDelete.*|TestNonfencingPermanentDelete.*)$'
 STATIC_TESTS='^(TestLibraryLifecycleFencePinsGlobalSerial|TestPC0HeadSerialDomainPinsGlobalSerial)$'
 
 run_tests() {
@@ -120,8 +120,8 @@ mutate 'M7 GC no longer clears the marker a stopped restore left' internal/gc/st
 WH=internal/api/v2/write_helpers.go
 DH=internal/api/v2/library_delete_helpers.go
 
-mutate 'M8 soft delete reverted to a plain client-timestamp write' "$WH" \
-	's{deletedAt, outcome, err := dbpkg\.SoftDeleteLibraryGeneration\(db\.Session\(\), orgID, libraryID, deletedBy, now\)}{deletedAt, outcome, err := now.Truncate(time.Millisecond), dbpkg.LibraryLifecycleApplied, db.Session().Query(`UPDATE libraries USING TIMESTAMP ? SET deleted_at = ?, deleted_by = ?, updated_at = ? WHERE org_id = ? AND library_id = ?`, now.UnixMicro(), now, deletedBy, now, orgID, libraryID).Exec()}' \
+mutate 'M8 soft delete reverted to a plain client-timestamp write' internal/db/library_lifecycle.go \
+	's{applied, err := session\.Query\(`\n\t\t\tUPDATE libraries SET deleted_at = \?, deleted_by = \?, updated_at = \?, lifecycle_at = \?\n\t\t\tWHERE org_id = \? AND library_id = \?\n\t\t\tIF deleted_at = null AND created_at != null AND lifecycle_at = \?\n\t\t`, deletedAt, deletedBy, deletedAt, deletedAt, orgID, libraryID, previousLifecycleAt\)\.\n\t\t\tSerialConsistency\(LibraryHeadSerialConsistency\)\.\n\t\t\tMapScanCAS\(previous\)}{_ = previousLifecycleAt\n\t\terr = session.Query(`UPDATE libraries USING TIMESTAMP ? SET deleted_at = ?, deleted_by = ?, updated_at = ?, lifecycle_at = ? WHERE org_id = ? AND library_id = ?`, now.UnixMicro(), deletedAt, deletedBy, deletedAt, deletedAt, orgID, libraryID).Exec()\n\t\tapplied := err == nil}' \
 	./internal/api/v2 '^TestNonfencingSoftDeleteAfterRestoreWithClientClockBehind$' '-tags integration' \
 	'soft delete after a restore lost with the client clock behind'
 
@@ -130,10 +130,10 @@ mutate 'M9 lifecycle clock not advanced past the previous generation' internal/d
 	./internal/api/v2 '^TestNonfencingG1SameMillisecondGenerations$' '-tags integration' \
 	'is not after the first'
 
-mutate 'M10 soft-delete completion stamped with the client clock' "$WH" \
+mutate 'M10 soft-delete lifecycle rows stamped with the client clock' "$WH" \
 	's{WithTimestamp\(dbpkg\.LibraryLifecycleWriteTimestamp\(deletedAt\)\)}{WithTimestamp(deletedAt.UnixMicro() - deletedAt.UnixMicro() + now.UnixMicro())}' \
-	./internal/api/v2 '^TestNonfencingG2FastOldCompletionSlowNewTransition$' '-tags integration' \
-	'late restore completion from a fast node over a newer generation'
+	./internal/api/v2 '^TestNonfencingG2bSlowSoftDeleteAfterFastRestore$' '-tags integration' \
+	'slow soft delete after a fast restore'
 
 mutate 'M11 permanent delete cannot be resumed' "$DH" \
 	's{(func resumeCommittedPermanentDelete\([^\n]*\n)}{$1\treturn trashLibraryCandidate{}, "", false, nil\n}' \
@@ -145,16 +145,6 @@ mutate 'M12 repair no longer rewrites the derived state' internal/db/library_lif
 	./internal/api/v2 '^TestNonfencingSoftDeleteCompletionFailureRepairedOnRepeat$' '-tags integration' \
 	'repair marker ='
 
-mutate 'M13 soft-delete reconciliation request no longer precedes the transition' "$WH" \
-	's{\tif err := requestStorageReconciliation\(db, orgID, ownerID, now\); err != nil \{\n\t\treturn err\n\t\}\n\tdeletedAt, outcome}{\tdeletedAt, outcome}' \
-	./internal/api/v2 '^TestNonfencingG4SoftDeleteDeathAccountingConverges$' '-tags integration' \
-	'counters after reconciliation'
-
-mutate 'M14 restore reconciliation request no longer precedes the transition' "$WH" \
-	's{\tif err := requestStorageReconciliation\(db, orgID, ownerID, now\); err != nil \{\n\t\treturn err\n\t\}\n\trestoredAt, outcome}{\trestoredAt, outcome}' \
-	./internal/api/v2 '^TestNonfencingG5RestoreDeathAccountingConverges$' '-tags integration' \
-	'counters after reconciliation'
-
 mutate 'M15 permanent delete without its continuation marker' "$DH" \
 	's{libraryID, orgID, deletedAt, storageClass, blockRepresentationID, dbpkg\.LibraryLifecycleWriteTimestamp\(deletedAt\)\)\.Exec\(\)}{uuid.NewString(), orgID, deletedAt, storageClass, blockRepresentationID, dbpkg.LibraryLifecycleWriteTimestamp(deletedAt)).Exec()}' \
 	./internal/api/v2 '^TestNonfencingG7MissingMarkerPermanentDeleteResumes$' '-tags integration' \
@@ -165,13 +155,13 @@ mutate 'M16 bulk clean does not resume committed deletes' internal/api/v2/org_ad
 	./internal/api/v2 '^TestNonfencingG6BulkCleanResumesCommittedDelete$' '-tags integration' \
 	'repeated bulk clean left libraries_by_id'
 
-mutate 'M17 repair does not rewrite the marker' internal/db/library_lifecycle.go \
-	's{\tbatch\.Query\(`\n\t\tINSERT INTO deleted_libraries \(library_id, org_id, deleted_at, storage_class, block_representation_id\)\n\t\tVALUES \(\?, \?, \?, \?, \?\)`,\n\t\trow\.LibraryID, row\.OrgID, \*row\.DeletedAt, row\.StorageClass, blockRepresentationID\)\n}{\t_ = blockRepresentationID\n}' \
+mutate 'M17 repair does not rewrite the lifecycle-owned rows' internal/db/library_lifecycle.go \
+	's{if err := AddTrashedLifecycleOwnedQueries\(lifecycle, row, resolveBlockRepresentation\(\), trashRows\); err != nil \{}{if err := error(nil); err != nil \{}' \
 	./internal/api/v2 '^TestNonfencingG8StaleMarkerRepairedToCurrentGeneration$' '-tags integration' \
 	'repair after a stale marker'
 
 mutate 'M18 GC soft-delete retry only checks the marker' internal/gc/store_cassandra.go \
-	's{return db\.RepairLibraryLifecycleDerivedState\(s\.db\.Session\(\), orgID\.String\(\), libraryID\.String\(\), func\(\) string \{ return blockRepresentationID \}\)}{return nil}' \
+	's{return db\.RepairLibraryLifecycleDerivedState\(session, orgID\.String\(\), libraryID\.String\(\), repair\)}{return nil}' \
 	./internal/api/v2 '^TestNonfencingG9GCSoftDeleteRetryCompletesDerivedState$' '-tags integration' \
 	'GC soft delete retry'
 
@@ -179,5 +169,35 @@ mutate 'M4d soft-delete fence downgraded to LOCAL_SERIAL' internal/db/library_li
 	's{(IF deleted_at = null AND created_at != null AND lifecycle_at = \?\s*`, deletedAt, deletedBy, deletedAt, deletedAt, orgID, libraryID, previousLifecycleAt\)\.\s*)SerialConsistency\(LibraryHeadSerialConsistency\)}{$1SerialConsistency(gocql.LocalSerial)}' \
 	./internal/db '^TestLibraryLifecycleFencePinsGlobalSerial$' '' \
 	'library lifecycle fence no longer pins global SERIAL'
+
+mutate 'M13 reaper drops a continuation whose transition can still apply' internal/db/library_lifecycle_pending.go \
+	's{(func \(p LibraryLifecyclePending\) CanStillApply\(state LibraryLifecycleState\) bool \{\n)}{$1\treturn false\n}' \
+	./internal/api/v2 '^TestNonfencingG4SoftDeleteDeathAccountingConverges$' '-tags integration' \
+	'counters after recovery'
+
+mutate 'M14 soft delete without a durable continuation' "$WH" \
+	's{if err := dbpkg\.InsertLibraryLifecyclePending\(db\.Session\(\), intent\); err != nil \{}{if err := error(nil); err != nil \{}' \
+	./internal/api/v2 '^TestNonfencingR5SoftDeleteDeathRecoveredByReaper$' '-tags integration' \
+	'reaper after a soft delete died'
+
+mutate 'M19 completion not re-checked against the canonical lifecycle' "$WH" \
+	's{if err := dbpkg\.VerifyLibraryLifecycleCompletion\([^\n]*\); err != nil \{}{if err := error(nil); err != nil \{}' \
+	./internal/api/v2 '^TestNonfencingG2FastOldCompletionSlowNewTransition$' '-tags integration' \
+	'late restore completion from a fast node over a newer generation'
+
+mutate 'M20 ordinary read-model rows stamped with the lifecycle clock' "$WH" \
+	's{active := db\.Session\(\)\.Batch\(gocql\.LoggedBatch\)\n(\tdbpkg\.AddUpsertAdminLibraryActiveRowsQuery\(active, nextRow\)\n\ttraffic\.AddAggregateStorageReconciliationQueries\(active, orgID, ownerID, now\)\n\tif err := completeLibraryLifecycleTransition\(db, orgID, libraryID, restoredAt)}{active := db.Session().Batch(gocql.LoggedBatch).WithTimestamp(dbpkg.LibraryLifecycleWriteTimestamp(restoredAt))\n$1}' \
+	./internal/api/v2 '^TestNonfencingR2LifecycleClockDoesNotPoisonOrdinaryWrites$' '-tags integration' \
+	'old owner still lists the library'
+
+mutate 'M21 permanent-delete resume reads its marker at session consistency' "$DH" \
+	's{libraryID\)\.Consistency\(gocql\.EachQuorum\)\.Scan\(&markerOrgID}{libraryID).Scan(\&markerOrgID}' \
+	./internal/api/v2 '^TestLibraryLifecycleRecoveryReadsAreStrong$' '' \
+	'lifecycle recovery no longer reads at a strength that sees other datacenters'
+
+mutate 'M22 repair reads the trash listing at session consistency' internal/db/library_lifecycle.go \
+	's{trashRows, err := ListDeletedAdminLibraryRowsByOrgEachQuorum\(session, orgID\)}{trashRows, err := ListDeletedAdminLibraryRowsByOrg(session, orgID)}' \
+	./internal/db '^TestLibraryLifecycleRepairReadsAreStrong$' '' \
+	'lifecycle recovery no longer reads at a strength that sees other datacenters'
 
 green "All $count NONFENCING mutations went RED for their own reason."

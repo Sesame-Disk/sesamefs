@@ -3,6 +3,8 @@
 package v2
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -151,4 +153,93 @@ func TestNonfencing3DCStaleRestoreAfterDelete(t *testing.T) {
 	if errA == nil {
 		t.Fatal("stale dc-na restore reported success")
 	}
+}
+
+// R3/R4: a lifecycle transition commits in dc-na and its completion fails;
+// recovery runs from dc-eu. While dc-na is unreachable (the harness pauses its
+// node between phases), recovery must fail rather than report success, since
+// derived rows written only in dc-na cannot be observed; once dc-na is back the
+// same recovery converges. Phases share state through a file.
+const nonfencing3DCPhaseEnv = "NONFENCING_3DC_PHASE"
+
+type nonfencing3DCRecoveryState struct {
+	SoftDeleted, Restored, Purged nonfencingLibrary
+}
+
+const nonfencing3DCStateFile = "/tmp/nonfencing-3dc-recovery.json"
+
+func TestNonfencing3DCRecoveryFailsClosed(t *testing.T) {
+	phase := os.Getenv(nonfencing3DCPhaseEnv)
+	if phase == "" {
+		t.Skip(nonfencing3DCPhaseEnv + " is not set (run by the 3-DC harness)")
+	}
+	eu := nonfencing3DCConnect(t, "dc-eu", "LOCAL_QUORUM", "LOCAL_SERIAL")
+	switch phase {
+	case "prepare":
+		na := nonfencing3DCConnect(t, "dc-na", "LOCAL_QUORUM", "LOCAL_SERIAL")
+		nonfencingKeepSeeds = true // later phases use the rows
+		observer := nonfencing3DCConnect(t, "dc-asia", "ALL", "SERIAL")
+		nonfencing3DCWarmUp(t, observer)
+		var state nonfencing3DCRecoveryState
+		state.SoftDeleted = nonfencingSeedActiveLibrary(t, observer)
+		state.Restored = nonfencingSeedTrashedLibrary(t, observer)
+		state.Purged = nonfencingSeedTrashedLibrary(t, observer)
+		restore := failLibraryLifecycleCompletions(t)
+		_ = softDeleteLibrary(na, state.SoftDeleted.OrgID, state.SoftDeleted.OwnerID, state.SoftDeleted.OwnerID, state.SoftDeleted.LibraryID)
+		_ = nonfencingRestore(na, state.Restored)
+		_ = nonfencingPermanentDelete(na, state.Purged)
+		restore()
+		_, state.SoftDeleted.DeletedAt = nonfencingCanonical(t, observer, state.SoftDeleted)
+		raw, _ := json.Marshal(state)
+		if err := os.WriteFile(nonfencing3DCStateFile, raw, 0o600); err != nil {
+			t.Fatalf("save state: %v", err)
+		}
+	case "na-down":
+		state := nonfencing3DCLoadState(t)
+		if err := repairLibraryLifecycleDerivedState(eu, state.SoftDeleted.OrgID, state.SoftDeleted.LibraryID); err == nil {
+			t.Fatal("NONFENCING 3DC RED: soft-delete repair from dc-eu reported success while dc-na is unreachable")
+		}
+		if err := repairLibraryLifecycleDerivedState(eu, state.Restored.OrgID, state.Restored.LibraryID); err == nil {
+			t.Fatal("NONFENCING 3DC RED: restore repair from dc-eu reported success while dc-na is unreachable")
+		}
+		if _, _, resumed, err := resumeCommittedPermanentDelete(eu, state.Purged.OrgID, state.Purged.LibraryID); err == nil {
+			t.Fatalf("NONFENCING 3DC RED: permanent-delete resume from dc-eu reported resumed=%v without error while dc-na is unreachable", resumed)
+		}
+		if err := RecoverPendingLibraryLifecycles(context.Background(), eu); err == nil {
+			t.Fatal("NONFENCING 3DC RED: lifecycle reaper in dc-eu reported success while dc-na is unreachable")
+		}
+	case "after":
+		state := nonfencing3DCLoadState(t)
+		if err := RecoverPendingLibraryLifecycles(context.Background(), eu); err != nil {
+			t.Fatalf("lifecycle reaper from dc-eu after dc-na returned: %v", err)
+		}
+		observer := nonfencing3DCConnect(t, "dc-asia", "ALL", "SERIAL")
+		assertNonfencingTrashedDerivedState(t, observer, state.SoftDeleted, state.SoftDeleted.DeletedAt, "soft delete recovered from dc-eu")
+		if marker := nonfencingReadMarker(t, observer, state.Restored); marker.Present {
+			t.Fatalf("restore recovered from dc-eu left its marker: %+v", marker)
+		}
+		marker := nonfencingReadMarker(t, observer, state.Purged)
+		if !marker.Present || marker.PurgeRequestedAt.IsZero() {
+			t.Fatalf("permanent delete recovered from dc-eu: marker %+v, want a purge request", marker)
+		}
+		var orgID string
+		if err := observer.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, state.Purged.LibraryID).Scan(&orgID); err == nil {
+			t.Fatal("permanent delete recovered from dc-eu left libraries_by_id")
+		}
+	default:
+		t.Fatalf("unknown phase %q", phase)
+	}
+}
+
+func nonfencing3DCLoadState(t *testing.T) nonfencing3DCRecoveryState {
+	t.Helper()
+	raw, err := os.ReadFile(nonfencing3DCStateFile)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	var state nonfencing3DCRecoveryState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	return state
 }
