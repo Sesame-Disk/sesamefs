@@ -403,3 +403,30 @@ func TestLibraryLifecyclePendingRetireTimestamp(t *testing.T) {
 		t.Errorf("retirement after an old insert = %d, want now", got)
 	}
 }
+
+// Round 8: the owner transfer writes the canonical row only by a global-SERIAL
+// LWT (a plain UPDATE is an upsert that can recreate a permanently deleted
+// row), and a permanent delete's completion is floored above the lookup's
+// observed write times.
+func TestLibraryOwnerTransferIsFenced(t *testing.T) {
+	const reason = "library owner transfer no longer fenced"
+	body := libraryLifecycleFuncBody(t, "library_owner_transfer.go", "TransferLibraryOwnerCanonical")
+	if strings.Count(body, ".Query(") != 1 || !strings.Contains(body, "SerialConsistency(LibraryHeadSerialConsistency)") ||
+		!strings.Contains(body, "IF created_at != null AND deleted_at = ? AND lifecycle_at = ?") {
+		t.Errorf("%s: TransferLibraryOwnerCanonical is not a global-SERIAL LWT conditioned on the lifecycle state", reason)
+	}
+	if !strings.Contains(libraryLifecycleFuncBody(t, "library_owner_transfer.go", "LibraryLookupWriteTimeFloor"), ".Consistency(gocql.EachQuorum)") {
+		t.Errorf("%s: LibraryLookupWriteTimeFloor does not read at EACH_QUORUM", reason)
+	}
+	raw, err := os.ReadFile("../api/v2/write_helpers.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	i := strings.Index(src, "func updateLibraryOwner(")
+	j := strings.Index(src[i:], "\n}\n")
+	owner := src[i : i+j]
+	if strings.Contains(owner, "UPDATE libraries SET") || !strings.Contains(owner, "dbpkg.TransferLibraryOwnerCanonical(") {
+		t.Errorf("%s: updateLibraryOwner writes the canonical row outside the LWT", reason)
+	}
+}

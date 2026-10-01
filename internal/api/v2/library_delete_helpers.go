@@ -123,7 +123,11 @@ var (
 		// hard delete is terminal, so they cannot touch a newer generation and are
 		// idempotent. If they fail, the reaper or a repeated permanent delete (single
 		// or bulk) completes them (resumeCommittedPermanentDelete).
-		batch.WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt, lifecycleFloor))
+		stamp, err := permanentDeleteCompletionStamp(database, libraryID, deletedAt, lifecycleFloor)
+		if err != nil {
+			return errors.Join(errHardDeleteLibraryBatchExec, err)
+		}
+		batch.WithTimestamp(stamp)
 		if err := dbpkg.ExecLibraryLifecycleCompletionFn(batch); err != nil {
 			return errors.Join(errHardDeleteLibraryBatchExec, err)
 		}
@@ -300,7 +304,11 @@ func resumeCommittedPermanentDelete(database *dbpkg.DB, orgID, libraryID string)
 	if err != nil {
 		return trashLibraryCandidate{}, "", false, err
 	}
-	batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt, lifecycleFloor))
+	stamp, err := permanentDeleteCompletionStamp(database, libraryID, deletedAt, lifecycleFloor)
+	if err != nil {
+		return trashLibraryCandidate{}, "", false, err
+	}
+	batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(stamp)
 	if err := addPermanentDeleteCompletionQueries(database, batch, orgID, libraryID, storageClass, blockRepresentationID, deletedAt); err != nil {
 		return trashLibraryCandidate{}, "", false, err
 	}
@@ -308,6 +316,24 @@ func resumeCommittedPermanentDelete(database *dbpkg.DB, orgID, libraryID string)
 		return trashLibraryCandidate{}, "", false, errors.Join(errHardDeleteLibraryBatchExec, err)
 	}
 	return trashLibraryCandidate{OrgID: orgID, LibraryID: libraryID, StorageClass: storageClass, DeletedAt: deletedAt}, blockRepresentationID, true, nil
+}
+
+// permanentDeleteCompletionStamp is permanentDeleteCompletionTimestamp raised
+// above every write observed (at EACH_QUORUM) on the libraries_by_id lookup the
+// completion deletes: an owner transfer, create or rename on a node whose clock
+// is ahead writes the lookup with a future client timestamp, which a lower
+// tombstone would not remove. A failed read fails the completion (its
+// continuation stays).
+func permanentDeleteCompletionStamp(database *dbpkg.DB, libraryID string, deletedAt, lifecycleFloor time.Time) (int64, error) {
+	stamp := permanentDeleteCompletionTimestamp(deletedAt, lifecycleFloor)
+	lookupFloor, err := dbpkg.LibraryLookupWriteTimeFloor(database.Session(), libraryID)
+	if err != nil {
+		return 0, err
+	}
+	if lookupFloor > stamp {
+		stamp = lookupFloor
+	}
+	return stamp, nil
 }
 
 // permanentDeleteLifecycleFloor recovers, for a permanent delete whose

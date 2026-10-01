@@ -6304,10 +6304,18 @@ func (s *CassandraStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt
 	// The derived rows of this generation may have been rewritten at a lifecycle
 	// value past deleted_at (the lifecycle reaper's fence of an abandoned attempt,
 	// then its repair): the completion lands after the value the delete won on.
-	if floor := db.LibraryLifecycleWriteTimestamp(lifecycleFloor) + 1; stamp < floor {
-		stamp = floor
-		batch.WithTimestamp(stamp)
+	// It also lands after every write observed on the lookup it deletes (a node
+	// whose clock is ahead may have written it with a future client timestamp).
+	lookupFloor, err := db.LibraryLookupWriteTimeFloor(session, libraryID.String())
+	if err != nil {
+		return false, err
 	}
+	for _, floor := range []int64{db.LibraryLifecycleWriteTimestamp(lifecycleFloor) + 1, lookupFloor} {
+		if stamp < floor {
+			stamp = floor
+		}
+	}
+	batch.WithTimestamp(stamp)
 	if outcome == db.LibraryLifecycleGenerationChanged {
 		// A restore that stopped between its canonical transition and its marker
 		// cleanup leaves this generation's marker on an active library.

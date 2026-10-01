@@ -192,8 +192,26 @@ func addAdminGroupReadModelUpsertQuery(batch *gocql.Batch, row dbpkg.AdminGroupP
 	dbpkg.AddUpsertAdminGroupReadModelQuery(batch, row)
 }
 
+// execOwnerTransferDerivedFn executes an owner transfer's derived-row batch
+// (lookup and read model, client timestamp). A variable so integration tests
+// can pause a transfer after its canonical LWT or run it on a node whose clock
+// is ahead.
+var execOwnerTransferDerivedFn = func(batch *gocql.Batch) error { return batch.Exec() }
+
+// updateLibraryOwner transfers a library to newOwnerID
+// (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01):
+//  1. the canonical owner changes by a global-SERIAL LWT conditioned on the row
+//     existing at the lifecycle state it read (dbpkg.TransferLibraryOwnerCanonical),
+//     so a transfer racing a permanent delete can never recreate the row;
+//  2. the lookup and read-model rows are then written;
+//  3. a SERIAL re-read: if the library was permanently deleted meanwhile (its
+//     completion may already have run before step 2), the rows this transfer
+//     wrote are removed again; this node's later clock orders the removal after
+//     its own writes.
+//
+// It returns gocql.ErrNotFound when the library does not exist.
 func updateLibraryOwner(db interface{ Session() *gocql.Session }, orgID, libraryID, newOwnerID string, updatedAt time.Time) error {
-	previousRow, err := dbpkg.ReadAdminLibraryProjectionRow(db.Session(), orgID, libraryID)
+	previousRow, _, err := dbpkg.TransferLibraryOwnerCanonical(db.Session(), orgID, libraryID, newOwnerID, updatedAt)
 	if err != nil {
 		return err
 	}
@@ -204,15 +222,30 @@ func updateLibraryOwner(db interface{ Session() *gocql.Session }, orgID, library
 
 	batch := db.Session().Batch(gocql.LoggedBatch)
 	batch.Query(`
-		UPDATE libraries SET owner_id = ?, updated_at = ?
-		WHERE org_id = ? AND library_id = ?
-	`, newOwnerID, updatedAt, orgID, libraryID)
-	batch.Query(`
 		UPDATE libraries_by_id SET owner_id = ?
 		WHERE library_id = ?
 	`, newOwnerID, libraryID)
 	addAdminLibraryReadModelRefreshQueries(batch, nextRow, &previousRow)
-	return batch.Exec()
+	if err := execOwnerTransferDerivedFn(batch); err != nil {
+		return err
+	}
+
+	state, err := dbpkg.ReadLibraryLifecycleSerial(db.Session(), orgID, libraryID)
+	if err != nil {
+		return fmt.Errorf("confirm library %s after transfer: %w", libraryID, err)
+	}
+	if state.Present {
+		return nil
+	}
+	cleanup := db.Session().Batch(gocql.LoggedBatch)
+	cleanup.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, libraryID)
+	gone := nextRow
+	gone.DeletedAt = nil
+	dbpkg.AddDeleteAdminLibraryReadModelQuery(cleanup, gone)
+	if err := cleanup.Exec(); err != nil {
+		return fmt.Errorf("remove rows of library %s transferred while it was deleted: %w", libraryID, err)
+	}
+	return gocql.ErrNotFound
 }
 
 func createRepoAPIToken(db interface{ Session() *gocql.Session }, repoID, appName, apiToken, permission, generatedBy string, createdAt time.Time) error {

@@ -3,6 +3,7 @@ package v2
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -545,6 +546,10 @@ func (h *LibrarySettingsHandler) TransferLibrary(c *gin.Context) {
 	now := time.Now()
 
 	if err := updateLibraryOwner(h.db, orgID, repoID, newOwnerID, now); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error_msg": "library not found"})
+			return
+		}
 		log.Printf("[TransferLibrary] Failed to transfer owner: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to transfer library"})
 		return

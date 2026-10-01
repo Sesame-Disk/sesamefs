@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -702,6 +703,10 @@ func (h *AdminHandler) AdminTransferLibrary(c *gin.Context) {
 
 	now := time.Now()
 	if err := updateLibraryOwner(h.db, orgID, libraryID, newOwnerID, now); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+			return
+		}
 		log.Printf("[AdminTransferLibrary] Failed to transfer owner: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to transfer library"})
 		return

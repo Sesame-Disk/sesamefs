@@ -2,6 +2,8 @@ package v2
 
 import (
 	"encoding/json"
+	"errors"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"log"
 	"net/http"
 	"sort"
@@ -183,6 +185,10 @@ func (h *OrgAdminHandler) TransferOrgRepo(c *gin.Context) {
 
 	now := time.Now()
 	if err := updateLibraryOwner(h.db, targetOrgID, repoID, newOwnerID, now); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to transfer library"})
 		return
 	}
