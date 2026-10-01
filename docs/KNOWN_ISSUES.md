@@ -6768,7 +6768,7 @@ readiness.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01: A stale lease owner can resume its final lifecycle batch
 
-**Status**: ✅ Closed on branch `fix/library-trash-cas-boundary` (2026-10-01). The final write of restore, the API permanent delete and the GC library cascade is now a global-SERIAL LWT conditioned on the trash generation (`IF deleted_at = D`), so a paused stale lease holder loses instead of applying its old batch. See [LIBRARY-TRASH-LIFECYCLE.md](./LIBRARY-TRASH-LIFECYCLE.md). Both CURRENT-RUNTIME and PRE-GC classifications are discharged. Originally found in the PR #232 final cross-audit (2026-09-24)
+**Status**: ✅ Closed in PR #243 (2026-10-01). The final write of restore, the API permanent delete and the GC library cascade is now a global-SERIAL LWT conditioned on the trash generation (`IF deleted_at = D`), so a paused stale lease holder loses instead of applying its old batch. See [LIBRARY-TRASH-LIFECYCLE.md](./LIBRARY-TRASH-LIFECYCLE.md). Both CURRENT-RUNTIME and PRE-GC classifications are discharged. Originally found in the PR #232 final cross-audit (2026-09-24)
 **Severity**: High (P1)
 **Scope**: CURRENT-RUNTIME / FOLLOW-UP; also required PRE-GC
 **Introduced by #232**: No
