@@ -19,8 +19,9 @@ GC-independent reaper finishes it
 once the transition is decided, rebuilding derived state and recording the
 storage reconciliation request after the canonical change. Marker and trash
 rows follow the lifecycle clock; ordinary read-model rows keep client
-timestamps and are published only from a post-LWT SERIAL snapshot confirmed by
-a second SERIAL read; recovery reads at SERIAL/EACH_QUORUM and fails closed.
+timestamps and are published only from a post-LWT snapshot (lifecycle state at
+SERIAL, ordinary columns at EACH_QUORUM) confirmed by a second such read;
+recovery reads at SERIAL/EACH_QUORUM and fails closed.
 Round 5 (cross-audit of `ae273bf65`): continuations carry a per-attempt
 identity (an attempt only deletes its own row), abandoned attempts are fenced
 by a global-SERIAL `lifecycle_at` advance before retirement (every lifecycle
@@ -32,10 +33,14 @@ beats its insert, whatever the clocks), the read model's `deleted_at` cell is
 stamped with lifecycle values instead of client clocks, the publication
 confirms ordinary columns at EACH_QUORUM (keeping the continuation when a DC
 is unreachable), and the trash reconciliation deletes on a generation mismatch
-only after a SERIAL lifecycle read. Six cross-audit rounds; every confirmed finding was
+only after a SERIAL lifecycle read. Round 7 (cross-audit of `015c331c1`): a
+permanent delete stamps its completion only after its delete applied, above the
+lifecycle value its winning attempt was conditioned on (recovered from the
+continuation on resume), so a reaper fence plus repair cannot outlive it.
+Seven cross-audit rounds; every confirmed finding was
 reproduced RED on the audited head (or covered by a directed mutation where
 that head lacks the seam) and fixed. Evidence: RED→GREEN integration legs
-(T1–T7, G1–G9, R1–R6, A1–A11), 35 directed mutations RED, 3-DC legs including
+(T1–T7, G1–G9, R1–R6, A1–A14), 38 directed mutations RED, 3-DC legs including
 recovery and bulk discovery with a DC down; details in
 [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md#issue-gc-hard-delete-lease-nonfencing-01).
 Registered follow-ups (pre-existing): `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`,
