@@ -6949,7 +6949,10 @@ on `1e10070c5`; G1, G2, G3, G6, G7 and G8 were reproduced RED on the round-3
 audited head `133092971` (G4, G5 and G9 have no seam there and are covered by
 mutations); R2, R5 and R6 were reproduced RED on the round-4 audited head
 `2445880b7` (R1 and the cross-DC legs need seams or the 3-DC fixture that head
-lacks; mutations M13, M21 and M22 cover them). `internal/db/library_lifecycle_test.go` pins the SERIAL domain of
+lacks; mutations M13, M21 and M22 cover them); A1, A2, A5, A6 and A7 were
+reproduced RED on the round-5 audited head `ae273bf65` (in an isolated keyspace
+migrated by that head; A3, A4 and A8 need seams that head lacks and are covered
+by mutations M25, M26 and M29). `internal/db/library_lifecycle_test.go` pins the SERIAL domain of
 every lifecycle LWT and read, the lifecycle clock and the ambiguous-outcome
 settlement. `scripts/library-hard-delete-lease-nonfencing-mutation-validation.sh`
 runs 31 directed mutations, each required to go RED for its own reason, including: lifecycle

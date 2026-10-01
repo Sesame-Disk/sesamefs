@@ -20,10 +20,11 @@ identity (an attempt only deletes its own row), abandoned attempts are fenced
 by a global-SERIAL `lifecycle_at` advance before retirement (every lifecycle
 LWT is conditioned on the clock it read), and continuations are written and
 discovered at global QUORUM, which the bulk permanent-delete cleanup now uses
-as its discovery source. Four earlier cross-audit rounds; their confirmed
-findings were reproduced RED on the audited head and fixed. Evidence:
-integration legs (T1–T7, G1–G9, R1–R6, A1–A8), 31 directed mutations, 3-DC
-legs including recovery with a DC down; details in
+as its discovery source. Five cross-audit rounds; every confirmed finding was
+reproduced RED on the audited head (or covered by a directed mutation where
+that head lacks the seam) and fixed. Evidence: RED→GREEN integration legs
+(T1–T7, G1–G9, R1–R6, A1–A8), 31 directed mutations RED, 3-DC legs including
+recovery and bulk discovery with a DC down; details in
 [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md#issue-gc-hard-delete-lease-nonfencing-01).
 Registered follow-ups (pre-existing): `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`,
 `ISSUE-LIBRARY-TRANSFER-DROPS-ORG-READ-MODEL-01`. Not in scope: W2, PC-D1B.5,
