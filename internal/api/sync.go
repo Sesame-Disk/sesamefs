@@ -4482,13 +4482,11 @@ func (h *SyncHandler) finalizeSyncCommitBlockDelta(orgID, repoID, targetCommitID
 // repair intent staged only after that readiness phase succeeds, and
 // post-HEAD settlement that only ever promotes on positive reachability.
 //
-// Scope is deliberately narrow: only blocks with a real, already-established
-// up:sync:<repo>:<block> reference (i.e. this repo actually saw a PutBlock
-// for that exact block) go through renewal/validation below. A commit that
-// references a block with no such reference (client-side dedup via
-// CheckBlocks, or reuse from another commit) is left exactly as today — this
-// slice does not touch, and does not reclassify, the separate "Sync commit
-// whose block had no associated PutBlock" row, which stays UNKNOWN/OPEN.
+// Only blocks with an observed up:sync:<repo>:<block> are renewed. Exact
+// placement validation covers every canonical block in the added-file delta,
+// including CheckBlocks dedup with no PutBlock. The captured placements are
+// checked again after durable repair acquisition so a late repair cannot
+// authorize publication of a placement GC already condemned or retired.
 
 // syncBlockUploadReferrer is the up: referrer key PutBlock establishes for a
 // block's own upload-provisional liveness (syncBlockUploadOperationID).
@@ -4514,7 +4512,7 @@ var syncBlockReferenceExistsEachQuorumFn = func(h *SyncHandler, orgID, blockID, 
 
 // syncBlockHasOwnLivenessProvenanceFn reports whether blockID currently has a
 // live up:sync:<repo>:<block> reference, anywhere. This is the PRE-HEAD scope
-// gate: only blocks that pass it are renewed/validated before the HEAD CAS
+// gate for renewal: only blocks that pass it have their upload pin renewed before the HEAD CAS
 // (ensureSyncCommitBlockPublicationReadiness). It must never be used to
 // create a reference — only to decide whether one already exists. The
 // POST-HEAD best-effort renewal path uses
@@ -4710,7 +4708,7 @@ func syncCommitBlockIDUnion(canonicalByFile map[string][]string) []string {
 
 // syncCommitProvenancedBlockIDs returns the distinct canonical block IDs in
 // canonicalByFile that already have a real up:sync:<repo>:<block> reference
-// per syncBlockHasOwnLivenessProvenanceFn — the PRE-HEAD scope gate, which
+// per syncBlockHasOwnLivenessProvenanceFn — the PRE-HEAD renewal scope gate, which
 // can escalate to the EACH_QUORUM cross-DC fallback. Used only by
 // ensureSyncCommitBlockPublicationReadiness. The POST-HEAD best-effort
 // renewal path uses syncCommitProvenancedBlockIDsLocalOnly instead,
@@ -4896,9 +4894,10 @@ func (h *SyncHandler) validateSyncCommitBlockPublicationFences(orgID string, pla
 	return g.Wait()
 }
 
-// ensureSyncCommitBlockPublicationReadiness is the single pre-HEAD gate: own
-// liveness renewed and exact placement validated, restricted to the
-// provenance-confirmed subset. Called before the HEAD CAS in both
+// ensureSyncCommitBlockPublicationReadiness prepares the pre-HEAD gate:
+// renew only provenanced upload pins and validate every added block's exact
+// placement. Callers must acquire durable repair and revalidate the captured
+// placements before HEAD. Called before the HEAD CAS in both
 // handleSyncHeadPromotion and tryAutoMergeSyncHeadPromotion so both paths
 // carry exactly the same guarantee. Any failure here means the mutation has
 // not been attempted yet, so callers can always safely release their own
@@ -4908,23 +4907,31 @@ func (h *SyncHandler) ensureSyncCommitBlockPublicationReadiness(orgID, repoID st
 	return err
 }
 
-// prepareSyncCommitBlockPublicationReadiness retains the provenanced exact
-// placements for a second authority check AFTER durable repair acquisition.
-// Do not rerun the provenance scope gate after queue: a paused request's up:
-// can expire, but that cannot turn a once-provenanced block into an unchecked one.
+// prepareSyncCommitBlockPublicationReadiness retains every added block's exact
+// placement for a second authority check AFTER durable repair acquisition.
+// Provenance scopes only upload-pin renewal, never publication authority.
+// Carry these placements across acquisition: neither expiry nor a replacement
+// placement may turn the observed dependency into an unchecked one.
 func (h *SyncHandler) prepareSyncCommitBlockPublicationReadiness(orgID, repoID string, canonicalByFile map[string][]string) ([]syncCommitBlockPlacement, error) {
 	provenanced, err := h.syncCommitProvenancedBlockIDs(orgID, repoID, canonicalByFile)
 	if err != nil {
 		return nil, err
 	}
-	if len(provenanced) == 0 {
-		return nil, nil
-	}
-	placements, err := h.resolveSyncCommitBlockPlacements(orgID, provenanced)
+	placements, err := h.resolveSyncCommitBlockPlacements(orgID, syncCommitBlockIDUnion(canonicalByFile))
 	if err != nil {
 		return nil, err
 	}
-	if err := h.ensureSyncCommitBlockOwnLiveness(orgID, repoID, placements); err != nil {
+	provenance := make(map[string]bool, len(provenanced))
+	for _, blockID := range provenanced {
+		provenance[blockID] = true
+	}
+	ownPlacements := make([]syncCommitBlockPlacement, 0, len(provenanced))
+	for _, placement := range placements {
+		if provenance[placement.blockID] {
+			ownPlacements = append(ownPlacements, placement)
+		}
+	}
+	if err := h.ensureSyncCommitBlockOwnLiveness(orgID, repoID, ownPlacements); err != nil {
 		return nil, fmt.Errorf("renew own liveness: %w", err)
 	}
 	if err := h.validateSyncCommitBlockPublicationFences(orgID, placements); err != nil {
@@ -5422,8 +5429,8 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 			return
 		}
 
-		// Repair is the non-expiring GC gate. Validate the captured provenanced
-		// placements after acquiring it; never re-scope expired provenance.
+		// Repair is the non-expiring GC gate. Validate every captured placement
+		// after acquiring it, including blocks without PutBlock provenance.
 		if err := h.validateSyncCommitBlockPublicationFences(orgID, placements); err != nil {
 			cleanupAttempt()
 			c.Header("Retry-After", "1")

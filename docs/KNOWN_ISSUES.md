@@ -5981,35 +5981,35 @@ The shared post-HEAD repair cold path now has an explicit `REACHABLE` / `DEFINIT
 
 ### ISSUE-W2-SYNC-NOPUTBLOCK-PREHEAD-01: Sync can publish HEAD after GC commits D for a block without PutBlock provenance
 
-**Status**: Confirmed current-runtime W2 violation; fix needed
+**Status**: Resolved pre-HEAD (2026-10-01); RED on PR #244, ten safety regressions GREEN. Post-HEAD R31 remains OPEN
 **Severity**: P1 — a supported Sync dedup/reuse flow can publish durable liveness for a condemned physical placement
 **Affected**: W2-4, direct Sync HEAD promotion and auto-merge, `internal/api/sync.go`
 
-#### Finding
+#### Historical finding (PR #244)
 
-Real `CheckBlocks` can resolve a web-uploaded SHA-1 alias and canonical SHA-256 block as already present. The Sync commit then receives file metadata through `RecvFS` without any Sync `PutBlock`. Its HEAD readiness scope gate finds no `up:sync:<repo>:<block>` and returns no placement to validate. Attempt-local `pub:` and the durable repair row are staged later. Once the web upload's TTL-bound `up:` has expired, a current GC worker can observe zero at EACH_QUORUM, prepare the exact orphan and commit D(P) before the repair appears. Sync subsequently queues repair and publishes HEAD, then promotes `fs:` for that same P. The final check only covers the empty PutBlock-provenanced subset, so it does not reject the committed or fully retired placement.
+Real `CheckBlocks` can resolve a web-uploaded SHA-1 alias and canonical SHA-256 block as already present. The Sync commit then receives file metadata through `RecvFS` without any Sync `PutBlock`. Its HEAD readiness scope gate finds no `up:sync:<repo>:<block>` and returns no placement to validate. Attempt-local `pub:` is staged before readiness; the durable repair row is queued after readiness. Once the web upload's TTL-bound `up:` has expired, a current GC worker can observe zero at EACH_QUORUM, prepare the exact orphan and commit D(P) before the repair appears. Sync subsequently queues repair and publishes HEAD, then promotes `fs:` for that same P. The final check only covers the empty PutBlock-provenanced subset, so it does not reject the committed or fully retired placement.
 
 This is separate from expired Sync PutBlock provenance: W2-4 has no Sync PutBlock at all. It also shows that `CheckBlocks` success is only an observation of existence at check time, not publication continuity.
 
 #### Evidence and disposition
 
-`internal/integration/w2_sync_no_putblock_test.go` executes ten real Cassandra/MinIO legs: direct and auto-merge, each with writer-first, GC before attempt staging, GC between initial readiness and durable repair, repair-first, and fully retired P before HEAD. The normal SHA-1 dedup path and a canonical SHA-256 path after physical retirement both reproduce D(P)+HEAD. The repair-first control prevents GC from establishing zero. `scripts/w2-sync-no-putblock-validation.sh` creates a unique Docker project and requires the full named-leg gate; `SESAMEFS_W24_ASSERT_SAFETY=1` is verified RED on the counterexample.
+`internal/integration/w2_sync_no_putblock_test.go` executes ten real Cassandra/MinIO legs: direct and auto-merge, each with writer-first, GC before attempt staging, GC between initial readiness and durable repair, repair-first, and fully retired P before HEAD. On PR #244, the normal SHA-1 dedup path and a canonical SHA-256 path after physical retirement both reproduced D(P)+HEAD. The repair-first control prevents GC from establishing zero. PR #244 used `SESAMEFS_W24_ASSERT_SAFETY=1` for the historical RED. Safety is now unconditional; `scripts/w2-sync-no-putblock-validation.sh` creates a unique Docker project, requires ten GREEN legs, and checks negative evidence gates.
 
-See [the W2-4 investigation](W2-4-SYNC-NO-PUTBLOCK.md) and [the X1 exit row](X1-CRITICAL-PATH.md#4-w2-exit-checklist). W2-4 remains OPEN pending a focused fix and post-fix evidence. No W2-5 inference, R31 closure, or GC activation follows from this finding.
+The fix captures every added canonical block's exact placement independently of upload provenance and revalidates it after the existing durable repair is acquired. Renewal remains scoped to observed Sync upload pins; dedup never manufactures one. The ten legs now require GC-first rejection, unchanged HEAD, no permanent reference, and ownership-correct cleanup; writer-first/repair-first controls succeed. See [the W2-4 investigation](W2-4-SYNC-NO-PUTBLOCK.md) and [implementation plan](W2-4-SYNC-PUBLICATION-FIX-PLAN.md). W2-4 is closed only for the demonstrated pre-HEAD gap; W2-5, post-HEAD R31, and GC activation remain separate.
 
 ### ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01: Expired PutBlock provenance is outside the scoped HEAD guarantee
 
-**Status**: Confirmed residual follow-up (2026-09-07); not introduced by this branch
+**Status**: Historical pre-HEAD scope bypass superseded by the W2-4 all-block check; W2-3 remains OPEN for its separate evidence/settlement requirements
 **Severity**: High (P1) - Sync liveness continuity across provisional TTL expiry
 **Affected**: Sync PutBlock -> HEAD when the deterministic `up:sync:<repo>:<block>` row expires before the pre-HEAD readiness gate
 
 #### Problem
 
-The scoped W2 path renews and fences only when an existing own-liveness row is observable. After TTL expiry, the block is observationally indistinguishable from a commit with no associated PutBlock, so the path deliberately leaves it untouched rather than widening the contract to every added block.
+The historical scoped W2 path renewed and fenced only when an existing own-liveness row was observable. W2-4 now validates every added block independently of provenance, so expired provenance cannot bypass exact-P validation. The absent upload row is not recreated from a commit delta.
 
 #### Scope / disposition
 
-This remains outside this branch's scope and is tracked as an R31/W2 follow-up. Do not fabricate provenance from a commit delta, clear a shared repair row from expiry, or weaken the fail-closed ownership rules. The next gate requires durable provenance/continuity evidence across the expiry boundary and a separate decision for the unprovenanced commit row.
+W2-3 is not declared closed by no-PutBlock evidence. Its independent expiry/retry evidence and post-HEAD R31 requirements remain separate. Do not fabricate provenance from a commit delta, clear a shared repair row from expiry, or weaken the fail-closed ownership rules.
 
 ### ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01: PutBlock provenance may be invisible at a receiving DC
 
@@ -6160,7 +6160,7 @@ W1/W2 proved that publishing against a retired or changed exact physical placeme
 
 - `CreateFileFromBlocks` passes `commitBlocks` into the shared finalizer.
 - `CreateFile` Office templates pass their actual materialized placement to the same validator after durable `pub:` (W2-6a); empty CreateFile has no block.
-- Sync readiness fences the PutBlock-provenanced subset only.
+- Sync readiness now captures and fences every added canonical block; only upload-pin renewal remains scoped to PutBlock provenance (W2-4).
 
 `UploadFile` called `finalizeStoredUploadMetadata(..., nil)`, so
 `validateCommitBlockPublicationFences` was a no-op (fixed by W2-6, PR #237). `CreateFile` Office templates now call it too (W2-6a). OnlyOffice,

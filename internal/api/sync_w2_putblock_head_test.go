@@ -178,25 +178,39 @@ func TestSyncCommitProvenancedBlockIDs_OnlyBlocksWithExistingUpReferencePass(t *
 		t.Fatalf("syncCommitProvenancedBlockIDs returned error: %v", err)
 	}
 	if len(got) != 1 || got[0] != "has-putblock" {
-		t.Fatalf("provenanced = %v, want [has-putblock] — a block with no up: reference must never be included (docs/R3-LIVENESS-CONTINUITY.md: \"Sync commit whose block had no associated PutBlock\" stays untouched)", got)
+		t.Fatalf("provenanced = %v, want [has-putblock]; dedup must not acquire fabricated upload provenance", got)
 	}
 }
 
-func TestEnsureSyncCommitBlockPublicationReadiness_NoProvenanceIsANoOp(t *testing.T) {
+func TestEnsureSyncCommitBlockPublicationReadiness_NoProvenanceStillValidatesPlacement(t *testing.T) {
 	withW2SyncSeams(t)
 	syncBlockHasOwnLivenessProvenanceFn = func(*SyncHandler, string, string, string) (bool, error) { return false, nil }
 	probeCalls := 0
 	syncProbeBlockReuseForPlacementFn = func(*SyncHandler, string, string) (db.BlockReuseProbe, error) {
 		probeCalls++
-		return db.BlockReuseProbe{}, errors.New("must not be called")
+		return db.BlockReuseProbe{Decision: db.BlockReuseReusable, StorageClass: "hot", StorageKey: "dedup-key"}, nil
+	}
+	origAdd := syncAddProvisionalBlockReferenceFn
+	t.Cleanup(func() { syncAddProvisionalBlockReferenceFn = origAdd })
+	syncAddProvisionalBlockReferenceFn = func(*db.DB, string, string, string, string, string, time.Time) error {
+		t.Fatal("dedup must not fabricate Sync upload provenance")
+		return nil
+	}
+	validateCalls := 0
+	syncValidateBorrowedFSPublicationAuthorityFn = func(_ *db.DB, _, blockID string, placement db.BlockPhysicalLocation) (db.BlockRepairAuthorityOutcome, error) {
+		validateCalls++
+		if blockID != "dedup-only" || placement.StorageKey != "dedup-key" {
+			t.Fatalf("wrong dedup placement: %s %+v", blockID, placement)
+		}
+		return db.BlockRepairAuthorityAuthorized, nil
 	}
 	h := newHandshakeHandler()
 
 	if err := h.ensureSyncCommitBlockPublicationReadiness(handshakeOrgID, handshakeRepoID, map[string][]string{"fs-1": {"dedup-only"}}); err != nil {
 		t.Fatalf("ensureSyncCommitBlockPublicationReadiness returned error: %v", err)
 	}
-	if probeCalls != 0 {
-		t.Fatalf("placement was probed %d time(s) for a block with no PutBlock provenance; scope must never widen to unprovenanced blocks", probeCalls)
+	if probeCalls != 1 || validateCalls != 1 {
+		t.Fatalf("dedup placement must be captured and validated: probes=%d validations=%d", probeCalls, validateCalls)
 	}
 }
 
