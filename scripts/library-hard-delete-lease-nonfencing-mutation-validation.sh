@@ -205,7 +205,7 @@ PENDING=internal/db/library_lifecycle_pending.go
 REAPER=internal/api/v2/library_lifecycle_reaper.go
 
 mutate 'M23 concurrent attempts share one continuation row' "$WH" \
-	's{TargetAt: target, AttemptID: uuid\.NewString\(\), OwnerID: ownerID, PrevLifecycleAt: previous\.LifecycleAt,}{TargetAt: target, AttemptID: "00000000-0000-0000-0000-000000000000", OwnerID: ownerID, PrevLifecycleAt: previous.LifecycleAt,}' \
+	's#\}, uuid\.NewString\(\)\)#}, "00000000-0000-0000-0000-000000000000")#' \
 	./internal/api/v2 '^TestNonfencingA1SameTargetLoserKeepsWinnerContinuation$' '-tags integration' \
 	"the losing attempt removed the winner's continuation"
 
@@ -243,5 +243,25 @@ mutate 'M30 continuations discovered at session consistency' "$PENDING" \
 	's{(FROM library_lifecycle_pending WHERE recovery_bucket = \?\n\t`, bucket\))\.Consistency\(LibraryLifecyclePendingConsistency\)}{$1}' \
 	./internal/db '^TestLibraryLifecyclePendingIsGlobalQuorum$' '' \
 	'library lifecycle continuation no longer read/written at global QUORUM'
+
+mutate 'M31 continuation retired at an implicit client timestamp' "$PENDING" \
+	's{DELETE FROM library_lifecycle_pending USING TIMESTAMP \?\n(.*?)`, libraryLifecyclePendingRetireTimestamp\(p, time\.Now\(\)\), }{DELETE FROM library_lifecycle_pending\n$1`, }s' \
+	./internal/api/v2 '^TestNonfencingA11PendingRetirementBeatsFastInsert$' '-tags integration' \
+	'retired continuation still visible'
+
+mutate 'M32 projected deleted_at written with the client clock' "$LIFECYCLE" \
+	's{(\t\t\tAddUpsertAdminLibraryOrdinaryRowsQuery\(batch, row\)\n)}{$1\t\t\tif row.DeletedAt != nil {\n\t\t\t\tbatch.Query(`UPDATE libraries_by_owner SET deleted_at = ? WHERE org_id = ? AND owner_id = ? AND library_id = ?`, *row.DeletedAt, row.OrgID, row.OwnerID, row.LibraryID)\n\t\t\t\tbatch.Query(`UPDATE libraries_by_org_updated SET deleted_at = ? WHERE org_id = ? AND library_id = ?`, *row.DeletedAt, row.OrgID, row.LibraryID)\n\t\t\t} else {\n\t\t\t\tbatch.Query(`DELETE deleted_at FROM libraries_by_owner WHERE org_id = ? AND owner_id = ? AND library_id = ?`, row.OrgID, row.OwnerID, row.LibraryID)\n\t\t\t\tbatch.Query(`DELETE deleted_at FROM libraries_by_org_updated WHERE org_id = ? AND library_id = ?`, row.OrgID, row.LibraryID)\n\t\t\t}\n}; s{if cellAt := projectedLifecycleValue\(state\); !cellAt\.IsZero\(\) \{}{if cellAt := projectedLifecycleValue(state); false \&\& !cellAt.IsZero() \{}' \
+	./internal/api/v2 '^TestNonfencingA9ProjectedDeletedAtFollowsRestoreAfterFastSoftDelete$' '-tags integration' \
+	'restored library still projected as deleted'
+
+mutate 'M33 read-model publication confirmed at SERIAL only' "$LIFECYCLE" \
+	's{(`, row\.OrgID, row\.LibraryID\))\.Consistency\(gocql\.EachQuorum\)(\.Scan\(\n\t\t&ordinary\.OwnerID)}{$1$2}' \
+	./internal/db '^TestLibraryLifecycleRound6Pins$' '' \
+	'does not read at EACH_QUORUM'
+
+mutate 'M34 trash reconciliation deletes on a weak canonical read' internal/db/admin_library_read_models.go \
+	's{\t\tstate, err := ReadLibraryLifecycleSerial\(session, row\.OrgID, row\.LibraryID\)\n\t\tif err != nil \{\n\t\t\treturn nil, cleaned, err\n\t\t\}\n\t\tif state\.Present && state\.DeletedAt\.Equal\(row\.DeletedAt\) \{\n\t\t\tkept = append\(kept, row\)\n\t\t\tcontinue\n\t\t\}\n}{}' \
+	./internal/db '^TestLibraryLifecycleRound6Pins$' '' \
+	'deletes without the lifecycle authority'
 
 green "All $count NONFENCING mutations went RED for their own reason."

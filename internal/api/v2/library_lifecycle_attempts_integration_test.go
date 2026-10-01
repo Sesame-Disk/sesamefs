@@ -393,3 +393,107 @@ func TestNonfencingA8BulkCleanDiscoversDeleteThroughContinuation(t *testing.T) {
 		t.Fatalf("bulk resume left libraries_by_id: err=%v", err)
 	}
 }
+
+// skewOrdinaryPublications stamps every lifecycle batch that writes the
+// ordinary owner listing (and carries no per-statement timestamp) with a
+// client clock skew ahead, as a node whose clock is ahead would.
+func skewOrdinaryPublications(t *testing.T, skew time.Duration) func() {
+	t.Helper()
+	original := dbpkg.ExecLibraryLifecycleCompletionFn
+	dbpkg.ExecLibraryLifecycleCompletionFn = func(batch *gocql.Batch) error {
+		owner, stamped := false, false
+		for _, entry := range batch.Entries {
+			owner = owner || strings.Contains(entry.Stmt, "INSERT INTO libraries_by_owner")
+			stamped = stamped || strings.Contains(entry.Stmt, "USING TIMESTAMP")
+		}
+		if owner && !stamped {
+			batch.WithTimestamp(time.Now().Add(skew).UnixMicro())
+		}
+		return original(batch)
+	}
+	restore := func() { dbpkg.ExecLibraryLifecycleCompletionFn = original }
+	t.Cleanup(restore)
+	return restore
+}
+
+// nonfencingProjectedDeletedAt reads deleted_at of the owner and org read-model
+// rows.
+func nonfencingProjectedDeletedAt(t *testing.T, db *dbpkg.DB, lib nonfencingLibrary) (owner, org time.Time) {
+	t.Helper()
+	if err := db.Session().Query(`SELECT deleted_at FROM libraries_by_owner WHERE org_id = ? AND owner_id = ? AND library_id = ?`,
+		lib.OrgID, lib.OwnerID, lib.LibraryID).Scan(&owner); err != nil {
+		t.Fatalf("read owner row: %v", err)
+	}
+	if err := db.Session().Query(`SELECT deleted_at FROM libraries_by_org_updated WHERE org_id = ? AND library_id = ?`,
+		lib.OrgID, lib.LibraryID).Scan(&org); err != nil {
+		t.Fatalf("read org row: %v", err)
+	}
+	return owner, org
+}
+
+// A9: a soft delete on a node an hour ahead (lifecycle clock and client clock),
+// then a restore on a normal node: the read model must show the library active.
+func TestNonfencingA9ProjectedDeletedAtFollowsRestoreAfterFastSoftDelete(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedActiveLibrary(t, db)
+	withLibraryLifecycleClock(t, func() time.Time { return time.Now().Add(time.Hour) })
+	unskew := skewOrdinaryPublications(t, time.Hour)
+	lib.DeletedAt = nonfencingSoftDelete(t, db, lib)
+	unskew()
+	libraryLifecycleNow = time.Now
+	if err := nonfencingRestore(db, lib); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if owner, org := nonfencingProjectedDeletedAt(t, db, lib); !owner.IsZero() || !org.IsZero() {
+		t.Fatalf("NONFENCING RED: restored library still projected as deleted (owner row %s, org row %s)", owner, org)
+	}
+}
+
+// A10: a restore on a node an hour ahead, then a soft delete on a normal node:
+// the read model must show the new trash generation.
+func TestNonfencingA10ProjectedDeletedAtFollowsSoftDeleteAfterFastRestore(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	withLibraryLifecycleClock(t, func() time.Time { return time.Now().Add(time.Hour) })
+	unskew := skewOrdinaryPublications(t, time.Hour)
+	if err := nonfencingRestore(db, lib); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	unskew()
+	libraryLifecycleNow = time.Now
+	d2 := nonfencingSoftDelete(t, db, lib)
+	if owner, org := nonfencingProjectedDeletedAt(t, db, lib); !owner.Equal(d2) || !org.Equal(d2) {
+		t.Fatalf("NONFENCING RED: trashed library projected with deleted_at owner=%s org=%s, want %s", owner, org, d2)
+	}
+}
+
+// A11: a continuation written by a node an hour ahead is retired by a node with
+// a normal clock: the retirement must not lose to the insert's timestamp.
+func TestNonfencingA11PendingRetirementBeatsFastInsert(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	orgID, libraryID := uuid.NewString(), uuid.NewString()
+	bucket := dbpkg.GCDiscoveryBucket(orgID, libraryID)
+	now := time.Now().UTC()
+	attemptID := uuid.NewString()
+	if err := db.Session().Query(`
+		INSERT INTO library_lifecycle_pending (recovery_bucket, org_id, library_id, operation, target_at, attempt_id, prev_deleted_at, prev_lifecycle_at, recorded_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) USING TIMESTAMP ?`,
+		bucket, orgID, libraryID, dbpkg.LibraryLifecycleOpPermanentDelete, now, attemptID, now, now, now,
+		now.Add(time.Hour).UnixMicro()).Exec(); err != nil {
+		t.Fatalf("seed fast continuation: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Session().Query(`DELETE FROM library_lifecycle_pending USING TIMESTAMP ? WHERE recovery_bucket = ? AND org_id = ? AND library_id = ?`,
+			time.Now().Add(2*time.Hour).UnixMicro(), bucket, orgID, libraryID).Exec()
+	})
+	lib := nonfencingLibrary{OrgID: orgID, LibraryID: libraryID}
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 1 {
+		t.Fatalf("setup: continuations = %+v", rows)
+	}
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 0 {
+		t.Fatalf("NONFENCING RED: retired continuation still visible (its insert carried a later client timestamp): %+v", rows)
+	}
+}
