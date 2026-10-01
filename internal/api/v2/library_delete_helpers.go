@@ -63,8 +63,10 @@ var (
 			return errors.Join(errHardDeleteLibraryBatchExec, fmt.Errorf("write permanent-delete continuation marker: %w", err))
 		}
 		// The completion batch is built first because the admin read-model delete keys
-		// are read from the canonical row, which the fenced delete removes.
-		batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt))
+		// are read from the canonical row, which the fenced delete removes. Its
+		// timestamp is set only once the delete applied, above the lifecycle clock of
+		// the attempt that won (see permanentDeleteCompletionTimestamp).
+		batch := database.Session().Batch(gocql.LoggedBatch)
 		if err := addPermanentDeleteCompletionQueries(database, batch, orgID, libraryID, storageClass, blockRepresentationID, deletedAt); err != nil {
 			return err
 		}
@@ -78,8 +80,12 @@ var (
 		// id): the lifecycle reaper resumes the completion if this process dies after
 		// the canonical delete, and fences the attempt if it dies before.
 		var intents []dbpkg.LibraryLifecyclePending
+		var lifecycleFloor time.Time
 		outcome, err := dbpkg.DeleteTrashedLibraryGenerationWithIntent(database.Session(), orgID, libraryID, deletedAt,
 			func(previous dbpkg.LibraryLifecycleState) error {
+				if previous.LifecycleAt.After(lifecycleFloor) {
+					lifecycleFloor = previous.LifecycleAt
+				}
 				intent := dbpkg.NewLibraryLifecycleAttempt(dbpkg.LibraryLifecyclePending{
 					OrgID: orgID, LibraryID: libraryID, Operation: dbpkg.LibraryLifecycleOpPermanentDelete,
 					TargetAt: deletedAt, PrevLifecycleAt: previous.LifecycleAt, PrevDeletedAt: deletedAt,
@@ -117,6 +123,7 @@ var (
 		// hard delete is terminal, so they cannot touch a newer generation and are
 		// idempotent. If they fail, the reaper or a repeated permanent delete (single
 		// or bulk) completes them (resumeCommittedPermanentDelete).
+		batch.WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt, lifecycleFloor))
 		if err := dbpkg.ExecLibraryLifecycleCompletionFn(batch); err != nil {
 			return errors.Join(errHardDeleteLibraryBatchExec, err)
 		}
@@ -228,11 +235,20 @@ func addPermanentDeleteCompletionQueries(database *dbpkg.DB, batch *gocql.Batch,
 }
 
 // permanentDeleteCompletionTimestamp is the write timestamp of a permanent
-// delete's completion: after the generation's own derived writes, and not before
-// the client clock (the completion also deletes rows other writers stamp with it).
-func permanentDeleteCompletionTimestamp(deletedAt time.Time) int64 {
+// delete's completion, set once its canonical delete applied: after every
+// derived write of the generation, and not before the client clock (the
+// completion also deletes rows other writers stamp with it). The derived rows
+// of a trashed generation are stamped with its lifecycle clock, which the
+// reaper's fence of an abandoned attempt can move past deleted_at (a repair then
+// rewrites them at the fence value); lifecycleFloor is the clock value the
+// winning delete attempt was conditioned on, so the completion lands after
+// those rewrites too.
+func permanentDeleteCompletionTimestamp(deletedAt, lifecycleFloor time.Time) int64 {
+	if lifecycleFloor.Before(deletedAt) {
+		lifecycleFloor = deletedAt
+	}
 	stamp := libraryLifecycleNow().UnixMicro()
-	if floor := dbpkg.LibraryLifecycleWriteTimestamp(deletedAt) + 1; stamp < floor {
+	if floor := dbpkg.LibraryLifecycleWriteTimestamp(lifecycleFloor) + 1; stamp < floor {
 		stamp = floor
 	}
 	return stamp
@@ -280,7 +296,11 @@ func resumeCommittedPermanentDelete(database *dbpkg.DB, orgID, libraryID string)
 	if state.Present {
 		return trashLibraryCandidate{}, "", false, nil
 	}
-	batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt))
+	lifecycleFloor, err := permanentDeleteLifecycleFloor(database, orgID, libraryID)
+	if err != nil {
+		return trashLibraryCandidate{}, "", false, err
+	}
+	batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt, lifecycleFloor))
 	if err := addPermanentDeleteCompletionQueries(database, batch, orgID, libraryID, storageClass, blockRepresentationID, deletedAt); err != nil {
 		return trashLibraryCandidate{}, "", false, err
 	}
@@ -288,6 +308,25 @@ func resumeCommittedPermanentDelete(database *dbpkg.DB, orgID, libraryID string)
 		return trashLibraryCandidate{}, "", false, errors.Join(errHardDeleteLibraryBatchExec, err)
 	}
 	return trashLibraryCandidate{OrgID: orgID, LibraryID: libraryID, StorageClass: storageClass, DeletedAt: deletedAt}, blockRepresentationID, true, nil
+}
+
+// permanentDeleteLifecycleFloor recovers, for a permanent delete whose
+// canonical row is already gone, the latest lifecycle clock value its attempts
+// were conditioned on, from their durable continuations (global QUORUM): the
+// resumed completion is stamped above it (permanentDeleteCompletionTimestamp).
+// A bucket that cannot be read fails the resume (retry later).
+func permanentDeleteLifecycleFloor(database *dbpkg.DB, orgID, libraryID string) (time.Time, error) {
+	rows, err := dbpkg.ListLibraryLifecyclePending(database.Session(), dbpkg.GCDiscoveryBucket(orgID, libraryID))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("read permanent-delete continuations of %s: %w", libraryID, err)
+	}
+	var floor time.Time
+	for _, row := range rows {
+		if row.LibraryID == libraryID && row.Operation == dbpkg.LibraryLifecycleOpPermanentDelete && row.PrevLifecycleAt.After(floor) {
+			floor = row.PrevLifecycleAt
+		}
+	}
+	return floor, nil
 }
 
 type resumedPermanentDelete struct {

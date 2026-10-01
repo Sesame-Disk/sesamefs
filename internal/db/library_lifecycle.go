@@ -29,9 +29,10 @@ import (
 // are stamped with LibraryLifecycleWriteTimestamp(lifecycle value), so canonical
 // transition order is their write order wherever a paused, retried or repaired
 // completion lands; the ordinary owner/org/global read-model rows carry client
-// timestamps like every other writer of those columns, and are published only
-// from a SERIAL snapshot that a second SERIAL read proves current
-// (publishLibraryReadModel).
+// timestamps like every other writer of those columns (their deleted_at cell
+// excepted, which follows lifecycle values), and are published only from a
+// snapshot taking the lifecycle state at SERIAL and the ordinary columns at
+// EACH_QUORUM, confirmed by a second such read (publishLibraryReadModel).
 //
 // Each attempt records a durable continuation (library_lifecycle_pending) before
 // its LWT; see LibraryLifecyclePending for its identity and retirement.
@@ -527,9 +528,13 @@ var ExecLibraryLifecycleCompletionFn = func(batch *gocql.Batch) error { return b
 //     (owner, name, size...) that other writers update with client timestamps;
 //     a lifecycle completion writes them with its client timestamp too, never
 //     with the lifecycle clock (which can run ahead of real time), and only
-//     from a SERIAL snapshot taken after its LWT that a second SERIAL read
-//     confirms (publishLibraryReadModel), so a paused completion or repair
-//     cannot leave a stale owner, name or lifecycle state behind.
+//     from a snapshot taken after its LWT — lifecycle state at SERIAL, ordinary
+//     columns at EACH_QUORUM — that a second such read confirms
+//     (publishLibraryReadModel), so a paused completion or repair cannot leave
+//     a stale owner, name or lifecycle state behind, even after a writer
+//     acknowledged at LOCAL_QUORUM in another datacenter. Their deleted_at cell
+//     is lifecycle state, stamped with lifecycle values
+//     (AddAdminLibraryDeletedAtCellQueries).
 
 // AddTrashedLifecycleOwnedQueries adds the lifecycle-owned rows of trash
 // generation *row.DeletedAt: its marker, its trash listing row, and the removal

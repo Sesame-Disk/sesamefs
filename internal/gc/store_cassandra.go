@@ -5830,7 +5830,8 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 	// trash generation, counter adjustment, completion (reconciliation request,
 	// then the derived state from the canonical row read after the LWT:
 	// lifecycle-owned rows at the generation's lifecycle timestamp, ordinary rows
-	// at the client timestamp confirmed by a second SERIAL read), then this
+	// at the client timestamp from a SERIAL-lifecycle + EACH_QUORUM-ordinary
+	// snapshot confirmed by a second such read), then this
 	// attempt's continuation is cleared. The API lifecycle reaper finishes it
 	// after a crash.
 	session := s.db.Session()
@@ -6289,9 +6290,23 @@ func (s *CassandraStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt
 	// The fenced lifecycle mutation (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01): a
 	// cascade that paused after its lease fence and lost the lease to a restore
 	// cannot delete the restored (or re-trashed) canonical row.
-	outcome, err := db.DeleteTrashedLibraryGeneration(session, orgID.String(), libraryID.String(), deletedAt)
+	var lifecycleFloor time.Time
+	outcome, err := db.DeleteTrashedLibraryGenerationWithIntent(session, orgID.String(), libraryID.String(), deletedAt,
+		func(previous db.LibraryLifecycleState) error {
+			if previous.LifecycleAt.After(lifecycleFloor) {
+				lifecycleFloor = previous.LifecycleAt
+			}
+			return nil
+		})
 	if err != nil {
 		return false, err
+	}
+	// The derived rows of this generation may have been rewritten at a lifecycle
+	// value past deleted_at (the lifecycle reaper's fence of an abandoned attempt,
+	// then its repair): the completion lands after the value the delete won on.
+	if floor := db.LibraryLifecycleWriteTimestamp(lifecycleFloor) + 1; stamp < floor {
+		stamp = floor
+		batch.WithTimestamp(stamp)
 	}
 	if outcome == db.LibraryLifecycleGenerationChanged {
 		// A restore that stopped between its canonical transition and its marker

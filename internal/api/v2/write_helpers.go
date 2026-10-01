@@ -961,9 +961,10 @@ func addDeleteAdminLibraryReadModelQueries(db interface{ Session() *gocql.Sessio
 //  4. the completion (completeLibraryLifecycleTransition): the storage
 //     reconciliation request, then the derived state built from the canonical
 //     row read at SERIAL after the LWT — marker and trash listing row stamped
-//     with the generation's lifecycle timestamp, ordinary read-model rows with
-//     the client timestamp, confirmed by a second SERIAL read — and only then
-//     this attempt's continuation is cleared.
+//     with the generation's lifecycle timestamp, ordinary read-model columns
+//     with the client timestamp, from a snapshot (lifecycle state at SERIAL,
+//     ordinary columns at EACH_QUORUM) confirmed by a second such read — and
+//     only then this attempt's continuation is cleared.
 //
 // If the process dies anywhere after 1, the lifecycle reaper finishes the
 // attempt once it can no longer apply, fencing it first if it is abandoned
