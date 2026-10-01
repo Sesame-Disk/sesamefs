@@ -208,6 +208,12 @@ func TestNonfencing3DCRecoveryFailsClosed(t *testing.T) {
 		if err := RecoverPendingLibraryLifecycles(context.Background(), eu); err == nil {
 			t.Fatal("NONFENCING 3DC RED: lifecycle reaper in dc-eu reported success while dc-na is unreachable")
 		}
+		// Bulk discovery reads the continuations at global QUORUM (reachable without
+		// dc-na) and must then fail closed on the strong resume, never report the
+		// committed delete as nothing to do.
+		if _, failed := resumeCommittedPermanentDeletes(eu, []string{state.Purged.OrgID}); failed == 0 {
+			t.Fatal("NONFENCING 3DC RED: bulk permanent-delete discovery from dc-eu reported nothing to do while dc-na is unreachable")
+		}
 	case "after":
 		state := nonfencing3DCLoadState(t)
 		if err := RecoverPendingLibraryLifecycles(context.Background(), eu); err != nil {

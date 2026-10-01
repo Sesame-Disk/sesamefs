@@ -1,0 +1,395 @@
+//go:build integration
+
+package v2
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/google/uuid"
+)
+
+// ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01, round 5: identity and retirement of
+// lifecycle attempts, and the convergence of the ordinary read model against
+// concurrent ordinary writers. Real Cassandra.
+
+// nonfencingPendingRows returns the library's lifecycle continuations.
+func nonfencingPendingRows(t *testing.T, db *dbpkg.DB, lib nonfencingLibrary) []dbpkg.LibraryLifecyclePending {
+	t.Helper()
+	rows, err := dbpkg.ListLibraryLifecyclePending(db.Session(), dbpkg.GCDiscoveryBucket(lib.OrgID, lib.LibraryID))
+	if err != nil {
+		t.Fatalf("list lifecycle continuations: %v", err)
+	}
+	var out []dbpkg.LibraryLifecyclePending
+	for _, row := range rows {
+		if row.LibraryID == lib.LibraryID {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+// parkFirstLifecycleAttempt parks the first attempt of operation on lib right
+// before its canonical LWT, after its continuation is durable. The returned
+// release lets it go (also run at cleanup).
+func parkFirstLifecycleAttempt(t *testing.T, lib nonfencingLibrary, operation string) (parked <-chan struct{}, release func()) {
+	t.Helper()
+	parkedCh, resume := make(chan struct{}), make(chan struct{})
+	var first, released sync.Once
+	original := beforeLibraryLifecycleTransitionFn
+	beforeLibraryLifecycleTransitionFn = func(op, libraryID string) error {
+		if op == operation && libraryID == lib.LibraryID {
+			park := false
+			first.Do(func() { park = true })
+			if park {
+				close(parkedCh)
+				<-resume
+			}
+		}
+		return original(op, libraryID)
+	}
+	release = func() { released.Do(func() { close(resume) }) }
+	t.Cleanup(func() {
+		release()
+		beforeLibraryLifecycleTransitionFn = original
+	})
+	return parkedCh, release
+}
+
+func awaitParked(t *testing.T, parked <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-parked:
+	case <-time.After(30 * time.Second):
+		t.Fatal("attempt never reached its pre-LWT pause")
+	}
+}
+
+// withLifecycleAttemptsAbandoned makes every continuation old enough for the
+// reaper to fence it.
+func withLifecycleAttemptsAbandoned(t *testing.T) {
+	t.Helper()
+	original := dbpkg.LibraryLifecycleAttemptAbandonAfter
+	dbpkg.LibraryLifecycleAttemptAbandonAfter = 0
+	t.Cleanup(func() { dbpkg.LibraryLifecycleAttemptAbandonAfter = original })
+}
+
+func nonfencingOwnerListing(t *testing.T, db *dbpkg.DB, lib nonfencingLibrary, ownerID string) int {
+	t.Helper()
+	var count int
+	if err := db.Session().Query(`SELECT COUNT(*) FROM libraries_by_owner WHERE org_id = ? AND owner_id = ? AND library_id = ?`,
+		lib.OrgID, ownerID, lib.LibraryID).Scan(&count); err != nil {
+		t.Fatalf("read owner listing: %v", err)
+	}
+	return count
+}
+
+func assertOnlyOwnerListed(t *testing.T, db *dbpkg.DB, lib nonfencingLibrary, oldOwner, newOwner, label string) {
+	t.Helper()
+	if n := nonfencingOwnerListing(t, db, lib, oldOwner); n != 0 {
+		t.Fatalf("%s: the previous owner still lists the library (rows=%d)", label, n)
+	}
+	if n := nonfencingOwnerListing(t, db, lib, newOwner); n != 1 {
+		t.Fatalf("%s: the new owner does not list the library (rows=%d)", label, n)
+	}
+	var owner string
+	if err := db.Session().Query(`SELECT owner_id FROM libraries_by_org_updated WHERE org_id = ? AND library_id = ?`,
+		lib.OrgID, lib.LibraryID).Scan(&owner); err == nil && owner != newOwner {
+		t.Fatalf("%s: org read model owner = %s, want %s", label, owner, newOwner)
+	}
+}
+
+// transferBeforeOrdinaryPublication transfers lib to newOwner right before the
+// first lifecycle batch that writes the owner listing executes: the transfer
+// lands after that publication took its canonical snapshot.
+func transferBeforeOrdinaryPublication(t *testing.T, db *dbpkg.DB, lib nonfencingLibrary, newOwner string) {
+	t.Helper()
+	original := dbpkg.ExecLibraryLifecycleCompletionFn
+	var once sync.Once
+	dbpkg.ExecLibraryLifecycleCompletionFn = func(batch *gocql.Batch) error {
+		for _, entry := range batch.Entries {
+			if strings.Contains(entry.Stmt, "INSERT INTO libraries_by_owner") {
+				once.Do(func() {
+					if err := updateLibraryOwner(db, lib.OrgID, lib.LibraryID, newOwner, time.Now().UTC()); err != nil {
+						t.Errorf("transfer: %v", err)
+					}
+				})
+				break
+			}
+		}
+		return original(batch)
+	}
+	t.Cleanup(func() { dbpkg.ExecLibraryLifecycleCompletionFn = original })
+}
+
+// A1: two soft deletes of one library propose the same transition (a frozen
+// clock gives both the same target). The winner dies right after its LWT; the
+// loser clears only its own continuation, so the reaper still completes the
+// winner's accounting and derived state.
+func TestNonfencingA1SameTargetLoserKeepsWinnerContinuation(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	frozen := time.Now().UTC().Truncate(time.Millisecond)
+	withLibraryLifecycleClock(t, func() time.Time { return frozen })
+	lib := nonfencingSeedCountedLibrary(t, db)
+
+	parked, release := parkFirstLifecycleAttempt(t, lib, "soft-delete")
+	loser := runOwner(func() error { return softDeleteLibrary(db, lib.OrgID, lib.OwnerID, lib.OwnerID, lib.LibraryID) })
+	awaitParked(t, parked)
+
+	simulateDeathAfterLifecycleTransition(t, "soft-delete")
+	if err := softDeleteLibrary(db, lib.OrgID, lib.OwnerID, lib.OwnerID, lib.LibraryID); err == nil {
+		t.Fatal("expected the winner's simulated death to surface")
+	}
+	present, d := nonfencingCanonical(t, db, lib)
+	if !present || !d.Equal(frozen) {
+		t.Fatalf("setup: winner's soft delete present=%v deleted_at=%v, want %s", present, d, frozen)
+	}
+	release()
+	if err := awaitOwner(t, loser); err != nil {
+		t.Fatalf("losing soft delete: %v", err)
+	}
+
+	rows := nonfencingPendingRows(t, db, lib)
+	if len(rows) != 1 || !rows[0].TargetAt.Equal(d) {
+		t.Fatalf("NONFENCING RED: the losing attempt removed the winner's continuation: rows=%+v", rows)
+	}
+	nonfencingRecover(t, db)
+	if org, user := nonfencingOrgAndUserBytes(db, lib); org != 0 || user != 0 {
+		t.Fatalf("NONFENCING RED: counters after recovery org=%d user=%d, want 0 (library trashed)", org, user)
+	}
+	assertNonfencingTrashedDerivedState(t, db, lib, d, "winner recovered by the reaper")
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 0 {
+		t.Fatalf("continuation left after recovery: %+v", rows)
+	}
+}
+
+// A2: a soft delete whose process dies after recording its continuation but
+// before its LWT. The reaper keeps the attempt while it may still be in flight,
+// then fences and retires it; the fenced attempt's LWT can no longer apply and
+// the library stays usable.
+func TestNonfencingA2SoftDeleteAbandonedBeforeLWTIsFenced(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedActiveLibrary(t, db)
+	original := beforeLibraryLifecycleTransitionFn
+	beforeLibraryLifecycleTransitionFn = func(op, libraryID string) error {
+		if op == "soft-delete" && libraryID == lib.LibraryID {
+			return errors.New("simulated process death before the canonical transition")
+		}
+		return original(op, libraryID)
+	}
+	t.Cleanup(func() { beforeLibraryLifecycleTransitionFn = original })
+	if err := softDeleteLibrary(db, lib.OrgID, lib.OwnerID, lib.OwnerID, lib.LibraryID); err == nil {
+		t.Fatal("expected the simulated death to surface")
+	}
+	beforeLibraryLifecycleTransitionFn = original
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 1 {
+		t.Fatalf("setup: continuations = %+v, want the abandoned attempt", rows)
+	}
+
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 1 {
+		t.Fatalf("NONFENCING RED: a fresh attempt that may still be in flight was dropped: %+v", rows)
+	}
+
+	withLifecycleAttemptsAbandoned(t)
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 0 {
+		t.Fatalf("NONFENCING RED: abandoned soft-delete attempt still pending: %+v", rows)
+	}
+	if present, deletedAt := nonfencingCanonical(t, db, lib); !present || !deletedAt.IsZero() {
+		t.Fatalf("the fence changed the lifecycle: present=%v deleted_at=%v", present, deletedAt)
+	}
+	stale := time.Now().UTC()
+	applied, err := db.Session().Query(`
+		UPDATE libraries SET deleted_at = ?, lifecycle_at = ? WHERE org_id = ? AND library_id = ?
+		IF deleted_at = null AND created_at != null AND lifecycle_at = null`,
+		stale, stale, lib.OrgID, lib.LibraryID).SerialConsistency(gocql.Serial).MapScanCAS(map[string]interface{}{})
+	if err != nil || applied {
+		t.Fatalf("NONFENCING RED: the fenced attempt's LWT still applies: applied=%v err=%v", applied, err)
+	}
+	nonfencingSoftDelete(t, db, lib)
+}
+
+// A3: a restore parks after recording its continuation; the reaper fences and
+// retires it as abandoned. When the restore resumes and its process dies after
+// the canonical transition, the transition that committed must have its own
+// continuation: the fenced attempt cannot commit untracked.
+func TestNonfencingA3RestoreFencedWhileParkedCannotCommitUntracked(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	parked, release := parkFirstLifecycleAttempt(t, lib, "restore")
+	owner := runOwner(func() error { return nonfencingRestore(db, lib) })
+	awaitParked(t, parked)
+
+	withLifecycleAttemptsAbandoned(t)
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 0 {
+		t.Fatalf("NONFENCING RED: abandoned restore attempt not retired: %+v", rows)
+	}
+	if present, deletedAt := nonfencingCanonical(t, db, lib); !present || !deletedAt.Equal(lib.DeletedAt) {
+		t.Fatalf("the fence changed the trash generation: present=%v deleted_at=%v", present, deletedAt)
+	}
+	dbpkg.LibraryLifecycleAttemptAbandonAfter = time.Hour
+
+	simulateDeathAfterLifecycleTransition(t, "restore")
+	release()
+	if err := awaitOwner(t, owner); err == nil {
+		t.Fatal("expected the simulated death to surface")
+	}
+	if present, deletedAt := nonfencingCanonical(t, db, lib); !present || !deletedAt.IsZero() {
+		t.Fatalf("setup: restore did not commit: present=%v deleted_at=%v", present, deletedAt)
+	}
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 1 {
+		t.Fatalf("NONFENCING RED: the fenced attempt committed without a continuation: rows=%+v", rows)
+	}
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	if marker := nonfencingReadMarker(t, db, lib); marker.Present {
+		t.Fatalf("restore recovered by the reaper left its marker: %+v", marker)
+	}
+	if present, deletedAt, inTrash := nonfencingProjection(t, db, lib); !present || !deletedAt.IsZero() || inTrash {
+		t.Fatalf("restore recovered by the reaper: read model present=%v deleted_at=%v in_trash=%v", present, deletedAt, inTrash)
+	}
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 0 {
+		t.Fatalf("continuation left after recovery: %+v", rows)
+	}
+}
+
+// A4: the same for a permanent delete whose completion fails after the
+// canonical delete.
+func TestNonfencingA4PermanentDeleteFencedWhileParkedCannotCommitUntracked(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	parked, release := parkFirstLifecycleAttempt(t, lib, "permanent-delete")
+	owner := runOwner(func() error { return nonfencingPermanentDelete(db, lib) })
+	awaitParked(t, parked)
+
+	withLifecycleAttemptsAbandoned(t)
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 0 {
+		t.Fatalf("NONFENCING RED: abandoned permanent-delete attempt not retired: %+v", rows)
+	}
+	dbpkg.LibraryLifecycleAttemptAbandonAfter = time.Hour
+
+	restore := failLibraryLifecycleCompletions(t)
+	release()
+	if err := awaitOwner(t, owner); !errors.Is(err, errHardDeleteLibraryBatchExec) {
+		t.Fatalf("permanent delete with a failing completion = %v", err)
+	}
+	restore()
+	if present, _ := nonfencingCanonical(t, db, lib); present {
+		t.Fatal("setup: the canonical delete did not apply")
+	}
+	if rows := nonfencingPendingRows(t, db, lib); len(rows) != 1 {
+		t.Fatalf("NONFENCING RED: the fenced attempt committed without a continuation: rows=%+v", rows)
+	}
+	if err := RecoverPendingLibraryLifecycles(context.Background(), db); err != nil {
+		t.Fatalf("lifecycle reaper: %v", err)
+	}
+	var orgID string
+	if err := db.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, lib.LibraryID).Scan(&orgID); !errors.Is(err, gocql.ErrNotFound) {
+		t.Fatalf("permanent delete recovered by the reaper left libraries_by_id: err=%v", err)
+	}
+	if marker := nonfencingReadMarker(t, db, lib); !marker.Present || marker.PurgeRequestedAt.IsZero() {
+		t.Fatalf("permanent delete recovered by the reaper: marker %+v, want a purge request", marker)
+	}
+}
+
+// A5: a restore commits and parks before its completion; an owner transfer
+// completes meanwhile. The late completion must not list the library under the
+// previous owner again.
+func TestNonfencingA5RestoreCompletionAfterTransfer(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	pause := pauseRestoreAfterTransition(t, lib)
+	owner := runOwner(func() error { return nonfencingRestore(db, lib) })
+	pause.wait(t)
+	newOwner := uuid.NewString()
+	if err := updateLibraryOwner(db, lib.OrgID, lib.LibraryID, newOwner, time.Now().UTC()); err != nil {
+		t.Fatalf("transfer: %v", err)
+	}
+	pause.resumeOwner()
+	if err := awaitOwner(t, owner); err != nil {
+		t.Fatalf("restore completion: %v", err)
+	}
+	assertOnlyOwnerListed(t, db, lib, lib.OwnerID, newOwner, "NONFENCING RED: late restore completion after a transfer")
+}
+
+// A6: the transfer lands between the restore completion's canonical snapshot
+// and its read-model write: the confirmation read must republish the newer
+// owner and remove the stale listing.
+func TestNonfencingA6RestorePublicationConfirmsItsSnapshot(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	newOwner := uuid.NewString()
+	transferBeforeOrdinaryPublication(t, db, lib, newOwner)
+	if err := nonfencingRestore(db, lib); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	assertOnlyOwnerListed(t, db, lib, lib.OwnerID, newOwner, "NONFENCING RED: restore published a stale snapshot over a transfer")
+}
+
+// A7: the same race for a repair (repeated request / reaper).
+func TestNonfencingA7RepairPublicationConfirmsItsSnapshot(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	if err := nonfencingRestore(db, lib); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	newOwner := uuid.NewString()
+	transferBeforeOrdinaryPublication(t, db, lib, newOwner)
+	if err := repairLibraryLifecycleDerivedState(db, lib.OrgID, lib.LibraryID); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	assertOnlyOwnerListed(t, db, lib, lib.OwnerID, newOwner, "NONFENCING RED: repair published a stale snapshot over a transfer")
+}
+
+// A8: a permanent delete whose completion failed, seen from a datacenter whose
+// local deleted_libraries scan does not see the marker yet: the bulk cleanup
+// discovers it through its continuation (global QUORUM) and resumes it.
+func TestNonfencingA8BulkCleanDiscoversDeleteThroughContinuation(t *testing.T) {
+	db := restoreGuardDBForTest(t)
+	lib := nonfencingSeedTrashedLibrary(t, db)
+	restore := failLibraryLifecycleCompletions(t)
+	if err := nonfencingPermanentDelete(db, lib); !errors.Is(err, errHardDeleteLibraryBatchExec) {
+		t.Fatalf("permanent delete with a failing completion = %v", err)
+	}
+	restore()
+	if present, _ := nonfencingCanonical(t, db, lib); present {
+		t.Fatal("setup: the canonical delete did not apply")
+	}
+	original := listDeletedLibraryMarkersFn
+	listDeletedLibraryMarkersFn = func(*dbpkg.DB, map[string]bool) ([][2]string, error) { return nil, nil }
+	t.Cleanup(func() { listDeletedLibraryMarkersFn = original })
+
+	resumed, failed := resumeCommittedPermanentDeletes(db, []string{lib.OrgID})
+	if failed != 0 {
+		t.Fatalf("bulk resume failed=%d", failed)
+	}
+	found := false
+	for _, r := range resumed {
+		found = found || r.Candidate.LibraryID == lib.LibraryID
+	}
+	if !found {
+		t.Fatal("NONFENCING RED: bulk discovery missed a committed permanent delete the local marker scan did not see")
+	}
+	var orgID string
+	if err := db.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, lib.LibraryID).Scan(&orgID); !errors.Is(err, gocql.ErrNotFound) {
+		t.Fatalf("bulk resume left libraries_by_id: err=%v", err)
+	}
+}
