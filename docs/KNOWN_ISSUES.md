@@ -6958,6 +6958,30 @@ on; a resumed completion recovers that floor from the permanent-delete
 continuations (global QUORUM, failing closed). The GC hard delete applies the
 same floor after its generation-fenced delete.
 
+**Round 8 (cross-audit of `508da2dea`).** The owner transfer
+(`updateLibraryOwner`, reached from the admin, org-admin and owner transfer
+routes) wrote the canonical row with a plain `UPDATE` — an upsert — and the
+lookup with client timestamps. Since this PR moved the lookup and read-model
+cleanup of a permanent delete into a completion after the canonical LWT, a
+transfer that read the library before the delete and wrote after its
+completion recreated the canonical row and the lookup; a transfer on a node
+whose clock is ahead left cells that outlived the delete. Now:
+
+- the canonical owner changes only by a global-SERIAL LWT conditioned on the
+  row existing at the lifecycle state it read (`created_at != null AND
+  deleted_at = <read> AND lifecycle_at = <read>`,
+  `TransferLibraryOwnerCanonical`), so it can never recreate a deleted row and
+  carries no client timestamp; a vanished library answers 404;
+- the transfer then writes the lookup and read model and re-reads the lifecycle
+  at SERIAL: if the library was permanently deleted meanwhile, it removes what
+  it wrote (its own later clock orders the removal);
+- a permanent delete (API and GC) stamps its completion above every write
+  observed on the lookup at EACH_QUORUM (`LibraryLookupWriteTimeFloor`), so a
+  lookup written with a future client timestamp is still removed.
+
+Other ordinary writers of `libraries` (rename, settings, size/HEAD updates) are
+not converted here; see `ISSUE-LIBRARY-ORDINARY-WRITERS-OUTLIVE-DELETE-01`.
+
 **Evidence** (Docker, real Cassandra, production helpers):
 `internal/api/v2/library_hard_delete_nonfencing_integration_test.go`:
 - stale-owner legs T1–T7, T4b, T5c;
@@ -6980,6 +7004,12 @@ same floor after its generation-fenced delete.
 - the adverse-client-clock soft delete, the permanent-delete resume (function
   and HTTP handler) and the soft-delete repair legs, each primitive's outcomes
   and the GC store hard delete.
+- round 8 (same file): A15 an owner transfer reads the library, a permanent
+  delete commits and completes, then the transfer resumes: no canonical row or
+  lookup is recreated; A16 the transfer's LWT commits first and its derived
+  rows land after the delete's completion: the transfer removes them; A17 an
+  owner transfer on a node an hour ahead, then a soft delete and a permanent
+  delete: canonical row and lookup are gone.
 - round 7 (same file): A12 a permanent delete parked, fenced (derived rows
   repaired at the fence value), then resumed and completed normally removes
   every derived row; A13 the same with the fence ahead of real time and a
@@ -7022,11 +7052,13 @@ reconciliation authority need a second datacenter or a stale replica to show a
 difference and are pinned by `TestLibraryLifecycleRound6Pins` and mutations M33
 and M34); A12 was reproduced RED on the round-7 audited head `015c331c1`
 (A13 and A14 need the floor to differ from real time and are covered by M36
-and M37).
+and M37); A15 and A17 were reproduced RED on the round-8 audited head
+`508da2dea` plus behavior-neutral seams (A16 needs the new structure and is
+covered by M39).
 `internal/db/library_lifecycle_test.go` pins the SERIAL domain of
 every lifecycle LWT and read, the lifecycle clock and the ambiguous-outcome
 settlement. `scripts/library-hard-delete-lease-nonfencing-mutation-validation.sh`
-runs 38 directed mutations, each required to go RED for its own reason, including: lifecycle
+runs 41 directed mutations, each required to go RED for its own reason, including: lifecycle
 clock not advanced, soft delete as a plain write, trashed lifecycle rows not
 stamped with the generation value, reaper dropping a continuation that can
 still apply, soft delete without a continuation, ordinary read-model rows
@@ -7042,7 +7074,9 @@ client timestamp (M31), projected `deleted_at` written with the client clock
 (M32), publication confirmed at SERIAL only (M33) and trash reconciliation
 deleting on a weak canonical read (M34); for round 7: permanent-delete
 completion stamped before its LWT (M35), ignoring the winning lifecycle floor
-(M37), and a resumed completion not recovering it (M36). The round-4 mutation "completion not re-checked"
+(M37), and a resumed completion not recovering it (M36); for round 8: owner transfer
+as a plain upsert (M38), transfer keeping derived rows written after a
+permanent delete (M39) and completion ignoring the lookup write times (M40). The round-4 mutation "completion not re-checked"
 was dropped: the completion no longer has a pre-LWT snapshot to re-check. `scripts/library-hard-delete-lease-nonfencing-multidc-validation.sh`
 runs the stale owner in dc-na against a new owner in dc-eu with `LOCAL_SERIAL`
 session defaults (positive evidence).
@@ -7092,6 +7126,25 @@ session defaults (positive evidence).
 This does not close `ISSUE-GC-USER-HARD-DELETE-RESTORE-SERIALIZATION-01` (user
 lease), does not establish GC activation readiness, and `GC_ENABLED=false`
 remains mandatory.
+
+### ISSUE-LIBRARY-ORDINARY-WRITERS-OUTLIVE-DELETE-01: Plain writers of the canonical library row can outlive a permanent delete
+
+**Status**: 🔴 Open — FOLLOW-UP. Registered in the PR #240 round-8 cross-audit (2026-10-01)
+**Severity**: Medium (P2)
+**Scope**: CURRENT-RUNTIME / FOLLOW-UP
+**Introduced by #240**: No (plain upserts of `libraries` predate it); #240 fences the owner transfer
+**Blocks #240**: No
+**Affected**: plain `UPDATE libraries` writers outside the lifecycle LWTs (rename, library settings, size and HEAD bookkeeping)
+
+These writers are upserts with client timestamps. One that read the library
+before a permanent delete and writes after it, or that runs on a node whose
+clock is ahead of the delete's, leaves cells that outlive the delete's row
+tombstone: a partial canonical row reappears. #240 converts the owner transfer
+(the writer that also rewrites the lookup) to a lifecycle-conditioned LWT and
+floors the permanent-delete completion above the lookup's write times; it does
+not convert every writer. Fix direction: condition each writer on the row
+existing (`IF EXISTS` / lifecycle state) or route them through a fenced
+primitive.
 
 ### ISSUE-LIBRARY-TRANSFER-STORAGE-COUNTERS-01: An owner transfer does not move the library's usage between the users' storage counters
 

@@ -37,10 +37,13 @@ only after a SERIAL lifecycle read. Round 7 (cross-audit of `015c331c1`): a
 permanent delete stamps its completion only after its delete applied, above the
 lifecycle value its winning attempt was conditioned on (recovered from the
 continuation on resume), so a reaper fence plus repair cannot outlive it.
-Seven cross-audit rounds; every confirmed finding was
+Round 8 (cross-audit of `508da2dea`): the owner transfer writes the canonical
+row only by a lifecycle-conditioned global-SERIAL LWT and removes its derived
+rows if the library was deleted meanwhile; permanent-delete completions are
+floored above the lookup's observed write times. Eight cross-audit rounds; every confirmed finding was
 reproduced RED on the audited head (or covered by a directed mutation where
 that head lacks the seam) and fixed. Evidence: RED→GREEN integration legs
-(T1–T7, G1–G9, R1–R6, A1–A14), 38 directed mutations RED, 3-DC legs including
+(T1–T7, G1–G9, R1–R6, A1–A17), 41 directed mutations RED, 3-DC legs including
 recovery and bulk discovery with a DC down; details in
 [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md#issue-gc-hard-delete-lease-nonfencing-01).
 Registered follow-ups (pre-existing): `ISSUE-GC-HARD-DELETE-LINK-CLEANUP-NONFENCING-01`,
