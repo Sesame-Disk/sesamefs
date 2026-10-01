@@ -5788,7 +5788,6 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 		return err
 	}
 	ownerID := previousRow.OwnerID
-	storageClass := previousRow.StorageClass
 	var (
 		encrypted              bool
 		storedRepresentationID string
@@ -5802,9 +5801,9 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 	// library. A genuine read error (non-NotFound) still propagates.
 	if errors.Is(err, gocql.ErrNotFound) {
 		if baseErr := s.db.Session().Query(
-			`SELECT owner_id, storage_class, encrypted, block_representation_id FROM libraries WHERE org_id = ? AND library_id = ?`,
+			`SELECT owner_id, encrypted, block_representation_id FROM libraries WHERE org_id = ? AND library_id = ?`,
 			orgID.String(), libraryID.String(),
-		).Scan(&ownerID, &storageClass, &encrypted, &storedRepresentationID); baseErr != nil {
+		).Scan(&ownerID, &encrypted, &storedRepresentationID); baseErr != nil {
 			if errors.Is(baseErr, gocql.ErrNotFound) {
 				return nil
 			}
@@ -5827,18 +5826,20 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 
 	now := time.Now().UTC()
 	// Protocol (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01), as in the API soft delete:
-	// durable continuation, global-SERIAL LWT creating a unique trash generation,
-	// counter adjustment, completion (lifecycle-owned rows at the generation's
-	// lifecycle timestamp, ordinary rows and the reconciliation request at the
-	// client timestamp), SERIAL re-check, then the continuation is cleared. The
-	// API lifecycle reaper finishes it after a crash.
+	// durable continuation of this attempt, global-SERIAL LWT creating a unique
+	// trash generation, counter adjustment, completion (reconciliation request,
+	// then the derived state from the canonical row read after the LWT:
+	// lifecycle-owned rows at the generation's lifecycle timestamp, ordinary rows
+	// at the client timestamp confirmed by a second SERIAL read), then this
+	// attempt's continuation is cleared. The API lifecycle reaper finishes it
+	// after a crash.
 	session := s.db.Session()
 	var intents []db.LibraryLifecyclePending
 	deletedAt, outcome, casErr := db.SoftDeleteLibraryGenerationWithIntent(session, orgID.String(), libraryID.String(), deletedBy.String(), now,
 		func(previous db.LibraryLifecycleState, target time.Time) error {
 			intent := db.LibraryLifecyclePending{
 				OrgID: orgID.String(), LibraryID: libraryID.String(), Operation: db.LibraryLifecycleOpSoftDelete,
-				TargetAt: target, OwnerID: ownerID, PrevLifecycleAt: previous.LifecycleAt,
+				TargetAt: target, AttemptID: uuid.NewString(), OwnerID: ownerID, PrevLifecycleAt: previous.LifecycleAt,
 			}
 			if err := db.InsertLibraryLifecyclePending(session, intent); err != nil {
 				return err
@@ -5875,28 +5876,14 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 		traffic.AdjustAggregateStorageCounters(s.db, orgID.String(), ownerID, libraryID.String(), false)
 	}
 
-	nextRow := previousRow
-	nextRow.OrgID, nextRow.LibraryID = orgID.String(), libraryID.String()
-	nextRow.StorageClass = storageClass
-	nextRow.UpdatedAt = deletedAt
-	nextRow.DeletedAt = &deletedAt
-	lifecycle := session.Batch(gocql.LoggedBatch).WithTimestamp(db.LibraryLifecycleWriteTimestamp(deletedAt))
-	if err := db.AddTrashedLifecycleOwnedQueries(lifecycle, nextRow, blockRepresentationID, nil); err != nil {
-		return err
-	}
-	active := session.Batch(gocql.LoggedBatch)
-	traffic.AddAggregateStorageReconciliationQueries(active, orgID.String(), ownerID, now)
-	if err == nil {
-		db.AddUpsertAdminLibraryActiveRowsQuery(active, nextRow)
-	}
 	// On failure the continuation stays: the lifecycle reaper (or the cascade's
 	// retry, through RepairLibraryLifecycleDerivedState) completes it.
-	for _, batch := range []*gocql.Batch{lifecycle, active} {
-		if err := db.ExecLibraryLifecycleCompletionFn(batch); err != nil {
-			return err
-		}
+	reconciliation := session.Batch(gocql.LoggedBatch)
+	traffic.AddAggregateStorageReconciliationQueries(reconciliation, orgID.String(), ownerID, now)
+	if err := db.ExecLibraryLifecycleCompletionFn(reconciliation); err != nil {
+		return err
 	}
-	if err := db.VerifyLibraryLifecycleCompletion(session, orgID.String(), libraryID.String(), deletedAt, repair); err != nil {
+	if err := db.CompleteLibraryLifecycleDerivedState(session, orgID.String(), libraryID.String(), deletedAt, nil, repair); err != nil {
 		return err
 	}
 	clearIntents()

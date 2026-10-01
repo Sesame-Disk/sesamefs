@@ -13,19 +13,28 @@ import (
 // The canonical lifecycle cells (libraries.deleted_at / deleted_by /
 // lifecycle_at and the row's existence) are written only by global-SERIAL LWTs
 // pinned to LibraryHeadSerialConsistency, the partition's existing Paxos
-// domain: soft delete, restore and hard delete. Paxos ballots on a partition
-// only grow, so a transition that commits later carries the larger write
-// timestamp whatever the clocks say.
+// domain: soft delete, restore, hard delete, and the reaper's fence of an
+// abandoned attempt. Paxos ballots on a partition only grow, so a transition
+// that commits later carries the larger write timestamp whatever the clocks say.
 //
-// libraries.lifecycle_at is the library's lifecycle clock. Soft delete and
-// restore advance it strictly (NextLibraryLifecycleAt) inside their LWT, and
-// soft delete uses the new value as deleted_at, so a trash generation is unique
-// per library: a stale owner holding generation D1 can never match a later
-// generation D2, even one created in the same millisecond. Each transition also
-// stamps its derived writes (marker, admin read model, lookup) with
-// LibraryLifecycleWriteTimestamp(its lifecycle_at): canonical transition order
-// is derived-write order, whenever a paused, retried or repaired completion
-// lands, on any node and in any datacenter.
+// libraries.lifecycle_at is the library's lifecycle clock. Every lifecycle LWT
+// is conditioned on the clock value it read, and soft delete, restore and the
+// fence advance it strictly (NextLibraryLifecycleAt). Soft delete uses the new
+// value as deleted_at, so a trash generation is unique per library: a stale
+// owner holding generation D1 can never match a later generation D2, even one
+// created in the same millisecond.
+//
+// Derived state is written in two parts (see AddTrashedLifecycleOwnedQueries):
+// lifecycle-owned rows (the deleted_libraries marker and the org trash listing)
+// are stamped with LibraryLifecycleWriteTimestamp(lifecycle value), so canonical
+// transition order is their write order wherever a paused, retried or repaired
+// completion lands; the ordinary owner/org/global read-model rows carry client
+// timestamps like every other writer of those columns, and are published only
+// from a SERIAL snapshot that a second SERIAL read proves current
+// (publishLibraryReadModel).
+//
+// Each attempt records a durable continuation (library_lifecycle_pending) before
+// its LWT; see LibraryLifecyclePending for its identity and retirement.
 
 // ErrLibraryLifecycleOutcomeUnknown reports a lifecycle LWT whose outcome
 // Cassandra could not report and that a SERIAL read could not settle: the
@@ -91,21 +100,6 @@ func casDeletedAt(previous map[string]interface{}) (present bool, deletedAt time
 	return true, time.Time{}
 }
 
-// readLibraryDeletedAtSerial reads canonical deleted_at in the lifecycle Paxos
-// domain, so it observes every committed lifecycle LWT.
-func readLibraryDeletedAtSerial(session *gocql.Session, orgID, libraryID string) (bool, time.Time, error) {
-	var deletedAt time.Time
-	err := session.Query(`SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?`,
-		orgID, libraryID).Consistency(LibraryHeadSerialConsistency).Scan(&deletedAt)
-	if errors.Is(err, gocql.ErrNotFound) {
-		return false, time.Time{}, nil
-	}
-	if err != nil {
-		return false, time.Time{}, err
-	}
-	return true, deletedAt, nil
-}
-
 // LibraryLifecycleState is the canonical lifecycle state of a library, read
 // in its Paxos domain.
 type LibraryLifecycleState struct {
@@ -147,10 +141,6 @@ func LibraryLifecycleWriteTimestamp(lifecycleAt time.Time) int64 {
 	return lifecycleAt.UnixMicro()
 }
 
-// softDeleteAttempts bounds the retries of a soft delete whose lifecycle clock
-// moved between its SERIAL read and its LWT (a concurrent restore/re-trash).
-const softDeleteAttempts = 5
-
 // SoftDeleteLibraryGeneration moves an active library to the trash under a new,
 // unique generation: deleted_at = lifecycle_at = NextLibraryLifecycleAt(previous
 // lifecycle_at, now), by an LWT conditioned on the row being active, existing
@@ -171,7 +161,7 @@ func SoftDeleteLibraryGeneration(session *gocql.Session, orgID, libraryID, delet
 // generation it is about to create: the caller records its durable
 // continuation there, before the canonical transition can commit.
 func SoftDeleteLibraryGenerationWithIntent(session *gocql.Session, orgID, libraryID, deletedBy string, now time.Time, beforeTransition func(previous LibraryLifecycleState, deletedAt time.Time) error) (time.Time, LibraryLifecycleOutcome, error) {
-	for attempt := 0; attempt < softDeleteAttempts; attempt++ {
+	for attempt := 0; attempt < lifecycleTransitionAttempts; attempt++ {
 		state, err := ReadLibraryLifecycleSerial(session, orgID, libraryID)
 		if err != nil {
 			return time.Time{}, LibraryLifecycleGenerationChanged, fmt.Errorf("read library %s before soft delete: %w", libraryID, err)
@@ -249,6 +239,22 @@ func settleLibrarySoftDelete(libraryID string, deletedAt time.Time, before Libra
 	}
 }
 
+// lifecycleTransitionAttempts bounds the retries of a lifecycle transition
+// whose lifecycle clock moved between its SERIAL read and its LWT while its
+// generation stayed the same (a concurrent transition, or the reaper's fence of
+// an abandoned attempt).
+const lifecycleTransitionAttempts = 5
+
+// laterLifecycleValue is the value a transition of a row in state must exceed:
+// its lifecycle clock, or its trash generation for a row trashed before the
+// clock existed.
+func laterLifecycleValue(state LibraryLifecycleState) time.Time {
+	if state.DeletedAt.After(state.LifecycleAt) {
+		return state.DeletedAt
+	}
+	return state.LifecycleAt
+}
+
 // DeleteTrashedLibraryGeneration removes the canonical `libraries` row only
 // while it is still trashed under generation deletedAt. It is the final,
 // fenced lifecycle mutation of a permanent delete / library cascade: an owner
@@ -264,53 +270,91 @@ func settleLibrarySoftDelete(libraryID string, deletedAt time.Time, before Libra
 // Applied: a hard delete is terminal, so whichever delete removed the row the
 // caller's completion writes are still due and cannot revive anything (another
 // owner can only have removed it if the lease was taken over while this LWT was
-// in flight). A row still at deletedAt reports ErrLibraryLifecycleOutcomeUnknown.
+// in flight). A row still at its precondition reports
+// ErrLibraryLifecycleOutcomeUnknown.
 func DeleteTrashedLibraryGeneration(session *gocql.Session, orgID, libraryID string, deletedAt time.Time) (LibraryLifecycleOutcome, error) {
+	return DeleteTrashedLibraryGenerationWithIntent(session, orgID, libraryID, deletedAt, nil)
+}
+
+// DeleteTrashedLibraryGenerationWithIntent is DeleteTrashedLibraryGeneration
+// with a hook that runs before each LWT attempt with the state it read: the
+// caller records its durable continuation there. The LWT is also conditioned on
+// that state's lifecycle clock, so the reaper can fence an abandoned attempt
+// (FenceLibraryLifecycleAttempt); an attempt whose clock moved while its
+// generation stayed is retried.
+func DeleteTrashedLibraryGenerationWithIntent(session *gocql.Session, orgID, libraryID string, deletedAt time.Time, beforeTransition func(previous LibraryLifecycleState) error) (LibraryLifecycleOutcome, error) {
 	if deletedAt.IsZero() {
 		return LibraryLifecycleGenerationChanged, fmt.Errorf("delete trashed library %s: zero deleted_at generation", libraryID)
 	}
-	previous := map[string]interface{}{}
-	applied, err := session.Query(`
-		DELETE FROM libraries WHERE org_id = ? AND library_id = ?
-		IF deleted_at = ?
-	`, orgID, libraryID, deletedAt).
-		SerialConsistency(LibraryHeadSerialConsistency).
-		MapScanCAS(previous)
-	if err == nil {
-		if applied {
-			return LibraryLifecycleApplied, nil
+	for attempt := 0; attempt < lifecycleTransitionAttempts; attempt++ {
+		state, err := ReadLibraryLifecycleSerial(session, orgID, libraryID)
+		if err != nil {
+			return LibraryLifecycleGenerationChanged, fmt.Errorf("read library %s before delete: %w", libraryID, err)
 		}
-		if present, _ := casDeletedAt(previous); !present {
+		if !state.Present {
 			return LibraryLifecycleTargetAbsent, nil
 		}
-		return LibraryLifecycleGenerationChanged, nil
+		if !state.DeletedAt.Equal(deletedAt) {
+			return LibraryLifecycleGenerationChanged, nil
+		}
+		if beforeTransition != nil {
+			if err := beforeTransition(state); err != nil {
+				return LibraryLifecycleGenerationChanged, err
+			}
+		}
+		previous := map[string]interface{}{}
+		applied, err := session.Query(`
+			DELETE FROM libraries WHERE org_id = ? AND library_id = ?
+			IF deleted_at = ? AND lifecycle_at = ?
+		`, orgID, libraryID, deletedAt, nullableTime(state.LifecycleAt)).
+			SerialConsistency(LibraryHeadSerialConsistency).
+			MapScanCAS(previous)
+		if err == nil {
+			if applied {
+				return LibraryLifecycleApplied, nil
+			}
+			present, current := casDeletedAt(previous)
+			if !present {
+				return LibraryLifecycleTargetAbsent, nil
+			}
+			if !current.Equal(deletedAt) {
+				return LibraryLifecycleGenerationChanged, nil
+			}
+			continue // only the lifecycle clock moved; the next read decides
+		}
+		if !isAmbiguousLibraryLifecycleCASError(err) {
+			return LibraryLifecycleGenerationChanged, fmt.Errorf("delete trashed library %s: %w", libraryID, err)
+		}
+		settled, readErr := ReadLibraryLifecycleSerial(session, orgID, libraryID)
+		outcome, settleErr := settleTrashedLibraryDelete(libraryID, deletedAt, state, err, settled, readErr)
+		if settleErr != nil || outcome != LibraryLifecycleGenerationChanged || !settled.DeletedAt.Equal(deletedAt) {
+			return outcome, settleErr
+		}
+		// Same generation under a moved lifecycle clock: retry against the new state.
 	}
-	if !isAmbiguousLibraryLifecycleCASError(err) {
-		return LibraryLifecycleGenerationChanged, fmt.Errorf("delete trashed library %s: %w", libraryID, err)
-	}
-	present, current, readErr := readLibraryDeletedAtSerial(session, orgID, libraryID)
-	return settleTrashedLibraryDelete(libraryID, deletedAt, err, present, current, readErr)
+	return LibraryLifecycleGenerationChanged, fmt.Errorf("delete trashed library %s: lifecycle kept changing", libraryID)
 }
 
 // settleTrashedLibraryDelete settles an ambiguous DeleteTrashedLibraryGeneration
-// from a SERIAL read of the canonical row.
-func settleTrashedLibraryDelete(libraryID string, deletedAt time.Time, casErr error, present bool, current time.Time, readErr error) (LibraryLifecycleOutcome, error) {
+// attempt made from state before, from a SERIAL read taken after it.
+func settleTrashedLibraryDelete(libraryID string, deletedAt time.Time, before LibraryLifecycleState, casErr error, after LibraryLifecycleState, readErr error) (LibraryLifecycleOutcome, error) {
 	if readErr != nil {
 		return LibraryLifecycleGenerationChanged, errors.Join(fmt.Errorf("%w: delete trashed library %s: %w", ErrLibraryLifecycleOutcomeUnknown, libraryID, casErr), fmt.Errorf("settlement read failed: %w", readErr))
 	}
-	if !present {
+	switch {
+	case !after.Present:
 		return LibraryLifecycleApplied, nil
-	}
-	if current.Equal(deletedAt) {
+	case after.DeletedAt.Equal(deletedAt) && after.LifecycleAt.Equal(before.LifecycleAt):
 		return LibraryLifecycleGenerationChanged, fmt.Errorf("%w: delete trashed library %s: %w", ErrLibraryLifecycleOutcomeUnknown, libraryID, casErr)
+	default:
+		return LibraryLifecycleGenerationChanged, nil
 	}
-	return LibraryLifecycleGenerationChanged, nil
 }
 
 // RestoreTrashedLibraryGeneration clears deleted_at / deleted_by on the
 // canonical row only while it is still trashed under generation deletedAt, and
 // advances the lifecycle clock past it. It returns the restore's lifecycle
-// value (the timestamp of its derived writes). It is the final, fenced
+// value (the timestamp of its lifecycle-owned writes). It is the final, fenced
 // lifecycle mutation of a restore: a conditional UPDATE never creates a row, so
 // a restore owner that lost the lease cannot resurrect a library another owner
 // permanently deleted, and it cannot restore a newer trash generation.
@@ -319,45 +363,77 @@ func settleTrashedLibraryDelete(libraryID string, deletedAt time.Time, casErr er
 //
 // On an ambiguous LWT outcome a SERIAL read settles it. An active row at the
 // restore's lifecycle value reports Applied (the completion writes are still
-// due). A row still at deletedAt reports ErrLibraryLifecycleOutcomeUnknown.
+// due). A row still at its precondition reports ErrLibraryLifecycleOutcomeUnknown.
 func RestoreTrashedLibraryGeneration(session *gocql.Session, orgID, libraryID string, deletedAt, now time.Time) (time.Time, LibraryLifecycleOutcome, error) {
+	return RestoreTrashedLibraryGenerationWithIntent(session, orgID, libraryID, deletedAt, now, nil)
+}
+
+// RestoreTrashedLibraryGenerationWithIntent is RestoreTrashedLibraryGeneration
+// with a hook that runs before each LWT attempt with the state it read and the
+// lifecycle value it is about to set: the caller records its durable
+// continuation there. The LWT is also conditioned on that state's lifecycle
+// clock (see DeleteTrashedLibraryGenerationWithIntent).
+func RestoreTrashedLibraryGenerationWithIntent(session *gocql.Session, orgID, libraryID string, deletedAt, now time.Time, beforeTransition func(previous LibraryLifecycleState, restoredAt time.Time) error) (time.Time, LibraryLifecycleOutcome, error) {
 	if deletedAt.IsZero() {
 		return time.Time{}, LibraryLifecycleGenerationChanged, fmt.Errorf("restore trashed library %s: zero deleted_at generation", libraryID)
 	}
-	// A trashed row carries lifecycle_at = deleted_at (set by the same soft-delete
-	// LWT), so the restore's value is strictly after it.
-	restoredAt := NextLibraryLifecycleAt(deletedAt, now)
-	previous := map[string]interface{}{}
-	applied, err := session.Query(`
-		UPDATE libraries SET updated_at = ?, deleted_at = null, deleted_by = null, lifecycle_at = ?
-		WHERE org_id = ? AND library_id = ?
-		IF deleted_at = ?
-	`, restoredAt, restoredAt, orgID, libraryID, deletedAt).
-		SerialConsistency(LibraryHeadSerialConsistency).
-		MapScanCAS(previous)
-	if err == nil {
-		if applied {
-			return restoredAt, LibraryLifecycleApplied, nil
+	for attempt := 0; attempt < lifecycleTransitionAttempts; attempt++ {
+		state, err := ReadLibraryLifecycleSerial(session, orgID, libraryID)
+		if err != nil {
+			return time.Time{}, LibraryLifecycleGenerationChanged, fmt.Errorf("read library %s before restore: %w", libraryID, err)
 		}
-		if present, _ := casDeletedAt(previous); !present {
+		if !state.Present {
 			return time.Time{}, LibraryLifecycleTargetAbsent, nil
 		}
-		return time.Time{}, LibraryLifecycleGenerationChanged, nil
+		if !state.DeletedAt.Equal(deletedAt) {
+			return time.Time{}, LibraryLifecycleGenerationChanged, nil
+		}
+		restoredAt := NextLibraryLifecycleAt(laterLifecycleValue(state), now)
+		if beforeTransition != nil {
+			if err := beforeTransition(state, restoredAt); err != nil {
+				return time.Time{}, LibraryLifecycleGenerationChanged, err
+			}
+		}
+		previous := map[string]interface{}{}
+		applied, err := session.Query(`
+			UPDATE libraries SET updated_at = ?, deleted_at = null, deleted_by = null, lifecycle_at = ?
+			WHERE org_id = ? AND library_id = ?
+			IF deleted_at = ? AND lifecycle_at = ?
+		`, restoredAt, restoredAt, orgID, libraryID, deletedAt, nullableTime(state.LifecycleAt)).
+			SerialConsistency(LibraryHeadSerialConsistency).
+			MapScanCAS(previous)
+		if err == nil {
+			if applied {
+				return restoredAt, LibraryLifecycleApplied, nil
+			}
+			present, current := casDeletedAt(previous)
+			if !present {
+				return time.Time{}, LibraryLifecycleTargetAbsent, nil
+			}
+			if !current.Equal(deletedAt) {
+				return time.Time{}, LibraryLifecycleGenerationChanged, nil
+			}
+			continue // only the lifecycle clock moved; the next read decides
+		}
+		if !isAmbiguousLibraryLifecycleCASError(err) {
+			return time.Time{}, LibraryLifecycleGenerationChanged, fmt.Errorf("restore trashed library %s: %w", libraryID, err)
+		}
+		settled, readErr := ReadLibraryLifecycleSerial(session, orgID, libraryID)
+		outcome, settleErr := settleTrashedLibraryRestore(libraryID, deletedAt, restoredAt, state, err, settled, readErr)
+		if outcome == LibraryLifecycleApplied {
+			return restoredAt, outcome, settleErr
+		}
+		if settleErr != nil || outcome != LibraryLifecycleGenerationChanged || !settled.DeletedAt.Equal(deletedAt) {
+			return time.Time{}, outcome, settleErr
+		}
+		// Same generation under a moved lifecycle clock: retry against the new state.
 	}
-	if !isAmbiguousLibraryLifecycleCASError(err) {
-		return time.Time{}, LibraryLifecycleGenerationChanged, fmt.Errorf("restore trashed library %s: %w", libraryID, err)
-	}
-	settled, readErr := ReadLibraryLifecycleSerial(session, orgID, libraryID)
-	outcome, settleErr := settleTrashedLibraryRestore(libraryID, deletedAt, restoredAt, err, settled, readErr)
-	if outcome == LibraryLifecycleApplied {
-		return restoredAt, outcome, settleErr
-	}
-	return time.Time{}, outcome, settleErr
+	return time.Time{}, LibraryLifecycleGenerationChanged, fmt.Errorf("restore trashed library %s: lifecycle kept changing", libraryID)
 }
 
 // settleTrashedLibraryRestore settles an ambiguous RestoreTrashedLibraryGeneration
-// from a SERIAL read of the canonical row.
-func settleTrashedLibraryRestore(libraryID string, deletedAt, restoredAt time.Time, casErr error, after LibraryLifecycleState, readErr error) (LibraryLifecycleOutcome, error) {
+// attempt made from state before, from a SERIAL read taken after it.
+func settleTrashedLibraryRestore(libraryID string, deletedAt, restoredAt time.Time, before LibraryLifecycleState, casErr error, after LibraryLifecycleState, readErr error) (LibraryLifecycleOutcome, error) {
 	if readErr != nil {
 		return LibraryLifecycleGenerationChanged, errors.Join(fmt.Errorf("%w: restore trashed library %s: %w", ErrLibraryLifecycleOutcomeUnknown, libraryID, casErr), fmt.Errorf("settlement read failed: %w", readErr))
 	}
@@ -366,11 +442,51 @@ func settleTrashedLibraryRestore(libraryID string, deletedAt, restoredAt time.Ti
 		return LibraryLifecycleTargetAbsent, nil
 	case after.DeletedAt.IsZero() && after.LifecycleAt.Equal(restoredAt):
 		return LibraryLifecycleApplied, nil
-	case after.DeletedAt.Equal(deletedAt):
+	case after.DeletedAt.Equal(deletedAt) && after.LifecycleAt.Equal(before.LifecycleAt):
 		return LibraryLifecycleGenerationChanged, fmt.Errorf("%w: restore trashed library %s: %w", ErrLibraryLifecycleOutcomeUnknown, libraryID, casErr)
 	default:
 		return LibraryLifecycleGenerationChanged, nil
 	}
+}
+
+// FenceLibraryLifecycleAttempt makes an abandoned attempt (its producer died
+// before its LWT, or the LWT failed without applying) unable to apply, so its
+// continuation can be retired. While the attempt's precondition still holds, a
+// global-SERIAL LWT conditioned on that same precondition advances the
+// library's lifecycle clock and changes nothing else; every lifecycle LWT is
+// conditioned on the clock value it read, so the attempt's LWT can no longer
+// commit, and a proposal of it still pending in Paxos is superseded by the
+// newer commit. A live producer whose attempt is fenced sees a moved clock and
+// retries under a new attempt. It returns the canonical state after the fence;
+// an LWT error is returned as is (retry later).
+func FenceLibraryLifecycleAttempt(session *gocql.Session, p LibraryLifecyclePending, now time.Time) (LibraryLifecycleState, error) {
+	state, err := ReadLibraryLifecycleSerial(session, p.OrgID, p.LibraryID)
+	if err != nil || !p.CanStillApply(state) {
+		return state, err
+	}
+	fencedAt := NextLibraryLifecycleAt(laterLifecycleValue(state), now)
+	previous := map[string]interface{}{}
+	if p.Operation == LibraryLifecycleOpSoftDelete {
+		// IF deleted_at = null holds for a missing row too: created_at != null
+		// keeps the fence from creating a ghost row.
+		_, err = session.Query(`
+			UPDATE libraries SET lifecycle_at = ? WHERE org_id = ? AND library_id = ?
+			IF deleted_at = null AND created_at != null AND lifecycle_at = ?
+		`, fencedAt, p.OrgID, p.LibraryID, nullableTime(state.LifecycleAt)).
+			SerialConsistency(LibraryHeadSerialConsistency).
+			MapScanCAS(previous)
+	} else {
+		_, err = session.Query(`
+			UPDATE libraries SET lifecycle_at = ? WHERE org_id = ? AND library_id = ?
+			IF deleted_at = ? AND lifecycle_at = ?
+		`, fencedAt, p.OrgID, p.LibraryID, state.DeletedAt, nullableTime(state.LifecycleAt)).
+			SerialConsistency(LibraryHeadSerialConsistency).
+			MapScanCAS(previous)
+	}
+	if err != nil {
+		return state, fmt.Errorf("fence abandoned %s attempt on library %s: %w", p.Operation, p.LibraryID, err)
+	}
+	return ReadLibraryLifecycleSerial(session, p.OrgID, p.LibraryID)
 }
 
 // ClearRestoredLibraryMarker repeats the marker removal of the restore that
@@ -410,9 +526,10 @@ var ExecLibraryLifecycleCompletionFn = func(batch *gocql.Batch) error { return b
 //   - The owner, org and global read-model rows hold ordinary mutable columns
 //     (owner, name, size...) that other writers update with client timestamps;
 //     a lifecycle completion writes them with its client timestamp too, never
-//     with the lifecycle clock (which can run ahead of real time), and a
-//     completion re-checks the canonical row afterwards and repairs if a later
-//     transition committed in between (VerifyLibraryLifecycleCompletion).
+//     with the lifecycle clock (which can run ahead of real time), and only
+//     from a SERIAL snapshot taken after its LWT that a second SERIAL read
+//     confirms (publishLibraryReadModel), so a paused completion or repair
+//     cannot leave a stale owner, name or lifecycle state behind.
 
 // AddTrashedLifecycleOwnedQueries adds the lifecycle-owned rows of trash
 // generation *row.DeletedAt: its marker, its trash listing row, and the removal
@@ -471,6 +588,87 @@ func readCanonicalLibraryRowSerial(session *gocql.Session, orgID, libraryID stri
 	return row, state, nil
 }
 
+// libraryReadModelPublishAttempts bounds the rounds of publishLibraryReadModel
+// against a canonical row that keeps changing under it.
+const libraryReadModelPublishAttempts = 5
+
+// libraryProjectionCurrent reports whether the read-model rows published from
+// (row, state) still project the canonical snapshot (next, nextState): every
+// projected canonical column, owner included, is unchanged.
+func libraryProjectionCurrent(row AdminLibraryProjectionRow, state LibraryLifecycleState, next AdminLibraryProjectionRow, nextState LibraryLifecycleState) bool {
+	if state.Present != nextState.Present {
+		return false
+	}
+	if !state.Present {
+		return true
+	}
+	return row.OwnerID == next.OwnerID && row.Name == next.Name && row.Encrypted == next.Encrypted &&
+		row.StorageClass == next.StorageClass && row.SizeBytes == next.SizeBytes && row.FileCount == next.FileCount &&
+		row.CreatedAt.Equal(next.CreatedAt) && row.UpdatedAt.Equal(next.UpdatedAt) && state.DeletedAt.Equal(nextState.DeletedAt)
+}
+
+// addDeleteSupersededAdminLibraryRowsQuery removes the owner and global rows
+// that a published snapshot wrote under keys the current canonical row no
+// longer has (another owner, another creation bucket), and every active row
+// once the canonical row is gone. The org row shares its key across snapshots
+// and is simply overwritten.
+func addDeleteSupersededAdminLibraryRowsQuery(batch *gocql.Batch, published, row AdminLibraryProjectionRow, present bool) {
+	if !present || published.OwnerID != row.OwnerID {
+		batch.Query(`DELETE FROM libraries_by_owner WHERE org_id = ? AND owner_id = ? AND library_id = ?`,
+			published.OrgID, published.OwnerID, published.LibraryID)
+	}
+	if !present {
+		batch.Query(`DELETE FROM libraries_by_org_updated WHERE org_id = ? AND library_id = ?`,
+			published.OrgID, published.LibraryID)
+	}
+	if !present || AdminLibraryBucketDay(published.CreatedAt) != AdminLibraryBucketDay(row.CreatedAt) {
+		batch.Query(`DELETE FROM libraries_admin_global_by_updated WHERE bucket_day = ? AND org_id = ? AND library_id = ?`,
+			AdminLibraryBucketDay(published.CreatedAt), published.OrgID, published.LibraryID)
+	}
+}
+
+// publishLibraryReadModel publishes the ordinary owner, org and global
+// read-model rows of the canonical snapshot (row, state), read at SERIAL, and
+// proves the snapshot is still current with a second SERIAL read. Those rows
+// carry client timestamps, as every other writer of their columns does, so a
+// snapshot that went stale while this publication was paused would otherwise
+// land over a newer writer (an owner transfer, a rename, a later lifecycle
+// transition) and stay. When the canonical row changed, the newer snapshot is
+// published, removing what the stale one wrote under keys that no longer exist,
+// until a round is confirmed. It returns an error (the caller keeps its
+// continuation) if the row keeps changing. An absent row publishes nothing.
+func publishLibraryReadModel(session *gocql.Session, orgID, libraryID string, row AdminLibraryProjectionRow, state LibraryLifecycleState) error {
+	var published *AdminLibraryProjectionRow
+	for attempt := 0; attempt < libraryReadModelPublishAttempts; attempt++ {
+		batch := session.Batch(gocql.LoggedBatch)
+		if published != nil {
+			addDeleteSupersededAdminLibraryRowsQuery(batch, *published, row, state.Present)
+		}
+		if state.Present {
+			AddUpsertAdminLibraryActiveRowsQuery(batch, row)
+		}
+		if len(batch.Entries) > 0 {
+			if err := ExecLibraryLifecycleCompletionFn(batch); err != nil {
+				return fmt.Errorf("publish library %s read model: %w", libraryID, err)
+			}
+		}
+		if !state.Present {
+			return nil
+		}
+		next, nextState, err := readCanonicalLibraryRowSerial(session, orgID, libraryID)
+		if err != nil {
+			return fmt.Errorf("confirm library %s read model: %w", libraryID, err)
+		}
+		if libraryProjectionCurrent(row, state, next, nextState) {
+			return nil
+		}
+		stale := row
+		published = &stale
+		row, state = next, nextState
+	}
+	return fmt.Errorf("publish library %s read model: canonical row kept changing", libraryID)
+}
+
 // RepairLibraryLifecycleDerivedState rewrites the derived state (marker, trash
 // listing rows, owner/org/global read-model rows) of the library's current
 // canonical lifecycle state, taking the canonical row read at SERIAL as the only
@@ -480,9 +678,10 @@ func readCanonicalLibraryRowSerial(session *gocql.Session, orgID, libraryID stri
 // read at EACH_QUORUM, so a row acknowledged in another datacenter is seen; if
 // any read cannot be made at that strength the repair returns an error (retry
 // later) instead of reporting success. Lifecycle-owned rows carry the current
-// generation's lifecycle timestamp; the ordinary read-model rows carry the
-// client timestamp. It does nothing for an absent row (see the permanent-delete
-// resume).
+// generation's lifecycle timestamp, so a stale repair loses to any later
+// transition; the ordinary read-model rows are published by
+// publishLibraryReadModel, which confirms its snapshot. It does nothing for an
+// absent row (see the permanent-delete resume).
 func RepairLibraryLifecycleDerivedState(session *gocql.Session, orgID, libraryID string, resolveBlockRepresentation func() string) error {
 	row, state, err := readCanonicalLibraryRowSerial(session, orgID, libraryID)
 	if err != nil {
@@ -495,43 +694,54 @@ func RepairLibraryLifecycleDerivedState(session *gocql.Session, orgID, libraryID
 	if err != nil {
 		return fmt.Errorf("read trash listing of %s for repair: %w", libraryID, err)
 	}
-	var lifecycle *gocql.Batch
-	switch {
-	case !state.DeletedAt.IsZero():
-		lifecycle = session.Batch(gocql.LoggedBatch).WithTimestamp(LibraryLifecycleWriteTimestamp(state.DeletedAt))
-		if err := AddTrashedLifecycleOwnedQueries(lifecycle, row, resolveBlockRepresentation(), trashRows); err != nil {
-			return err
-		}
-	case !state.LifecycleAt.IsZero():
-		lifecycle = session.Batch(gocql.LoggedBatch).WithTimestamp(LibraryLifecycleWriteTimestamp(state.LifecycleAt))
-		AddRestoredLifecycleOwnedQueries(lifecycle, libraryID, trashRows)
+	if err := writeLifecycleOwnedRows(session, row, state, laterLifecycleValue(state), trashRows, resolveBlockRepresentation); err != nil {
+		return fmt.Errorf("repair library %s lifecycle rows: %w", libraryID, err)
 	}
-	if lifecycle != nil {
-		if err := ExecLibraryLifecycleCompletionFn(lifecycle); err != nil {
-			return fmt.Errorf("repair library %s lifecycle rows: %w", libraryID, err)
-		}
-	}
-	active := session.Batch(gocql.LoggedBatch)
-	AddUpsertAdminLibraryActiveRowsQuery(active, row)
-	if err := ExecLibraryLifecycleCompletionFn(active); err != nil {
-		return fmt.Errorf("repair library %s read model: %w", libraryID, err)
-	}
-	return nil
+	return publishLibraryReadModel(session, orgID, libraryID, row, state)
 }
 
-// VerifyLibraryLifecycleCompletion is the last step of a soft delete's or a
-// restore's completion: if the canonical lifecycle has moved past the
-// transition's own value (a later transition committed while this completion
-// was running or paused), the completion's ordinary read-model writes may have
-// landed over the later state, so the derived state is repaired from the
-// canonical row.
-func VerifyLibraryLifecycleCompletion(session *gocql.Session, orgID, libraryID string, lifecycleAt time.Time, resolveBlockRepresentation func() string) error {
-	state, err := ReadLibraryLifecycleSerial(session, orgID, libraryID)
-	if err != nil {
-		return fmt.Errorf("verify library %s lifecycle completion: %w", libraryID, err)
-	}
-	if state.Present && state.LifecycleAt.Equal(lifecycleAt) {
+// writeLifecycleOwnedRows writes the lifecycle-owned rows of the canonical
+// snapshot (row, state) stamped with lifecycle value at: the trashed
+// generation's marker and trash row, or, for an active row that went through a
+// lifecycle transition, the removal of its marker and of its trash rows among
+// trashRows. An active row with no transition has none.
+func writeLifecycleOwnedRows(session *gocql.Session, row AdminLibraryProjectionRow, state LibraryLifecycleState, at time.Time, trashRows []AdminDeletedLibraryProjectionRow, resolveBlockRepresentation func() string) error {
+	if at.IsZero() {
 		return nil
 	}
-	return RepairLibraryLifecycleDerivedState(session, orgID, libraryID, resolveBlockRepresentation)
+	batch := session.Batch(gocql.LoggedBatch).WithTimestamp(LibraryLifecycleWriteTimestamp(at))
+	if !state.DeletedAt.IsZero() {
+		if err := AddTrashedLifecycleOwnedQueries(batch, row, resolveBlockRepresentation(), trashRows); err != nil {
+			return err
+		}
+	} else {
+		AddRestoredLifecycleOwnedQueries(batch, row.LibraryID, trashRows)
+	}
+	return ExecLibraryLifecycleCompletionFn(batch)
+}
+
+// CompleteLibraryLifecycleDerivedState writes the derived state of a soft
+// delete or restore that committed at lifecycleAt, from the canonical row read
+// at SERIAL after its LWT (never from a snapshot taken before it): the
+// lifecycle-owned rows stamped with lifecycleAt (trashRows are the trash rows
+// the transition is known to supersede, nil for a soft delete), then the
+// ordinary read model through publishLibraryReadModel. If a later transition
+// already committed, the whole derived state is repaired from the canonical row
+// instead. An absent row (permanently deleted since) needs nothing: the
+// permanent delete owns its completion.
+func CompleteLibraryLifecycleDerivedState(session *gocql.Session, orgID, libraryID string, lifecycleAt time.Time, trashRows []AdminDeletedLibraryProjectionRow, resolveBlockRepresentation func() string) error {
+	row, state, err := readCanonicalLibraryRowSerial(session, orgID, libraryID)
+	if err != nil {
+		return fmt.Errorf("read canonical library %s for completion: %w", libraryID, err)
+	}
+	if !state.Present {
+		return nil
+	}
+	if !state.LifecycleAt.Equal(lifecycleAt) {
+		return RepairLibraryLifecycleDerivedState(session, orgID, libraryID, resolveBlockRepresentation)
+	}
+	if err := writeLifecycleOwnedRows(session, row, state, lifecycleAt, trashRows, resolveBlockRepresentation); err != nil {
+		return fmt.Errorf("complete library %s lifecycle rows: %w", libraryID, err)
+	}
+	return publishLibraryReadModel(session, orgID, libraryID, row, state)
 }

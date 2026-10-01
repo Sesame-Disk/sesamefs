@@ -953,26 +953,26 @@ func addDeleteAdminLibraryReadModelQueries(db interface{ Session() *gocql.Sessio
 // traffic.DeleteLibraryStorageCounter.
 //
 // Protocol (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01):
-//  1. a durable continuation (library_lifecycle_pending) is recorded;
+//  1. a durable continuation of this attempt (library_lifecycle_pending, with
+//     its own attempt id) is recorded;
 //  2. the canonical transition, a global-SERIAL LWT creating a unique trash
 //     generation (dbpkg.SoftDeleteLibraryGenerationWithIntent);
 //  3. the immediate counter adjustment;
-//  4. the completion: the marker and trash listing row stamped with the
-//     generation's lifecycle timestamp, then the ordinary read-model rows and the
-//     storage reconciliation request with the client timestamp;
-//  5. a SERIAL re-check that repairs the derived state if a later transition
-//     committed meanwhile, and only then the continuation is cleared.
+//  4. the completion (completeLibraryLifecycleTransition): the storage
+//     reconciliation request, then the derived state built from the canonical
+//     row read at SERIAL after the LWT — marker and trash listing row stamped
+//     with the generation's lifecycle timestamp, ordinary read-model rows with
+//     the client timestamp, confirmed by a second SERIAL read — and only then
+//     this attempt's continuation is cleared.
 //
 // If the process dies anywhere after 1, the lifecycle reaper finishes the
-// transition once it can no longer change (RecoverPendingLibraryLifecycles). A
-// library another request already trashed is treated as done and its derived
-// state is repaired instead.
+// attempt once it can no longer apply, fencing it first if it is abandoned
+// (RecoverPendingLibraryLifecycles). An attempt that lost to another request
+// clears only its own continuation: the winner's stays until the winner, or the
+// reaper, completes it. A library another request already trashed is treated as
+// done and its derived state is repaired instead.
 func softDeleteLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID, deletedBy, libraryID string) error {
 	now := libraryLifecycleNow().UTC()
-	previousRow, err := dbpkg.ReadAdminLibraryProjectionRow(db.Session(), orgID, libraryID)
-	if err != nil {
-		return fmt.Errorf("read library projection row: %w", err)
-	}
 	// Stamp the block representation onto the GC marker while the libraries row is
 	// still present, so the deferred trash-purge cascade can resolve the SHA-1
 	// mapping domain even after the row is hard-deleted. Best-effort: never fail a
@@ -991,7 +991,7 @@ func softDeleteLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID,
 		func(previous dbpkg.LibraryLifecycleState, target time.Time) error {
 			intent := dbpkg.LibraryLifecyclePending{
 				OrgID: orgID, LibraryID: libraryID, Operation: dbpkg.LibraryLifecycleOpSoftDelete,
-				TargetAt: target, OwnerID: ownerID, PrevLifecycleAt: previous.LifecycleAt,
+				TargetAt: target, AttemptID: uuid.NewString(), OwnerID: ownerID, PrevLifecycleAt: previous.LifecycleAt,
 			}
 			if err := dbpkg.InsertLibraryLifecyclePending(db.Session(), intent); err != nil {
 				return err
@@ -1006,7 +1006,8 @@ func softDeleteLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID,
 	if outcome != dbpkg.LibraryLifecycleApplied {
 		clearLibraryLifecycleIntents(db, intents)
 		if outcome == dbpkg.LibraryLifecycleGenerationChanged {
-			// Another request trashed it first; that request owns the accounting.
+			// Another request trashed it first; that request (or the reaper, through
+			// its continuation) owns the accounting.
 			return repairLibraryLifecycleDerivedState(db, orgID, libraryID)
 		}
 		return fmt.Errorf("soft-delete library %s: library not found", libraryID)
@@ -1018,42 +1019,38 @@ func softDeleteLibrary(db interface{ Session() *gocql.Session }, orgID, ownerID,
 	// Read the live lib-scope counter and subtract from aggregate scopes.
 	traffic.AdjustAggregateStorageCounters(db, orgID, ownerID, libraryID, false)
 
-	nextRow := previousRow
-	nextRow.UpdatedAt = deletedAt
-	nextRow.DeletedAt = &deletedAt
-	lifecycle := db.Session().Batch(gocql.LoggedBatch).WithTimestamp(dbpkg.LibraryLifecycleWriteTimestamp(deletedAt))
-	if err := dbpkg.AddTrashedLifecycleOwnedQueries(lifecycle, nextRow, blockRepresentationID, nil); err != nil {
-		return err
-	}
-	active := db.Session().Batch(gocql.LoggedBatch)
-	dbpkg.AddUpsertAdminLibraryActiveRowsQuery(active, nextRow)
-	traffic.AddAggregateStorageReconciliationQueries(active, orgID, ownerID, now)
-	if err := completeLibraryLifecycleTransition(db, orgID, libraryID, deletedAt, intents, lifecycle, active); err != nil {
+	resolve := func() string { return blockRepresentationID }
+	if err := completeLibraryLifecycleTransition(db, orgID, ownerID, libraryID, deletedAt, now, nil, resolve, intents); err != nil {
 		// The library is in the trash; the reaper (or a repeated delete) completes it.
 		return fmt.Errorf("library trashed but its completion is pending: %w", err)
 	}
 	return nil
 }
 
-// completeLibraryLifecycleTransition executes a transition's completion
-// batches, re-checks the canonical lifecycle (repairing the derived state if a
-// later transition committed meanwhile) and only then clears the transition's
-// continuation. On any error the continuation stays for the reaper.
-func completeLibraryLifecycleTransition(db interface{ Session() *gocql.Session }, orgID, libraryID string, lifecycleAt time.Time, intents []dbpkg.LibraryLifecyclePending, batches ...*gocql.Batch) error {
-	for _, batch := range batches {
-		if err := dbpkg.ExecLibraryLifecycleCompletionFn(batch); err != nil {
-			return err
-		}
+// completeLibraryLifecycleTransition completes a soft delete or restore that
+// committed at lifecycleAt: it records the storage reconciliation request, writes
+// the derived state from the canonical row read after the LWT
+// (dbpkg.CompleteLibraryLifecycleDerivedState: lifecycle-owned rows, then the
+// confirmed ordinary read model, or a full repair if a later transition already
+// committed), and only then clears the attempt's continuations. On any error
+// the continuations stay for the reaper.
+func completeLibraryLifecycleTransition(db interface{ Session() *gocql.Session }, orgID, ownerID, libraryID string, lifecycleAt, now time.Time, trashRows []dbpkg.AdminDeletedLibraryProjectionRow, resolveBlockRepresentation func() string, intents []dbpkg.LibraryLifecyclePending) error {
+	reconciliation := db.Session().Batch(gocql.LoggedBatch)
+	traffic.AddAggregateStorageReconciliationQueries(reconciliation, orgID, ownerID, now)
+	if err := dbpkg.ExecLibraryLifecycleCompletionFn(reconciliation); err != nil {
+		return err
 	}
-	if err := dbpkg.VerifyLibraryLifecycleCompletion(db.Session(), orgID, libraryID, lifecycleAt, resolveBlockRepresentationForRepair(db, orgID, libraryID)); err != nil {
+	if err := dbpkg.CompleteLibraryLifecycleDerivedState(db.Session(), orgID, libraryID, lifecycleAt, trashRows, resolveBlockRepresentation); err != nil {
 		return err
 	}
 	clearLibraryLifecycleIntents(db, intents)
 	return nil
 }
 
-// clearLibraryLifecycleIntents removes continuations whose transition is
-// settled. A failed delete only leaves work the reaper finishes harmlessly.
+// clearLibraryLifecycleIntents removes this caller's own attempt continuations
+// once each attempt is settled (completed, or definitively not applied). It
+// never touches another attempt's row. A failed delete only leaves work the
+// reaper finishes harmlessly.
 func clearLibraryLifecycleIntents(db interface{ Session() *gocql.Session }, intents []dbpkg.LibraryLifecyclePending) {
 	for _, intent := range intents {
 		if err := dbpkg.DeleteLibraryLifecyclePending(db.Session(), intent); err != nil {
@@ -1089,8 +1086,9 @@ func resolveBlockRepresentationForRepair(db interface{ Session() *gocql.Session 
 // library's current canonical lifecycle generation
 // (dbpkg.RepairLibraryLifecycleDerivedState). It completes a soft delete or a
 // restore whose completion writes failed after the canonical transition; it
-// never touches storage aggregates (their reconciliation request is durable
-// before every transition).
+// never touches storage aggregates: the reconciliation request of a transition
+// is written by its completion, or by the reaper from the transition's durable
+// continuation, after the canonical change.
 func repairLibraryLifecycleDerivedState(db interface{ Session() *gocql.Session }, orgID, libraryID string) error {
 	return dbpkg.RepairLibraryLifecycleDerivedState(db.Session(), orgID, libraryID, resolveBlockRepresentationForRepair(db, orgID, libraryID))
 }
@@ -1166,10 +1164,6 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 		return fmt.Errorf("library is not in trash")
 	}
 
-	previousRow, err := dbpkg.ReadAdminLibraryProjectionRow(db.Session(), orgID, libraryID)
-	if err != nil {
-		return fmt.Errorf("read library projection row: %w", err)
-	}
 	// Early exit only: this renewal does not fence the lifecycle mutation below (the
 	// owner can pause right after it). The restore is fenced on the deleted_at
 	// generation verified above (ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01).
@@ -1180,18 +1174,20 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	if !owned {
 		return fmt.Errorf("lost library restore lock for %s", libraryID)
 	}
-	restoredAt := dbpkg.NextLibraryLifecycleAt(canonicalDeletedAt, now)
-	intents := []dbpkg.LibraryLifecyclePending{{
-		OrgID: orgID, LibraryID: libraryID, Operation: dbpkg.LibraryLifecycleOpRestore,
-		TargetAt: restoredAt, OwnerID: ownerID, PrevDeletedAt: canonicalDeletedAt,
-	}}
-	if err := dbpkg.InsertLibraryLifecyclePending(db.Session(), intents[0]); err != nil {
-		return err
-	}
-	if err := beforeLibraryLifecycleTransitionFn("restore", libraryID); err != nil {
-		return err
-	}
-	restoredAt, outcome, err := dbpkg.RestoreTrashedLibraryGeneration(db.Session(), orgID, libraryID, canonicalDeletedAt, now)
+	var intents []dbpkg.LibraryLifecyclePending
+	restoredAt, outcome, err := dbpkg.RestoreTrashedLibraryGenerationWithIntent(db.Session(), orgID, libraryID, canonicalDeletedAt, now,
+		func(previous dbpkg.LibraryLifecycleState, target time.Time) error {
+			intent := dbpkg.LibraryLifecyclePending{
+				OrgID: orgID, LibraryID: libraryID, Operation: dbpkg.LibraryLifecycleOpRestore,
+				TargetAt: target, AttemptID: uuid.NewString(), OwnerID: ownerID,
+				PrevLifecycleAt: previous.LifecycleAt, PrevDeletedAt: canonicalDeletedAt,
+			}
+			if err := dbpkg.InsertLibraryLifecyclePending(db.Session(), intent); err != nil {
+				return err
+			}
+			intents = append(intents, intent)
+			return beforeLibraryLifecycleTransitionFn("restore", libraryID)
+		})
 	if err != nil {
 		// An unknown outcome keeps its continuation for the reaper.
 		return fmt.Errorf("restore library: %w", err)
@@ -1222,15 +1218,8 @@ func restoreDeletedLibrary(db interface{ Session() *gocql.Session }, orgID, owne
 	// Re-add the library's storage to aggregates now that the canonical row is active.
 	traffic.AdjustAggregateStorageCounters(db, orgID, ownerID, libraryID, true)
 
-	nextRow := previousRow
-	nextRow.UpdatedAt = restoredAt
-	nextRow.DeletedAt = nil
-	lifecycle := db.Session().Batch(gocql.LoggedBatch).WithTimestamp(dbpkg.LibraryLifecycleWriteTimestamp(restoredAt))
-	dbpkg.AddRestoredLifecycleOwnedQueries(lifecycle, libraryID, []dbpkg.AdminDeletedLibraryProjectionRow{{OrgID: orgID, LibraryID: libraryID, DeletedAt: canonicalDeletedAt}})
-	active := db.Session().Batch(gocql.LoggedBatch)
-	dbpkg.AddUpsertAdminLibraryActiveRowsQuery(active, nextRow)
-	traffic.AddAggregateStorageReconciliationQueries(active, orgID, ownerID, now)
-	if err := completeLibraryLifecycleTransition(db, orgID, libraryID, restoredAt, intents, lifecycle, active); err != nil {
+	superseded := []dbpkg.AdminDeletedLibraryProjectionRow{{OrgID: orgID, LibraryID: libraryID, DeletedAt: canonicalDeletedAt}}
+	if err := completeLibraryLifecycleTransition(db, orgID, ownerID, libraryID, restoredAt, now, superseded, resolveBlockRepresentationForRepair(db, orgID, libraryID), intents); err != nil {
 		// The reaper (or a repeated restore) completes it.
 		return fmt.Errorf("library restored but its completion is pending: %w", err)
 	}

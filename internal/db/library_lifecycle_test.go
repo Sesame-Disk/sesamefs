@@ -39,10 +39,11 @@ func TestLibraryLifecycleFencePinsGlobalSerial(t *testing.T) {
 		name, domain string
 		lwts, serial int
 	}{
-		{name: "DeleteTrashedLibraryGeneration", domain: "LibraryHeadSerialConsistency", lwts: 1},
-		{name: "RestoreTrashedLibraryGeneration", domain: "LibraryHeadSerialConsistency", lwts: 1},
-		{name: "readLibraryDeletedAtSerial", domain: "LibraryHeadSerialConsistency", serial: 1},
+		{name: "DeleteTrashedLibraryGenerationWithIntent", domain: "LibraryHeadSerialConsistency", lwts: 1},
+		{name: "RestoreTrashedLibraryGenerationWithIntent", domain: "LibraryHeadSerialConsistency", lwts: 1},
+		{name: "FenceLibraryLifecycleAttempt", domain: "LibraryHeadSerialConsistency", lwts: 2},
 		{name: "ReadLibraryLifecycleSerial", domain: "LibraryHeadSerialConsistency", serial: 1},
+		{name: "readCanonicalLibraryRowSerial", domain: "LibraryHeadSerialConsistency", serial: 1},
 		{name: "SoftDeleteLibraryGenerationWithIntent", domain: "LibraryHeadSerialConsistency", lwts: 1},
 	} {
 		var decl *ast.FuncDecl
@@ -135,16 +136,21 @@ func TestLibraryLifecycleSettlement(t *testing.T) {
 		}
 	}
 
+	trashed := LibraryLifecycleState{Present: true, DeletedAt: gen, LifecycleAt: gen}
+	fenced := LibraryLifecycleState{Present: true, DeletedAt: gen, LifecycleAt: gen.Add(time.Millisecond)}
+
 	t.Run("delete", func(t *testing.T) {
-		got, err := settleTrashedLibraryDelete("l", gen, casErr, false, time.Time{}, nil)
+		got, err := settleTrashedLibraryDelete("l", gen, trashed, casErr, LibraryLifecycleState{}, nil)
 		check(t, "row gone", got, err, LibraryLifecycleApplied, false)
-		got, err = settleTrashedLibraryDelete("l", gen, casErr, true, gen, nil)
-		check(t, "row still at generation", got, err, LibraryLifecycleGenerationChanged, true)
-		got, err = settleTrashedLibraryDelete("l", gen, casErr, true, time.Time{}, nil)
+		got, err = settleTrashedLibraryDelete("l", gen, trashed, casErr, trashed, nil)
+		check(t, "row still at precondition", got, err, LibraryLifecycleGenerationChanged, true)
+		got, err = settleTrashedLibraryDelete("l", gen, trashed, casErr, fenced, nil)
+		check(t, "same generation, clock moved (fenced)", got, err, LibraryLifecycleGenerationChanged, false)
+		got, err = settleTrashedLibraryDelete("l", gen, trashed, casErr, LibraryLifecycleState{Present: true, LifecycleAt: newer}, nil)
 		check(t, "row restored", got, err, LibraryLifecycleGenerationChanged, false)
-		got, err = settleTrashedLibraryDelete("l", gen, casErr, true, newer, nil)
+		got, err = settleTrashedLibraryDelete("l", gen, trashed, casErr, LibraryLifecycleState{Present: true, DeletedAt: newer, LifecycleAt: newer}, nil)
 		check(t, "row trashed again", got, err, LibraryLifecycleGenerationChanged, false)
-		got, err = settleTrashedLibraryDelete("l", gen, casErr, false, time.Time{}, readErr)
+		got, err = settleTrashedLibraryDelete("l", gen, trashed, casErr, LibraryLifecycleState{}, readErr)
 		check(t, "read failed", got, err, LibraryLifecycleGenerationChanged, true)
 	})
 
@@ -153,15 +159,17 @@ func TestLibraryLifecycleSettlement(t *testing.T) {
 		active := func(at time.Time) LibraryLifecycleState {
 			return LibraryLifecycleState{Present: true, LifecycleAt: at}
 		}
-		got, err := settleTrashedLibraryRestore("l", gen, restored, casErr, active(restored), nil)
+		got, err := settleTrashedLibraryRestore("l", gen, restored, trashed, casErr, active(restored), nil)
 		check(t, "row active at the restore's lifecycle value", got, err, LibraryLifecycleApplied, false)
-		got, err = settleTrashedLibraryRestore("l", gen, restored, casErr, LibraryLifecycleState{Present: true, DeletedAt: gen, LifecycleAt: gen}, nil)
-		check(t, "row still at generation", got, err, LibraryLifecycleGenerationChanged, true)
-		got, err = settleTrashedLibraryRestore("l", gen, restored, casErr, LibraryLifecycleState{}, nil)
+		got, err = settleTrashedLibraryRestore("l", gen, restored, trashed, casErr, trashed, nil)
+		check(t, "row still at precondition", got, err, LibraryLifecycleGenerationChanged, true)
+		got, err = settleTrashedLibraryRestore("l", gen, restored, trashed, casErr, fenced, nil)
+		check(t, "same generation, clock moved (fenced)", got, err, LibraryLifecycleGenerationChanged, false)
+		got, err = settleTrashedLibraryRestore("l", gen, restored, trashed, casErr, LibraryLifecycleState{}, nil)
 		check(t, "row gone", got, err, LibraryLifecycleTargetAbsent, false)
-		got, err = settleTrashedLibraryRestore("l", gen, restored, casErr, active(restored.Add(time.Millisecond)), nil)
+		got, err = settleTrashedLibraryRestore("l", gen, restored, trashed, casErr, active(restored.Add(time.Millisecond)), nil)
 		check(t, "restored by another owner", got, err, LibraryLifecycleGenerationChanged, false)
-		got, err = settleTrashedLibraryRestore("l", gen, restored, casErr, LibraryLifecycleState{}, readErr)
+		got, err = settleTrashedLibraryRestore("l", gen, restored, trashed, casErr, LibraryLifecycleState{}, readErr)
 		check(t, "read failed", got, err, LibraryLifecycleGenerationChanged, true)
 	})
 
@@ -222,5 +230,118 @@ func TestLibraryLifecycleRepairReadsAreStrong(t *testing.T) {
 	k := strings.Index(string(read), "func ListDeletedAdminLibraryRowsByOrgEachQuorum(")
 	if k < 0 || !strings.Contains(string(read)[k:k+600], ".Consistency(gocql.EachQuorum)") {
 		t.Errorf("%s: ListDeletedAdminLibraryRowsByOrgEachQuorum is not EACH_QUORUM", reason)
+	}
+}
+
+// An attempt can apply only while the canonical row still matches its LWT
+// condition, lifecycle clock included: a fence (or any later transition) that
+// moves the clock retires it.
+func TestLibraryLifecyclePendingCanStillApply(t *testing.T) {
+	l0 := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	d := l0.Add(time.Second)
+	active := LibraryLifecycleState{Present: true, LifecycleAt: l0}
+	trashed := LibraryLifecycleState{Present: true, DeletedAt: d, LifecycleAt: d}
+	soft := LibraryLifecyclePending{Operation: LibraryLifecycleOpSoftDelete, PrevLifecycleAt: l0}
+	restore := LibraryLifecyclePending{Operation: LibraryLifecycleOpRestore, PrevDeletedAt: d, PrevLifecycleAt: d}
+	purge := LibraryLifecyclePending{Operation: LibraryLifecycleOpPermanentDelete, PrevDeletedAt: d, PrevLifecycleAt: d}
+	moved := func(s LibraryLifecycleState) LibraryLifecycleState {
+		s.LifecycleAt = s.LifecycleAt.Add(time.Millisecond)
+		return s
+	}
+	for _, tc := range []struct {
+		name    string
+		pending LibraryLifecyclePending
+		state   LibraryLifecycleState
+		want    bool
+	}{
+		{"soft delete at precondition", soft, active, true},
+		{"soft delete after fence", soft, moved(active), false},
+		{"soft delete after it applied", soft, trashed, false},
+		{"soft delete of a missing row", soft, LibraryLifecycleState{}, false},
+		{"restore at precondition", restore, trashed, true},
+		{"restore after fence", restore, moved(trashed), false},
+		{"restore after it applied", restore, LibraryLifecycleState{Present: true, LifecycleAt: d.Add(time.Second)}, false},
+		{"permanent delete at precondition", purge, trashed, true},
+		{"permanent delete after fence", purge, moved(trashed), false},
+		{"permanent delete after it applied", purge, LibraryLifecycleState{}, false},
+		{"legacy trashed row without clock", LibraryLifecyclePending{Operation: LibraryLifecycleOpRestore, PrevDeletedAt: d}, LibraryLifecycleState{Present: true, DeletedAt: d}, true},
+	} {
+		if got := tc.pending.CanStillApply(tc.state); got != tc.want {
+			t.Errorf("%s: CanStillApply = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestLibraryLifecyclePendingAbandoned(t *testing.T) {
+	recorded := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	p := LibraryLifecyclePending{RecordedAt: recorded}
+	if p.Abandoned(recorded.Add(LibraryLifecycleAttemptAbandonAfter - time.Second)) {
+		t.Error("a fresh attempt is reported abandoned")
+	}
+	if !p.Abandoned(recorded.Add(LibraryLifecycleAttemptAbandonAfter)) {
+		t.Error("an attempt past the threshold is not reported abandoned")
+	}
+	if (LibraryLifecyclePending{}).Abandoned(recorded) {
+		t.Error("an attempt without recorded_at is reported abandoned")
+	}
+}
+
+// The ordinary read model is confirmed against every projected canonical
+// column, not only the lifecycle clock: an owner transfer, a rename or a size
+// change moves no lifecycle value.
+func TestLibraryProjectionCurrent(t *testing.T) {
+	at := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	row := AdminLibraryProjectionRow{OwnerID: "a", Name: "n", StorageClass: "hot", SizeBytes: 1, FileCount: 1, CreatedAt: at, UpdatedAt: at}
+	state := LibraryLifecycleState{Present: true, LifecycleAt: at}
+	if !libraryProjectionCurrent(row, state, row, state) {
+		t.Fatal("identical snapshots are not current")
+	}
+	if !libraryProjectionCurrent(row, state, row, LibraryLifecycleState{Present: true, LifecycleAt: at.Add(time.Millisecond)}) {
+		t.Error("a lifecycle clock move alone (a fence) changes no projected column")
+	}
+	for name, mutate := range map[string]func(*AdminLibraryProjectionRow, *LibraryLifecycleState){
+		"owner":     func(r *AdminLibraryProjectionRow, _ *LibraryLifecycleState) { r.OwnerID = "b" },
+		"name":      func(r *AdminLibraryProjectionRow, _ *LibraryLifecycleState) { r.Name = "m" },
+		"size":      func(r *AdminLibraryProjectionRow, _ *LibraryLifecycleState) { r.SizeBytes = 2 },
+		"files":     func(r *AdminLibraryProjectionRow, _ *LibraryLifecycleState) { r.FileCount = 2 },
+		"updated":   func(r *AdminLibraryProjectionRow, _ *LibraryLifecycleState) { r.UpdatedAt = at.Add(time.Second) },
+		"class":     func(r *AdminLibraryProjectionRow, _ *LibraryLifecycleState) { r.StorageClass = "cold" },
+		"encrypted": func(r *AdminLibraryProjectionRow, _ *LibraryLifecycleState) { r.Encrypted = true },
+		"trashed":   func(_ *AdminLibraryProjectionRow, s *LibraryLifecycleState) { s.DeletedAt = at },
+		"gone":      func(_ *AdminLibraryProjectionRow, s *LibraryLifecycleState) { *s = LibraryLifecycleState{} },
+	} {
+		next, nextState := row, state
+		mutate(&next, &nextState)
+		if libraryProjectionCurrent(row, state, next, nextState) {
+			t.Errorf("a %s change is reported current", name)
+		}
+	}
+}
+
+// Continuations are written, deleted and discovered at global QUORUM, so a
+// row acknowledged in one datacenter is seen from every other one and an
+// unreachable quorum fails discovery instead of reading as empty.
+func TestLibraryLifecyclePendingIsGlobalQuorum(t *testing.T) {
+	const reason = "library lifecycle continuation no longer read/written at global QUORUM"
+	if LibraryLifecyclePendingConsistency != gocql.Quorum {
+		t.Fatalf("%s: LibraryLifecyclePendingConsistency = %v", reason, LibraryLifecyclePendingConsistency)
+	}
+	raw, err := os.ReadFile("library_lifecycle_pending.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	for _, name := range []string{"InsertLibraryLifecyclePending", "DeleteLibraryLifecyclePending", "ListLibraryLifecyclePending"} {
+		i := strings.Index(src, "func "+name+"(")
+		if i < 0 {
+			t.Fatalf("%s: %s not found", reason, name)
+		}
+		body := src[i:]
+		if j := strings.Index(body[1:], "\nfunc "); j >= 0 {
+			body = body[:j+1]
+		}
+		if strings.Count(body, ".Query(") != 1 || !strings.Contains(body, "Consistency(LibraryLifecyclePendingConsistency)") {
+			t.Errorf("%s: %s does not pin LibraryLifecyclePendingConsistency", reason, name)
+		}
 	}
 }

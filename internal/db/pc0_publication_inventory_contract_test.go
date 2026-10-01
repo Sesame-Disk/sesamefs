@@ -417,7 +417,7 @@ var pc0ExpectedHeadAuthorityGuards = []pc0HeadColumnWriter{
 	{path: "internal/api/v2/write_helpers.go", decl: "deleteUnpublishedLibraryRow", shape: pc0HeadWriteCAS},
 	// The generation-fenced permanent delete / GC cascade row delete
 	// (IF deleted_at = ?); ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01.
-	{path: "internal/db/library_lifecycle.go", decl: "DeleteTrashedLibraryGeneration", shape: pc0HeadWriteCAS},
+	{path: "internal/db/library_lifecycle.go", decl: "DeleteTrashedLibraryGenerationWithIntent", shape: pc0HeadWriteCAS},
 }
 
 // pc0ReceiverTypeName returns the receiver's base type name (pointer and

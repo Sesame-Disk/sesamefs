@@ -35,4 +35,14 @@ func TestLibraryLifecycleRecoveryReadsAreStrong(t *testing.T) {
 	if !strings.Contains(body("readPermanentDeleteResumeOwner"), ".Consistency(gocql.EachQuorum)") {
 		t.Errorf("%s: readPermanentDeleteResumeOwner is not EACH_QUORUM", lifecycleRecoveryReadReason)
 	}
+	// Bulk discovery: the permanent-delete continuations (global QUORUM, see
+	// dbpkg.LibraryLifecyclePendingConsistency) are the discovery source; the
+	// session-consistency marker scan is only a second one.
+	if !strings.Contains(body("resumeCommittedPermanentDeletes"), "listPendingPermanentDeletesFn(database, wanted)") {
+		t.Errorf("%s: resumeCommittedPermanentDeletes does not discover through the continuations", lifecycleRecoveryReadReason)
+	}
+	i := strings.Index(src, "listPendingPermanentDeletesFn = func(")
+	if i < 0 || !strings.Contains(src[i:i+600], "dbpkg.ListLibraryLifecyclePending(") {
+		t.Errorf("%s: listPendingPermanentDeletesFn does not read library_lifecycle_pending", lifecycleRecoveryReadReason)
+	}
 }

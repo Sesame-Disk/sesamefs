@@ -83,11 +83,11 @@ var pcd1b4ExpectedLifecycleStatements = []pcd1b4LifecycleSite{
 	// (reached from restoreDeletedLibrary under the hard-delete lease). HEAD
 	// and the tree are untouched; any destroyer that ran during trash already
 	// cleared the witness through its intent.
-	{path: "internal/db/library_lifecycle.go", decl: "RestoreTrashedLibraryGeneration", kind: pcd1b4Restore, role: pcd1b4NoChange},
+	{path: "internal/db/library_lifecycle.go", decl: "RestoreTrashedLibraryGenerationWithIntent", kind: pcd1b4Restore, role: pcd1b4NoChange},
 	// Canonical row removal: the witness columns go with the row. Global-SERIAL
 	// `DELETE ... IF deleted_at = ?`, reached from the API permanent delete
 	// (hardDeleteLibraryRowsFn) and the GC cascade (CassandraStore.HardDeleteLibrary).
-	{path: "internal/db/library_lifecycle.go", decl: "DeleteTrashedLibraryGeneration", kind: pcd1b4RowDelete, role: pcd1b4NoChange},
+	{path: "internal/db/library_lifecycle.go", decl: "DeleteTrashedLibraryGenerationWithIntent", kind: pcd1b4RowDelete, role: pcd1b4NoChange},
 	// Plain (client-timestamp) row deletes in the completion writes, executed
 	// only after the fenced delete applied or found the row already gone.
 	{path: "internal/api/v2/library_delete_helpers.go", decl: "addPermanentDeleteCompletionQueries", kind: pcd1b4RowDelete, role: pcd1b4NoChange},

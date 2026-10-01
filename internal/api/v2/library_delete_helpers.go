@@ -51,16 +51,6 @@ var (
 		return gcpkg.ReleaseLibraryHardDeleteLockLease(database.Session(), libraryID, leaseToken)
 	}
 	hardDeleteLibraryRowsFn = func(database *dbpkg.DB, orgID, libraryID, storageClass, blockRepresentationID string, deletedAt time.Time) error {
-		// Durable continuation of the transition: the lifecycle reaper resumes the
-		// completion if this process dies after the canonical delete.
-		intent := dbpkg.LibraryLifecyclePending{
-			OrgID: orgID, LibraryID: libraryID, Operation: dbpkg.LibraryLifecycleOpPermanentDelete,
-			TargetAt: deletedAt, PrevDeletedAt: deletedAt,
-		}
-		if err := dbpkg.InsertLibraryLifecyclePending(database.Session(), intent); err != nil {
-			return errors.Join(errHardDeleteLibraryBatchExec, err)
-		}
-		intents := []dbpkg.LibraryLifecyclePending{intent}
 		// Continuation anchor: the generation's soft-delete marker exists before the
 		// canonical row can disappear, so a completion that fails below is always
 		// rediscoverable (resumeCommittedPermanentDelete, single and bulk). It repeats
@@ -70,14 +60,12 @@ var (
 			INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id)
 			VALUES (?, ?, ?, ?, ?) USING TIMESTAMP ?`,
 			libraryID, orgID, deletedAt, storageClass, blockRepresentationID, dbpkg.LibraryLifecycleWriteTimestamp(deletedAt)).Exec(); err != nil {
-			clearLibraryLifecycleIntents(database, intents) // the canonical LWT never ran
 			return errors.Join(errHardDeleteLibraryBatchExec, fmt.Errorf("write permanent-delete continuation marker: %w", err))
 		}
 		// The completion batch is built first because the admin read-model delete keys
 		// are read from the canonical row, which the fenced delete removes.
 		batch := database.Session().Batch(gocql.LoggedBatch).WithTimestamp(permanentDeleteCompletionTimestamp(deletedAt))
 		if err := addPermanentDeleteCompletionQueries(database, batch, orgID, libraryID, storageClass, blockRepresentationID, deletedAt); err != nil {
-			clearLibraryLifecycleIntents(database, intents) // the canonical LWT never ran
 			return err
 		}
 
@@ -85,9 +73,26 @@ var (
 		// canonical row is deleted only while it is still trashed under the generation this
 		// owner verified. The lease renewal before this call does not fence it: an owner can
 		// pause after renewing, lose the lease to a restore, and resume here. Generations are
-		// unique per library (lifecycle_at), so a later generation never matches.
-		outcome, err := dbpkg.DeleteTrashedLibraryGeneration(database.Session(), orgID, libraryID, deletedAt)
+		// unique per library (lifecycle_at), so a later generation never matches. Each
+		// LWT attempt first records its own durable continuation (with its attempt
+		// id): the lifecycle reaper resumes the completion if this process dies after
+		// the canonical delete, and fences the attempt if it dies before.
+		var intents []dbpkg.LibraryLifecyclePending
+		outcome, err := dbpkg.DeleteTrashedLibraryGenerationWithIntent(database.Session(), orgID, libraryID, deletedAt,
+			func(previous dbpkg.LibraryLifecycleState) error {
+				intent := dbpkg.LibraryLifecyclePending{
+					OrgID: orgID, LibraryID: libraryID, Operation: dbpkg.LibraryLifecycleOpPermanentDelete,
+					TargetAt: deletedAt, AttemptID: uuid.NewString(),
+					PrevLifecycleAt: previous.LifecycleAt, PrevDeletedAt: deletedAt,
+				}
+				if err := dbpkg.InsertLibraryLifecyclePending(database.Session(), intent); err != nil {
+					return errors.Join(errHardDeleteLibraryBatchExec, err)
+				}
+				intents = append(intents, intent)
+				return beforeLibraryLifecycleTransitionFn("permanent-delete", libraryID)
+			})
 		if err != nil {
+			// An unknown outcome keeps its continuation for the reaper.
 			return errors.Join(errHardDeleteLibraryLifecycle, err)
 		}
 		switch outcome {
@@ -294,32 +299,50 @@ type resumedPermanentDelete struct {
 // resumeCommittedPermanentDeletes is the bulk counterpart of
 // resumeCommittedPermanentDelete for the given orgs: the bulk cleanups list
 // their candidates from canonical rows, which a half-committed permanent delete
-// no longer has, so they first scan the deleted_libraries markers (one scan for
-// all orgs) and resume every committed but incomplete delete among them.
+// no longer has. Its discovery source is the permanent-delete continuations in
+// library_lifecycle_pending, read at global QUORUM: every permanent delete
+// records one before its canonical LWT, so a delete acknowledged in another
+// datacenter is found, and a bucket that cannot be read fails closed (counted as
+// failed) instead of reading as nothing to do. The deleted_libraries markers
+// (one scan for all orgs) are a second, best-effort source. Every candidate is
+// then resolved by resumeCommittedPermanentDelete's strong reads.
 func resumeCommittedPermanentDeletes(database *dbpkg.DB, orgIDs []string) ([]resumedPermanentDelete, int) {
 	wanted := make(map[string]bool, len(orgIDs))
 	for _, orgID := range orgIDs {
 		wanted[orgID] = true
 	}
+	failed := 0
+	seen := map[[2]string]bool{}
 	var candidates [][2]string
-	iter := database.Session().Query(`SELECT library_id, org_id FROM deleted_libraries`).Iter()
-	var libraryID, orgID string
-	for iter.Scan(&libraryID, &orgID) {
-		if wanted[orgID] {
-			candidates = append(candidates, [2]string{orgID, libraryID})
+	pending, err := listPendingPermanentDeletesFn(database, wanted)
+	if err != nil {
+		log.Printf("[resumeCommittedPermanentDeletes] list permanent-delete continuations: %v", err)
+		failed++
+	}
+	for _, pair := range pending {
+		if !seen[pair] {
+			seen[pair] = true
+			candidates = append(candidates, pair)
 		}
 	}
-	if err := iter.Close(); err != nil {
+	markers, err := listDeletedLibraryMarkersFn(database, wanted)
+	if err != nil {
 		log.Printf("[resumeCommittedPermanentDeletes] scan deleted_libraries: %v", err)
-		return nil, 1
+		failed++
 	}
-	var resumed []resumedPermanentDelete
-	failed := 0
-	for _, pair := range candidates {
+	for _, pair := range markers {
+		if seen[pair] {
+			continue
+		}
+		seen[pair] = true
 		var present string
 		if err := database.Session().Query(`SELECT library_id FROM libraries WHERE org_id = ? AND library_id = ?`, pair[0], pair[1]).Scan(&present); err == nil {
 			continue // still canonical: the normal candidate path handles it
 		}
+		candidates = append(candidates, pair)
+	}
+	var resumed []resumedPermanentDelete
+	for _, pair := range candidates {
 		candidate, blockRepresentationID, ok, err := resumeCommittedPermanentDelete(database, pair[0], pair[1])
 		if err != nil {
 			log.Printf("[resumeCommittedPermanentDeletes] resume %s/%s: %v", pair[0], pair[1], err)
@@ -332,6 +355,40 @@ func resumeCommittedPermanentDeletes(database *dbpkg.DB, orgIDs []string) ([]res
 	}
 	return resumed, failed
 }
+
+var (
+	// listPendingPermanentDeletesFn returns the (org, library) pairs of the wanted
+	// orgs that have a permanent-delete continuation, read at global QUORUM.
+	listPendingPermanentDeletesFn = func(database *dbpkg.DB, wanted map[string]bool) ([][2]string, error) {
+		var out [][2]string
+		for bucket := 0; bucket < dbpkg.GCDiscoveryBucketCount; bucket++ {
+			rows, err := dbpkg.ListLibraryLifecyclePending(database.Session(), bucket)
+			if err != nil {
+				return out, err
+			}
+			for _, row := range rows {
+				if row.Operation == dbpkg.LibraryLifecycleOpPermanentDelete && wanted[row.OrgID] {
+					out = append(out, [2]string{row.OrgID, row.LibraryID})
+				}
+			}
+		}
+		return out, nil
+	}
+	// listDeletedLibraryMarkersFn returns the (org, library) pairs of the wanted
+	// orgs' deleted_libraries markers (session consistency). A variable so tests
+	// can stand in for a datacenter whose local scan misses a marker.
+	listDeletedLibraryMarkersFn = func(database *dbpkg.DB, wanted map[string]bool) ([][2]string, error) {
+		var out [][2]string
+		iter := database.Session().Query(`SELECT library_id, org_id FROM deleted_libraries`).Iter()
+		var libraryID, orgID string
+		for iter.Scan(&libraryID, &orgID) {
+			if wanted[orgID] {
+				out = append(out, [2]string{orgID, libraryID})
+			}
+		}
+		return out, iter.Close()
+	}
+)
 
 // readPermanentDeleteResumeOwner returns the owner recorded on the lookup row of
 // a library whose canonical row is gone, for the permission check of a resumed
