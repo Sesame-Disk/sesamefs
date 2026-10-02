@@ -347,7 +347,7 @@ func TestValidateBlockRepairAuthorityClassifiesExactIncarnation(t *testing.T) {
 			row.GCState, row.GCClaimID, row.GCClaimedAt = BlockGCStateRepairingStub, "repair-1", &claimedAt
 			return row
 		}(), found: true, wantOutcome: BlockRepairAuthorityBlocked, wantErr: ErrBlockRepairBlocked},
-		{name: "orphan fence", row: completeBlockRepairAuthorityRow(expected), found: true, hasOrphan: true, wantOutcome: BlockRepairAuthorityBlocked, wantErr: ErrBlockRepairBlocked},
+		{name: "orphan of retired life", row: completeBlockRepairAuthorityRow(expected), found: true, hasOrphan: true, wantOutcome: BlockRepairAuthorityAuthorized},
 		{name: "complete exact row", row: completeBlockRepairAuthorityRow(expected), found: true, wantOutcome: BlockRepairAuthorityAuthorized},
 	}
 
@@ -462,8 +462,8 @@ func TestBlockRepairAuthorityRejectsMalformedStatePermanently(t *testing.T) {
 	if outcome != BlockRepairAuthorityPermanent || !errors.Is(err, ErrBlockRepairAuthorityPermanent) || !errors.Is(err, ErrBlockMetadataPermanent) {
 		t.Fatalf("ValidateBlockRepairAuthority() = %v, %v, want permanent malformed-state rejection", outcome, err)
 	}
-	if !orphanRead {
-		t.Fatal("authority validation must read the orphan fence before validating the canonical row")
+	if orphanRead {
+		t.Fatal("G4 canonical authority must not consult orphan(L)")
 	}
 
 	readBlockRepairAuthorityFn = func(*DB, string, string, BlockAuthorityRead) (blockRepairAuthorityRow, bool, error) {
@@ -508,7 +508,7 @@ func TestRepairReleasedBlockStubClaimsRechecksOrphanAndDeletes(t *testing.T) {
 	}
 }
 
-func TestRepairReleasedBlockStubStopsWhenOrphanFenceAppears(t *testing.T) {
+func TestG4RepairReleasedBlockStubIgnoresRetiredOrphan(t *testing.T) {
 	oldClaim := claimReleasedBlockStubForRepairFn
 	oldDelete := deleteRepairClaimedBlockStubFn
 	oldOrphan := probeBlockReuseHasS3OrphanFn
@@ -526,8 +526,8 @@ func TestRepairReleasedBlockStubStopsWhenOrphanFenceAppears(t *testing.T) {
 	}
 
 	repaired, err := (&DB{}).RepairReleasedBlockStub("org-1", installTestBlockID)
-	if err != nil || repaired {
-		t.Fatalf("RepairReleasedBlockStub() = %v, %v, want false/nil", repaired, err)
+	if err != nil || !repaired {
+		t.Fatalf("RepairReleasedBlockStub() = %v, %v, want true/nil", repaired, err)
 	}
 	if deleteCalls != 1 {
 		t.Fatalf("deleteCalls = %d, want repair claim cleanup", deleteCalls)
@@ -1020,7 +1020,7 @@ func TestProbeBlockReuseNeedsPutWithoutMetadata(t *testing.T) {
 	}
 }
 
-func TestProbeBlockReuseBlockedByGC(t *testing.T) {
+func TestProbeBlockReuseNeedsPut(t *testing.T) {
 	oldMetadata := probeBlockReuseMetadataFn
 	oldOrphan := probeBlockReuseHasS3OrphanFn
 	t.Cleanup(func() {
@@ -1039,12 +1039,12 @@ func TestProbeBlockReuseBlockedByGC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProbeBlockReuse() error = %v, want nil", err)
 	}
-	if probe.Decision != BlockReuseBlockedByGC {
-		t.Fatalf("decision = %v, want BlockReuseBlockedByGC", probe.Decision)
+	if probe.Decision != BlockReuseNeedsPut {
+		t.Fatalf("decision = %v, want BlockReuseNeedsPut", probe.Decision)
 	}
 }
 
-func TestP3ProbeBlockReuseOrphanOutranksReferences(t *testing.T) {
+func TestG4ProbeCurrentLifeReusableWithRetiredOrphan(t *testing.T) {
 	oldMetadata := probeBlockReuseMetadataFn
 	oldReferences := probeBlockReuseHasReferencesFn
 	oldOrphan := probeBlockReuseHasS3OrphanFn
@@ -1063,8 +1063,8 @@ func TestP3ProbeBlockReuseOrphanOutranksReferences(t *testing.T) {
 	probeBlockReuseHasS3OrphanFn = func(*DB, string, string) (bool, error) { return true, nil }
 
 	probe, err := (&DB{}).ProbeBlockReuse("org-1", installTestBlockID)
-	if err != nil || probe.Decision != BlockReuseBlockedByGC {
-		t.Fatalf("ProbeBlockReuse() = %v, %v, want BlockReuseBlockedByGC", probe.Decision, err)
+	if err != nil || probe.Decision != BlockReuseReusable {
+		t.Fatalf("ProbeBlockReuse() = %v, %v, want BlockReuseReusable", probe.Decision, err)
 	}
 }
 
@@ -1170,7 +1170,7 @@ func TestProbeBlockReuseReturnsRepairableStubForReleasedClaimRow(t *testing.T) {
 	}
 }
 
-func TestProbeBlockReuseBlocksReleasedStubWithS3Orphan(t *testing.T) {
+func TestG4ProbeReleasedStubWithRetiredOrphan(t *testing.T) {
 	oldMetadata := probeBlockReuseMetadataFn
 	oldOrphan := probeBlockReuseHasS3OrphanFn
 	t.Cleanup(func() {
@@ -1186,8 +1186,8 @@ func TestProbeBlockReuseBlocksReleasedStubWithS3Orphan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProbeBlockReuse() error = %v, want nil", err)
 	}
-	if probe.Decision != BlockReuseBlockedByGC {
-		t.Fatalf("decision = %v, want BlockReuseBlockedByGC", probe.Decision)
+	if probe.Decision != BlockReuseRepairableStub {
+		t.Fatalf("decision = %v, want BlockReuseRepairableStub", probe.Decision)
 	}
 }
 
@@ -1325,11 +1325,11 @@ func TestProbeBlockReuseNeedsPutWhenMetadataPresentButNoReferences(t *testing.T)
 	}
 }
 
-// TestProbeBlockReuseBlockedByGCWhenGCStateDeleting verifies the in-row claim
+// TestG4ProbeRowlessNeedsFreshPutWithOrphanWhenGCStateDeleting verifies the in-row claim
 // (gc_state='deleting') is an immediate fence that short-circuits before the
 // reference read, so a concurrent re-upload backs off even while references
 // momentarily exist.
-func TestProbeBlockReuseBlockedByGCWhenGCStateDeleting(t *testing.T) {
+func TestG4ProbeRowlessNeedsFreshPutWithOrphanWhenGCStateDeleting(t *testing.T) {
 	oldMetadata := probeBlockReuseMetadataFn
 	oldRefs := probeBlockReuseHasReferencesFn
 	oldOrphan := probeBlockReuseHasS3OrphanFn
@@ -1391,16 +1391,8 @@ func TestProbeBlockReuseReturnsUnknownErrorWhenMetadataReadFails(t *testing.T) {
 	}
 }
 
-// TestP3BlockDeleteFenceSurvivesOrphanHandoff pins the read order that closes the
-// A+ handoff race (R13). GC writes the orphan and only then removes the canonical
-// row, so a writer that reads the orphan FIRST can observe "no orphan", have GC
-// complete both steps underneath it, then read an absent row and conclude there is
-// no fence at all -- leaving orphan(P1) live while it installs P2.
-//
-// The seam below reproduces exactly that interleaving: the canonical read is the
-// moment GC finishes. With the canonical row read first the orphan read that
-// follows must observe the fence; swap the two reads back and this test fails.
-func TestP3BlockDeleteFenceSurvivesOrphanHandoff(t *testing.T) {
+// G4 permits fresh INSTALL after retirement; the old orphan owns only P1.
+func TestG4BlockDeleteFenceEndsAtCanonicalRetirement(t *testing.T) {
 	oldState := blockDeleteFenceGCStateFn
 	oldOrphan := blockDeleteFenceHasS3OrphanFn
 	t.Cleanup(func() {
@@ -1424,18 +1416,18 @@ func TestP3BlockDeleteFenceSurvivesOrphanHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BlockDeleteFenceActive() error = %v, want nil", err)
 	}
-	if !fenced {
-		t.Fatal("BlockDeleteFenceActive() = false; a rowless read must not be reported as unfenced while the lifecycle's orphan is live")
+	if fenced {
+		t.Fatal("BlockDeleteFenceActive() = false; G4 rowless read must admit a fresh INSTALL even while P1 orphan is live")
 	}
 	if canonicalReads != 1 {
 		t.Fatalf("canonical reads = %d, want 1", canonicalReads)
 	}
 }
 
-// TestP3BlockDeleteFenceReadsCanonicalRowBeforeOrphan states the ordering as a
+// TestG4BlockDeleteFenceOnlyReadsCanonicalRow states the ordering as a
 // property rather than as a consequence, so a refactor cannot satisfy the handoff
 // test by accident.
-func TestP3BlockDeleteFenceReadsCanonicalRowBeforeOrphan(t *testing.T) {
+func TestG4BlockDeleteFenceOnlyReadsCanonicalRow(t *testing.T) {
 	oldState := blockDeleteFenceGCStateFn
 	oldOrphan := blockDeleteFenceHasS3OrphanFn
 	t.Cleanup(func() {
@@ -1456,8 +1448,8 @@ func TestP3BlockDeleteFenceReadsCanonicalRowBeforeOrphan(t *testing.T) {
 	if _, err := (&DB{}).BlockDeleteFenceActive("org-1", installTestBlockID); err != nil {
 		t.Fatalf("BlockDeleteFenceActive() error = %v, want nil", err)
 	}
-	if len(order) != 2 || order[0] != "blocks" || order[1] != "orphan" {
-		t.Fatalf("fence read order = %v, want [blocks orphan]: the orphan must be the last fence read", order)
+	if len(order) != 1 || order[0] != "blocks" {
+		t.Fatalf("fence read order = %v, want [blocks]: G4 no longer reads logical orphans", order)
 	}
 }
 
@@ -1489,9 +1481,9 @@ func TestP3BlockDeleteFenceStillCatchesAnActiveClaim(t *testing.T) {
 	}
 }
 
-// TestP3RepairAuthorityReadsCanonicalRowBeforeOrphan applies the same ordering
+// TestG4RepairRetiredLifeChangesAuthority applies the same ordering
 // proof to the pre-PUT authority boundary.
-func TestP3RepairAuthorityReadsCanonicalRowBeforeOrphan(t *testing.T) {
+func TestG4RepairRetiredLifeChangesAuthority(t *testing.T) {
 	oldRead := readBlockRepairAuthorityFn
 	oldOrphan := blockRepairHasS3OrphanFn
 	t.Cleanup(func() {
@@ -1515,11 +1507,11 @@ func TestP3RepairAuthorityReadsCanonicalRowBeforeOrphan(t *testing.T) {
 		StorageClass: "hot",
 		StorageKey:   "blocks/org-1/minted",
 	})
-	if outcome != BlockRepairAuthorityBlocked || !errors.Is(err, ErrBlockRepairBlocked) {
-		t.Fatalf("ValidateBlockRepairAuthority() = %v, %v; want Blocked with a fence error", outcome, err)
+	if outcome != BlockRepairAuthorityChanged || !errors.Is(err, ErrBlockRepairAuthorityChanged) {
+		t.Fatalf("ValidateBlockRepairAuthority() = %v, %v; want Changed for retired P1", outcome, err)
 	}
-	if len(order) != 2 || order[0] != "blocks" || order[1] != "orphan" {
-		t.Fatalf("authority read order = %v, want [blocks orphan]", order)
+	if len(order) != 1 || order[0] != "blocks" {
+		t.Fatalf("authority read order = %v, want [blocks]", order)
 	}
 	if observedMode != BlockAuthorityStrong {
 		t.Fatalf("pre-PUT authority read mode = %v, want BlockAuthorityStrong", observedMode)
@@ -1556,8 +1548,8 @@ func TestP3MetadataRepairUsesAdvisoryReads(t *testing.T) {
 	if modes[BlockAuthorityStrong] != 0 {
 		t.Fatalf("metadata repair issued %d SERIAL reads, want 0 on the deduplicated upload path", modes[BlockAuthorityStrong])
 	}
-	if modes[BlockAuthorityAdvisory] != 2 {
-		t.Fatalf("metadata repair advisory reads = %d, want 2", modes[BlockAuthorityAdvisory])
+	if modes[BlockAuthorityAdvisory] != 1 {
+		t.Fatalf("metadata repair advisory reads = %d, want 1", modes[BlockAuthorityAdvisory])
 	}
 }
 
@@ -1601,8 +1593,8 @@ func TestValidateBorrowedFSPublicationAuthorityUsesAdvisoryReads(t *testing.T) {
 	if modes[BlockAuthorityStrong] != 0 {
 		t.Fatalf("BorrowedFS publication authority issued %d SERIAL reads, want 0 on the BorrowedFS dedup hot path", modes[BlockAuthorityStrong])
 	}
-	if modes[BlockAuthorityAdvisory] != 2 {
-		t.Fatalf("BorrowedFS publication authority advisory reads = %d, want 2", modes[BlockAuthorityAdvisory])
+	if modes[BlockAuthorityAdvisory] != 1 {
+		t.Fatalf("BorrowedFS publication authority advisory reads = %d, want 1", modes[BlockAuthorityAdvisory])
 	}
 }
 
@@ -1683,3 +1675,9 @@ func TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant(t *testi
 		t.Fatal("BlockReferenceExistsEachQuorum must call .Consistency(SyncBlockReferenceCrossDCFallbackConsistency) -- a literal or a different identifier would silently bypass the named-constant pin")
 	}
 }
+
+// G4 tripwires are test-only: fixtures may inject an orphan of another life,
+// but production writer classification must never call these logical readers.
+var probeBlockReuseHasS3OrphanFn = func(*DB, string, string) (bool, error) { return false, nil }
+var blockDeleteFenceHasS3OrphanFn = func(*DB, string, string) (bool, error) { return false, nil }
+var blockRepairHasS3OrphanFn = func(*DB, string, string, BlockAuthorityRead) (bool, error) { return false, nil }

@@ -1674,7 +1674,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	case BlockClaimCommittedOwner:
 		alreadyCommitted = true
 		deleteAuthority = claim.Owner
-		log.Printf("[GC Worker] Block %s: resuming committed delete authority %s; no new claim, no takeover; refs are a contradiction detector", item.ItemID, deleteAuthority.ClaimID)
+		log.Printf("[GC Worker] Block %s: resuming committed delete authority %s; no new claim, no takeover; post-D refs cannot revoke this exact authority", item.ItemID, deleteAuthority.ClaimID)
 	case BlockClaimTargetChanged:
 		// The row is a different physical incarnation than this candidate authorized.
 		// This candidate's life is over and its work is irrelevant; the incarnation
@@ -2009,17 +2009,8 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		return failedClosedError{Reason: "destructive topology gate rejected block before orphan-handoff commit", ItemID: item.ItemID, Err: err}
 	}
 
-	if alreadyCommitted {
-		hasRefs, err = w.store.BlockHasReferencesGlobal(item.OrgID, item.ItemID)
-		if err != nil {
-			log.Printf("[GC Worker] Block %s: committed-owner refs contradiction read failed; leaving the queue untouched: %v", item.ItemID, err)
-			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: err}
-		}
-		if hasRefs {
-			log.Printf("[GC Worker] Block %s: committed-owner refs contradiction; leaving the stored COMMITTED authority standing", item.ItemID)
-			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: errors.New("committed delete authority observed references after handoff")}
-		}
-	}
+	// G4: post-D references belong to L's subsequent life. The stored D
+	// cannot be canceled; exact promotion/retirement still fail closed.
 
 	if !alreadyCommitted {
 		prepared := w.store.PrepareBlockDeleteOrphan(item.OrgID, item.ItemID, deleteAuthority, blockInfo.Sha1, w.clock().UTC())
@@ -2657,31 +2648,14 @@ func (w *Worker) recoverPreparedS3OrphansWithoutStorage(ctx context.Context, per
 	return recovered, phaseErr
 }
 
-// RecoverS3Orphans reconciles durable S3-orphan recovery state. It settles PREPARED
-// rows through metadata-only abort/promotion, repairs or retains exact recovery roots,
-// preserves G2 COMMITTED handoffs for the G3 physical executor, and may continue an
-// already-authorized physical-recovery state after re-establishing its own checks.
-// Called by the scanner; exposed on the worker because it needs access to w.storage.
-// Returns the number of orphan recovery states successfully advanced.
-//
-// Walks the gc_s3_orphans_by_day discovery projection from a persisted UTC-day
-// cursor up to today. The independent fixed-bucket root is the cold-start
-// safety surface; `perBucketLimit`
-// caps the rows pulled per (day, bucket) so a single misbehaving bucket cannot
-// starve the worker.
-// The root pass is the cold-start safety surface for PREPARED and COMMITTED lifecycle
-// state. The discovery walk also handles older or already-pending physical-recovery
-// states, but a G2 COMMITTED row is never converted into a physical delete here.
-//
-// AUTHORIZATION INVARIANT: every physical delete in this codebase must trace back to
-// an EACH_QUORUM liveness read (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01). A new
-// destructive path that does not is a silent reopening with no failing test.
-//
-// For the physical-recovery lane, an orphan row is not sufficient authority: it may
-// have been written by an older binary or by a partially completed prior pass. Recovery
-// therefore re-reads BlockHasReferencesGlobal for itself before destroying bytes,
-// rather than inheriting the consistency or lifecycle assumptions of the writer. It is
-// the cold path; the extra WAN read costs nothing that matters.
+// RecoverS3Orphans reconciles exact durable orphan lifecycles. PREPARED is
+// metadata-only. COMMITTED resumes retirement and DeleteExact(K1) under the
+// original EACH_QUORUM zero-proof and exact published (P1,D1) certificate;
+// subsequent references of L do not authorize or veto D1. Legacy recovery
+// retains its independent global liveness check. Storage locator validation,
+// fresh topology, exact reload and terminal settlement precede completion.
+// The independent fixed-bucket root restores discovery after restart. G5
+// hardens scheduling for old/behind-cursor work; root identity is never authority.
 func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int, error) {
 	if w.dryRun.Load() {
 		log.Println("[GC Worker] DRY RUN: skipping S3 orphan recovery")
@@ -2808,16 +2782,7 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 					log.Printf("[GC Worker] S3 orphan recovery: aborted or promoted PREPARED orphan for org=%s block=%s", canonical.OrgID, canonical.BlockID)
 					continue
 				}
-				if strings.EqualFold(strings.TrimSpace(canonical.RecoveryState), S3OrphanRecoveryStateCommitted) {
-					// G3 retires the canonical `blocks(L)` row from processBlock, on the
-					// worker's own committed-handoff pass; it does not touch this orphan.
-					// The physical DELETE and lifecycle settlement remain a future
-					// physical executor's job, so this scanner must not turn a COMMITTED
-					// handoff into a physical delete.
-					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_committed_retained").Inc()
-					log.Printf("[GC Worker] S3 orphan recovery: COMMITTED orphan retained for the future physical executor for org=%s block=%s", canonical.OrgID, canonical.BlockID)
-					continue
-				}
+				committed := strings.EqualFold(strings.TrimSpace(canonical.RecoveryState), S3OrphanRecoveryStateCommitted)
 				if strings.TrimSpace(canonical.StorageKey) == "" {
 					metrics.GCErrorsTotal.WithLabelValues("s3_orphan_empty_storage_key").Inc()
 					log.Printf("[GC Worker] S3 orphan recovery: canonical row has empty storage key for org=%s block=%s; retaining cursor", canonical.OrgID, canonical.BlockID)
@@ -2920,81 +2885,95 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 					}
 					continue
 				}
-				if exists, err := w.store.BlockExists(canonical.OrgID, canonical.BlockID); err != nil {
-					log.Printf("[GC Worker] S3 orphan recovery: block existence lookup failed for org=%s block=%s: %v", canonical.OrgID, canonical.BlockID, err)
-					if phaseErr == nil {
-						phaseErr = fmt.Errorf("check block existence for S3 orphan org=%s block=%s: %w", canonical.OrgID, canonical.BlockID, err)
+				if committed {
+					// D1 is irreversible. Retire only P1, or settle its exact
+					// certificate when P2 has already replaced it. Never consult
+					// L's new references as authority over the retired P1.
+					finalized, finalizeErr := w.store.FinalizeBlockDelete(canonical.OrgID, canonical.BlockID, committedBlockDeleteAuthority(canonical.Authority))
+					if finalized.Outcome != BlockDeleteFinalized && finalized.Outcome != BlockDeleteAlreadyFinalized {
+						if phaseErr == nil {
+							phaseErr = resolveUnsettledCause(finalized.Cause, finalizeErr, "committed orphan retirement")
+						}
+						continue
 					}
-					continue
-				} else if exists {
-					// The canonical block row still exists (likely claimed but not yet finalized).
-					// Skip recovery for now; a later worker retry or startup scan will finish it.
-					if phaseErr == nil {
-						phaseErr = fmt.Errorf("S3 orphan recovery deferred for org=%s block=%s because canonical block row still exists", canonical.OrgID, canonical.BlockID)
+				} else {
+					if exists, err := w.store.BlockExists(canonical.OrgID, canonical.BlockID); err != nil {
+						log.Printf("[GC Worker] S3 orphan recovery: block existence lookup failed for org=%s block=%s: %v", canonical.OrgID, canonical.BlockID, err)
+						if phaseErr == nil {
+							phaseErr = fmt.Errorf("check block existence for S3 orphan org=%s block=%s: %w", canonical.OrgID, canonical.BlockID, err)
+						}
+						continue
+					} else if exists {
+						// The canonical block row still exists (likely claimed but not yet finalized).
+						// Skip recovery for now; a later worker retry or startup scan will finish it.
+						if phaseErr == nil {
+							phaseErr = fmt.Errorf("S3 orphan recovery deferred for org=%s block=%s because canonical block row still exists", canonical.OrgID, canonical.BlockID)
+						}
+						continue
 					}
-					continue
-				}
 
-				// Independent authorization for this delete. See the invariant on this
-				// function: the orphan row alone would make recovery inherit whatever
-				// consistency the writing binary used, so it establishes the global
-				// zero itself. An error here defers the sweep rather than deleting.
-				hasRefs, livenessErr := w.store.BlockHasReferencesGlobal(canonical.OrgID, canonical.BlockID)
-				if livenessErr != nil {
-					// Classified the same way processBlock's verify is, for a different
-					// reason. There is no queue policy to decide here — this sweep has
-					// no retry budget and no DLQ, and the deferral below is identical
-					// either way — so what the split buys is an honest signal. Calling a
-					// permanent ReadFailure from a tombstone-heavy block_references
-					// partition an availability failure pages whoever is on call to go
-					// look at datacenter health for a condition that will still be there
-					// when every DC is up.
-					//
-					// The blocked mark is availability-only for the same reason. It is
-					// half of the pair that answers "can this path still authorize
-					// deletes at all", and one poisoned partition does not answer it;
-					// moving the mark would report an environment failure that did not
-					// happen. Left unmoved, the row's own error metric and the frozen
-					// scan-success timestamp are what surface it.
-					if isClusterUnavailableError(livenessErr) {
-						metrics.GCErrorsTotal.WithLabelValues("liveness_verify_unavailable").Inc()
-						w.recordDestructiveBlocked(destructivePathOrphan)
-						log.Printf("[GC Worker] S3 orphan recovery: global liveness verify failed for org=%s block=%s because the cluster was unavailable; failing closed: %v", canonical.OrgID, canonical.BlockID, livenessErr)
-					} else {
-						metrics.GCErrorsTotal.WithLabelValues("liveness_verify_failed").Inc()
-						log.Printf("[GC Worker] S3 orphan recovery: global liveness verify failed for org=%s block=%s for a non-availability reason (this row will not recover on its own); failing closed: %v", canonical.OrgID, canonical.BlockID, livenessErr)
+					// Independent authorization for this delete. See the invariant on this
+					// function: the orphan row alone would make recovery inherit whatever
+					// consistency the writing binary used, so it establishes the global
+					// zero itself. An error here defers the sweep rather than deleting.
+					hasRefs, livenessErr := w.store.BlockHasReferencesGlobal(canonical.OrgID, canonical.BlockID)
+					if livenessErr != nil {
+						// Classified the same way processBlock's verify is, for a different
+						// reason. There is no queue policy to decide here — this sweep has
+						// no retry budget and no DLQ, and the deferral below is identical
+						// either way — so what the split buys is an honest signal. Calling a
+						// permanent ReadFailure from a tombstone-heavy block_references
+						// partition an availability failure pages whoever is on call to go
+						// look at datacenter health for a condition that will still be there
+						// when every DC is up.
+						//
+						// The blocked mark is availability-only for the same reason. It is
+						// half of the pair that answers "can this path still authorize
+						// deletes at all", and one poisoned partition does not answer it;
+						// moving the mark would report an environment failure that did not
+						// happen. Left unmoved, the row's own error metric and the frozen
+						// scan-success timestamp are what surface it.
+						if isClusterUnavailableError(livenessErr) {
+							metrics.GCErrorsTotal.WithLabelValues("liveness_verify_unavailable").Inc()
+							w.recordDestructiveBlocked(destructivePathOrphan)
+							log.Printf("[GC Worker] S3 orphan recovery: global liveness verify failed for org=%s block=%s because the cluster was unavailable; failing closed: %v", canonical.OrgID, canonical.BlockID, livenessErr)
+						} else {
+							metrics.GCErrorsTotal.WithLabelValues("liveness_verify_failed").Inc()
+							log.Printf("[GC Worker] S3 orphan recovery: global liveness verify failed for org=%s block=%s for a non-availability reason (this row will not recover on its own); failing closed: %v", canonical.OrgID, canonical.BlockID, livenessErr)
+						}
+						// Unchanged by the classification: the sweep defers either way, which
+						// holds the day cursor and keeps the row in the working set.
+						if phaseErr == nil {
+							phaseErr = fmt.Errorf("global liveness verify for S3 orphan org=%s block=%s: %w", canonical.OrgID, canonical.BlockID, livenessErr)
+						}
+						continue
 					}
-					// Unchanged by the classification: the sweep defers either way, which
-					// holds the day cursor and keeps the row in the working set.
-					if phaseErr == nil {
-						phaseErr = fmt.Errorf("global liveness verify for S3 orphan org=%s block=%s: %w", canonical.OrgID, canonical.BlockID, livenessErr)
+					// Same rule as processBlock: the read RETURNING is this path's proof that
+					// the environment can authorize a delete, whatever the read found. Recorded
+					// before the hasRefs branch, never after a completed delete.
+					w.recordDestructiveLivenessSuccess(destructivePathOrphan)
+					if hasRefs {
+						// Something references this block even though its canonical row is
+						// gone. Recovery must not destroy the bytes those references point
+						// at; leave the row for an operator rather than guessing.
+						//
+						// Reported through the metric and the log ONLY — deliberately not
+						// through phaseErr. A phase error suppresses SetLastScanSuccess, so
+						// one anomalous row would freeze the scanner's success timestamp
+						// forever and make a healthy fleet indistinguishable from a broken
+						// one — losing a signal that matters far more than restating an
+						// anomaly the counter already exposes. There is also no way to
+						// acknowledge it: unlike the DLQ, gc_s3_orphans has no resolved
+						// state. Alert on gc_audit_events_total{event=
+						// "gc_s3_orphan_referenced_deferred"}.
+						//
+						// The root remains durable and the canonical state is retained for
+						// operator reconciliation; recovery never guesses past live references.
+						metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_referenced_deferred").Inc()
+						log.Printf("[GC Worker] S3 orphan recovery: block %s (org=%s) still has references; refusing to delete its bytes (operator action required)", canonical.BlockID, canonical.OrgID)
+						continue
 					}
-					continue
-				}
-				// Same rule as processBlock: the read RETURNING is this path's proof that
-				// the environment can authorize a delete, whatever the read found. Recorded
-				// before the hasRefs branch, never after a completed delete.
-				w.recordDestructiveLivenessSuccess(destructivePathOrphan)
-				if hasRefs {
-					// Something references this block even though its canonical row is
-					// gone. Recovery must not destroy the bytes those references point
-					// at; leave the row for an operator rather than guessing.
-					//
-					// Reported through the metric and the log ONLY — deliberately not
-					// through phaseErr. A phase error suppresses SetLastScanSuccess, so
-					// one anomalous row would freeze the scanner's success timestamp
-					// forever and make a healthy fleet indistinguishable from a broken
-					// one — losing a signal that matters far more than restating an
-					// anomaly the counter already exposes. There is also no way to
-					// acknowledge it: unlike the DLQ, gc_s3_orphans has no resolved
-					// state. Alert on gc_audit_events_total{event=
-					// "gc_s3_orphan_referenced_deferred"}.
-					//
-					// The root remains durable and the canonical state is retained for
-					// operator reconciliation; recovery never guesses past live references.
-					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_referenced_deferred").Inc()
-					log.Printf("[GC Worker] S3 orphan recovery: block %s (org=%s) still has references; refusing to delete its bytes (operator action required)", canonical.BlockID, canonical.OrgID)
-					continue
+
 				}
 
 				// Re-check the gate immediately before destroying bytes, ignoring the

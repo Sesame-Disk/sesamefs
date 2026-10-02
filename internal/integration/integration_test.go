@@ -50,7 +50,8 @@ func TestMain(m *testing.M) {
 	// comment could not: R26 was added to docker-compose and missed here, and the
 	// omission was invisible in the standard run only because P4A happens to be set
 	// alongside it.
-	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_W24_CHARACTERIZATION") == "1" ||
+	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_G4_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_W24_CHARACTERIZATION") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W2_REPAIR_3DC_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W2_ROLLOUT_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W2_CLOSURE_EVIDENCE") == "1" ||
@@ -130,6 +131,10 @@ func TestMain(m *testing.M) {
 	}()
 
 	code := m.Run()
+	if os.Getenv("SESAMEFS_REQUIRE_G4_EVIDENCE") == "1" && !g4CoexistenceObserved {
+		fmt.Println("required G4 Cassandra/MinIO coexistence evidence was not observed")
+		code = 1
+	}
 	if os.Getenv(w24EvidenceEnv) == "1" {
 		if missing := w24Missing(w24Observed); len(missing) > 0 {
 			fmt.Printf("%s=1 requires all named W2-4 characterization legs; missing=%s\n", w24EvidenceEnv, strings.Join(missing, ","))

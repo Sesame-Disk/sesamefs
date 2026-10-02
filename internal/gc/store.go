@@ -294,19 +294,17 @@ type GCStore interface {
 	// authority still owns it — incarnation, claim id, claimed_at, and
 	// gc_orphan_handoff=true. Skipping the handoff cannot finalize.
 	//
-	// AlreadyFinalized classifies "blocks is gone and the lifecycle certificate is
+	// AlreadyFinalized classifies "P1 is gone and the lifecycle certificate is
 	// still published for this exact (P, D)". Neither outcome is permission to
 	// delete bytes: G3's processBlock retires blocks(L) on Finalized and treats
 	// AlreadyFinalized as a no-op settlement, but does not perform the physical
 	// S3 delete itself either way — that remains a future physical executor's job,
 	// authorized separately from this call.
 	//
-	// It deliberately does NOT pin Consistency(EACH_QUORUM) the way ClaimBlockDelete
-	// does. The window this DELETE opens — a writer in another DC that has not yet seen
-	// the row vanish — is covered by the gc_s3_orphans row, which IS published at
-	// EACH_QUORUM and is written BEFORE this call. That row, not this one, is the fence
-	// that spans the physical delete; see db.BlockAuthorityRead for the intersection
-	// argument this relies on.
+	// G4 also classifies P1 retirement when SERIAL observes a different P2,
+	// but only with the exact orphan and published (P1,D1) certificate. Its
+	// CAS never removes P2. A lagging reader still sees P1's deleting claim;
+	// a reader seeing retirement must use fresh INSTALL, never repair P1.
 	FinalizeBlockDelete(orgID uuid.UUID, blockID string, authority CommittedBlockDeleteAuthority) (BlockDeleteFinalizeResult, error)
 	// EnsureBlockGCCandidate records a block as a delete candidate together with the
 	// EXACT physical incarnation it was observed at.

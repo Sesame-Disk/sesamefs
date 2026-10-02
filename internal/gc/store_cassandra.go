@@ -4346,6 +4346,9 @@ func (s *CassandraStore) settleBlockDeleteFinalize(orgID uuid.UUID, blockID stri
 	if !found {
 		return s.classifyFinalizeAbsentRow(orgID, blockID, authority, cause)
 	}
+	if row.Target != authority.Authority().Target && !row.Target.IsZero() {
+		return s.classifyFinalizeAbsentRow(orgID, blockID, authority, cause)
+	}
 	classified := classifyFinalizeAgainstRow(row, authority)
 	if classified.Cause == nil {
 		classified.Cause = cause
@@ -4362,6 +4365,9 @@ func (s *CassandraStore) classifyFinalizeNotApplied(orgID uuid.UUID, blockID str
 		}, fmt.Errorf("finalize block %s: not applied and serial settlement failed: %w", blockID, err)
 	}
 	if !found {
+		return s.classifyFinalizeAbsentRow(orgID, blockID, authority, nil)
+	}
+	if row.Target != authority.Authority().Target && !row.Target.IsZero() {
 		return s.classifyFinalizeAbsentRow(orgID, blockID, authority, nil)
 	}
 	classified := classifyFinalizeAgainstRow(row, authority)

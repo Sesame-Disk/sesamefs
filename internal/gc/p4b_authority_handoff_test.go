@@ -106,44 +106,37 @@ func TestP4B_FinalizeRequiresCommittedHandoff(t *testing.T) {
 	}
 }
 
-func TestProcessBlockCommittedHandoffIsNotReleasedOnPreClaimRefsBranch(t *testing.T) {
+func TestG4CommittedHandoffIsNotRevokedByLateRefs(t *testing.T) {
 	store := NewMockStore()
 	sp := &MockStorageProvider{}
 	w := NewWorker(store, sp, NewQueue(store), 100, 0, false, &Stats{})
-	orgID := uuid.New()
-	blockID := testSHA256BlockID("p4b-h10-refs")
-	store.AddBlock(orgID, blockID, "hot", 0)
-	candidateAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
-	candidate := ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
-	original := store.QueueItems(orgID)[0]
-	stored := store.SeedBlockClaimForTest(orgID, blockID, "stored-d1", candidateAt)
-	seedPreparedBlockDeleteOrphanForTest(t, store, orgID, blockID, stored)
-	store.SeedBlockHandoffForTest(orgID, blockID)
-	store.AddBlockReferenceForTest(orgID, blockID, "still-referenced")
-
-	n, err := w.ProcessOnce(context.Background())
-	if err != nil || n != 0 {
-		t.Fatalf("ProcessOnce() = (%d, %v), want committed-pending contradiction (no release, no delete)", n, err)
+	org := uuid.New()
+	block := testSHA256BlockID("g4-late-ref-retirement")
+	store.AddBlock(org, block, "hot", 0)
+	old := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
+	candidate := ensureAndEnqueueBlockForTest(t, store, org, block, "hot", old, 0)
+	stored := store.SeedBlockClaimForTest(org, block, "stored-d1", old)
+	seedPreparedBlockDeleteOrphanForTest(t, store, org, block, stored)
+	store.SeedBlockHandoffForTest(org, block)
+	store.AddBlockReferenceForTest(org, block, "late-ref")
+	if n, err := w.ProcessOnce(context.Background()); err != nil || n != 1 {
+		t.Fatalf("committed retirement: %d %v", n, err)
 	}
-	block := store.GetBlock(orgID, blockID)
-	if block == nil || block.GCState != "deleting" || block.GCClaimID != "stored-d1" || !orphanHandoffCommitted(block.GCOrphanHandoff) {
-		t.Fatalf("CommittedOwner refs contradiction released or finalized the stored authority: %+v", block)
+	if store.GetBlock(org, block) != nil {
+		t.Fatal("late ref vetoed canonical retirement")
 	}
-	if store.QueueCompleteCallsForTest() != 0 || store.QueueRequeueCallsForTest() != 0 || store.QueueFailCallsForTest() != 0 {
-		t.Fatalf("queue lifecycle calls = complete:%d requeue:%d fail:%d, want all zero", store.QueueCompleteCallsForTest(), store.QueueRequeueCallsForTest(), store.QueueFailCallsForTest())
+	orphan, found, err := store.GetS3OrphanExact(org, block, stored)
+	if err != nil || !found || orphan.RecoveryState != S3OrphanRecoveryStateCommitted || !orphan.Authority.sameAuthority(stored) {
+		t.Fatalf("D1 revoked/replaced: %+v %v", orphan, err)
 	}
-	items := store.QueueItems(orgID)
-	if len(items) != 1 || items[0].RetryCount != original.RetryCount || !items[0].QueuedAt.Equal(original.QueuedAt) {
-		t.Fatalf("queue after H10 contradiction = %+v, want original %+v", items, original)
+	if len(sp.DeletedBlocks()) != 0 {
+		t.Fatal("handoff worker performed physical deletion")
 	}
-	if _, ok, err := store.GetBlockGCCandidateExact(orgID, blockID, candidate.Identity()); err != nil || !ok {
-		t.Fatalf("candidate was consumed after H10 contradiction: ok=%v err=%v", ok, err)
+	if _, found, err := store.GetBlockGCCandidateExact(org, block, candidate.Identity()); err != nil || found {
+		t.Fatalf("candidate not settled: %v %v", found, err)
 	}
-	if got := sp.DeletedBlocks(); len(got) != 0 {
-		t.Fatalf("physical deletes = %v, want none while references remain", got)
-	}
-	if stored.ClaimID != "stored-d1" {
-		t.Fatal("test fixture lost the stored claim id")
+	if has, err := store.BlockHasReferencesGlobal(org, block); err != nil || !has {
+		t.Fatal("retirement changed logical refs")
 	}
 }
 

@@ -394,47 +394,17 @@ func TestX1PhysicalLifeHandoffCurrentOrphanIdentityAndTTL(t *testing.T) {
 	}
 }
 
-func TestX1PhysicalLifeHandoffCurrentWriterStillFencesOnOrphan(t *testing.T) {
+func TestG4WriterDoesNotUseLogicalOrphanFence(t *testing.T) {
 	_, file := x1ParseFile(t, "internal", "db", "block_references.go")
-	const orphanSelect = "SELECT block_id FROM gc_s3_orphans WHERE org_id = ? AND block_id = ?"
-	const probeHelper = "probeBlockReuseHasS3OrphanFn"
-	const fenceHelper = "blockDeleteFenceHasS3OrphanFn"
-	const repairHelper = "blockRepairHasS3OrphanFn"
-
-	x1RequireOrphanFenceOnProbeBlockReuse(t, x1Func(t, file, "ProbeBlockReuse"), probeHelper)
-
-	fence := x1Func(t, file, "BlockDeleteFenceActive")
-	orphanCall := x1FirstCallIn(t, fence.Body, "BlockDeleteFenceActive", fenceHelper)
-	ast.Inspect(fence.Body, func(n ast.Node) bool {
-		ret, ok := n.(*ast.ReturnStmt)
-		if !ok || ret.Pos() >= orphanCall {
-			return true
+	for _, name := range []string{"ProbeBlockReuse", "BlockDeleteFenceActive", "validateBlockRepairAuthority", "RepairReleasedBlockStub"} {
+		fn := x1Func(t, file, name)
+		for _, helper := range []string{"probeBlockReuseHasS3OrphanFn", "blockDeleteFenceHasS3OrphanFn", "blockRepairHasS3OrphanFn"} {
+			if x1CountCalls(fn.Body, helper) != 0 {
+				t.Fatalf("%s still fences L via %s", name, helper)
+			}
 		}
-		if x1ReturnFalseNil(ret) {
-			t.Fatal("BlockDeleteFenceActive must not return false,nil before consulting the orphan fence; a rowless read is not an early no-fence")
-		}
-		return true
-	})
-
-	_ = x1FirstCallIn(t, x1Func(t, file, "ValidateBlockRepairAuthority").Body, "ValidateBlockRepairAuthority", "validateBlockRepairAuthority")
-	_ = x1FirstCallIn(t, x1Func(t, file, "validateBlockRepairAuthority").Body, "validateBlockRepairAuthority", repairHelper)
+	}
 	_ = x1FirstCallIn(t, x1Func(t, file, "RepairBlockMetadataIfCurrent").Body, "RepairBlockMetadataIfCurrent", "validateBlockRepairAuthority")
-	_ = x1FirstCallIn(t, x1Func(t, file, "RepairReleasedBlockStub").Body, "RepairReleasedBlockStub", probeHelper)
-
-	for _, name := range []string{probeHelper, fenceHelper, repairHelper} {
-		lit := x1AssignedFuncLit(t, file, name)
-		if !x1NodeContainsString(lit, orphanSelect) {
-			t.Fatalf("%s must SELECT gc_s3_orphans by (org_id, block_id); D0 must not claim G4 already landed", name)
-		}
-	}
-
-	raw, err := os.ReadFile(x1SourcePath("internal", "db", "block_references.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), "pending gc_s3_orphans row as an active fence") {
-		t.Fatal("BlockDeleteFenceActive must still document the transitional orphan-as-fence role")
-	}
 }
 
 func x1RequireOrphanFenceOnProbeBlockReuse(t *testing.T, fn *ast.FuncDecl, helper string) {

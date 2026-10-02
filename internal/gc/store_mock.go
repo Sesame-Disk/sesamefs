@@ -3046,6 +3046,9 @@ func (m *MockStore) FinalizeBlockDelete(orgID uuid.UUID, blockID string, authori
 	if !ok {
 		return m.classifyMockFinalizeAbsentRow(orgID, blockID, proposed)
 	}
+	if target := (BlockDeleteTarget{StorageClass: b.StorageClass, StorageKey: b.StorageKey}); target != proposed.Target && !target.IsZero() {
+		return m.classifyMockFinalizeAbsentRow(orgID, blockID, proposed)
+	}
 	if b.GCState != db.BlockGCStateDeleting || b.GCClaimID != proposed.ClaimID {
 		return BlockDeleteFinalizeResult{
 			Outcome: BlockDeleteNotAuthority,

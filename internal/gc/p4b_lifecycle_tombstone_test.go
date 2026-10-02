@@ -112,7 +112,7 @@ func TestP4B_CommitHandoffConfirmsAlreadyCommittedAtEachQuorum(t *testing.T) {
 	}
 }
 
-func TestP4B_ProcessBlockCommittedOwnerRechecksRefs(t *testing.T) {
+func TestG4ProcessBlockCommittedOwnerDoesNotReauthorizeByRefs(t *testing.T) {
 	source, err := os.ReadFile("worker.go")
 	if err != nil {
 		t.Fatal(err)
@@ -122,11 +122,11 @@ func TestP4B_ProcessBlockCommittedOwnerRechecksRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := formattedGCFunction(t, file, "processBlock")
-	if strings.Count(text, "BlockHasReferencesGlobal") != 1 || strings.Count(text, "BlockPublicationLivenessGlobal") != 1 {
-		t.Fatal("CommittedOwner must re-check BlockHasReferencesGlobal as a contradiction detector after locator/store/topology")
+	if strings.Count(text, "BlockHasReferencesGlobal") != 0 || strings.Count(text, "BlockPublicationLivenessGlobal") != 1 {
+		t.Fatal("G4 must retain the pre-D liveness proof and never reauthorize D by post-D refs")
 	}
-	if !strings.Contains(text, "committed delete authority observed references after handoff") {
-		t.Fatal("CommittedOwner refs>0 must refuse as committed_pending, not complete the delete")
+	if strings.Contains(text, "committed delete authority observed references after handoff") {
+		t.Fatal("G4 must not cancel a committed D using refs(L)")
 	}
 
 	helper := formattedGCFunction(t, file, "terminateThenDeleteS3Orphan")
