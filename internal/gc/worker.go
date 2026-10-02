@@ -700,8 +700,9 @@ func (w *Worker) recordDestructiveBlocked(path string) {
 }
 
 // recordDestructiveLivenessSuccess marks that this path completed the global
-// EACH_QUORUM liveness read — the only statement whose success proves the environment
-// can still authorize a destructive delete.
+// EACH_QUORUM liveness read, proving pre-D/legacy authorization is available.
+// COMMITTED recovery supplies its different proof through
+// recordDestructiveCommittedRecoverySuccess.
 //
 // Call it whenever that read RETURNS, before looking at what it found: a block that
 // turns out to be still referenced is not a delete, but the read that established
@@ -710,6 +711,14 @@ func (w *Worker) recordDestructiveBlocked(path string) {
 // blocked.
 func (w *Worker) recordDestructiveLivenessSuccess(path string) {
 	metrics.GCDestructiveLastLivenessSuccessTimestamp.WithLabelValues(path).Set(prometheusTimestamp(w.clock()))
+}
+
+// recordDestructiveCommittedRecoverySuccess records successful current-protocol
+// authorization: exact COMMITTED retirement, published P,D lifecycle, fresh
+// topology and the final EACH_QUORUM canonical reload. Neither a passing gate
+// alone, a terminal cleanup nor an empty sweep supplies this evidence.
+func (w *Worker) recordDestructiveCommittedRecoverySuccess() {
+	metrics.GCDestructiveLastLivenessSuccessTimestamp.WithLabelValues(destructivePathOrphan).Set(prometheusTimestamp(w.clock()))
 }
 
 // recordS3OrphanCanonicalReloadFailure records why the defense-in-depth canonical
@@ -2668,8 +2677,9 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 		return rootRecovered + preparedRecovered, errors.Join(rootErr, preparedErr)
 	}
 	// Same gate as processBlock: this path deletes bytes too. Authorization comes from
-	// the BlockHasReferencesGlobal below, not from the orphan row; the gate is what
-	// makes that read mean anything. Checked once here — cached form — to refuse the
+	// pre-D proof and exact published P,D certificate for COMMITTED continuation,
+	// or the independent global ref proof for legacy recovery. Checked once here
+	// in cached form to refuse the
 	// whole sweep cheaply, and again immediately before each delete in the FRESH form,
 	// which deliberately re-reads the live replication map. A sweep can run long, so a
 	// cached pass taken at its start would say nothing about the topology in effect by
@@ -3003,6 +3013,10 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 					continue
 				}
 
+				if committed {
+					w.recordDestructiveCommittedRecoverySuccess()
+				}
+
 				storageClass := canonicalCommit.StorageClass
 				if storageClass == "" {
 					if phaseErr == nil {
@@ -3071,7 +3085,8 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 	// No end-of-sweep verdict here either. A sweep that refused nothing is not
 	// evidence this path can delete — the usual shape is a sweep with no orphan rows at
 	// all, which attempts nothing and proves nothing. The sweep's own liveness reads
-	// carry the signal; see the pair on metrics.GCDestructiveLastBlockedTimestamp.
+	// and exact COMMITTED settlement carry the signal; see the pair on
+	// metrics.GCDestructiveLastBlockedTimestamp.
 
 	if phaseErr == nil {
 		newCursor := cutoffDay.AddDate(0, 0, -1)

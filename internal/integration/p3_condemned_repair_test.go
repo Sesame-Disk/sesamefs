@@ -15,16 +15,16 @@ import (
 
 	"github.com/Sesame-Disk/sesamefs/internal/api/v2"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	gcpkg "github.com/Sesame-Disk/sesamefs/internal/gc"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
-	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
 )
 
 const p3RequireEvidenceEnv = "SESAMEFS_REQUIRE_P3_EVIDENCE"
 
 // TestP3CondemnedIncarnationCannotBeRepaired proves the writer-side P3 boundary
-// against real Cassandra and MinIO. A writer captures reusable P1, an A+ orphan
-// condemns it, and the delayed writer can neither PUT P1 nor recreate its row.
+// against real Cassandra and MinIO. A writer captures reusable P1, current GC
+// claims/commits D1, and the delayed writer can neither PUT P1 nor recreate its row.
 func TestP3CondemnedIncarnationCannotBeRepaired(t *testing.T) {
 	evidence := p3RequireCondemnedRepairEvidence(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -73,16 +73,12 @@ func TestP3CondemnedIncarnationCannotBeRepaired(t *testing.T) {
 	}
 	target := v2.BlockMaterializationTarget{Store: blockStore, StorageClass: probe.StorageClass, StorageKey: probe.StorageKey}
 
-	firstSeen := time.Now().UTC()
-	if err := database.Session().Query(`
-		INSERT INTO gc_s3_orphans (org_id, block_id, storage_class, storage_key, gc_claim_id, gc_claimed_at, first_seen_at, recovery_phase)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, orgID, blockID, storageClass, p1Key, orphanClaimID, orphanClaimedAt, firstSeen, "pending_s3").
-		Consistency(gocql.EachQuorum).
-		SerialConsistency(gocql.Serial).
-		Exec(); err != nil {
-		t.Fatalf("condemn P1 with orphan fence: %v", err)
+	if err := database.RemoveBlockReference(orgID, blockID, referrer); err != nil {
+		t.Fatal(err)
 	}
+	store := gcpkg.NewCassandraStore(database)
+	committed := p3CommitExactDeleteForTest(t, store, uuid.MustParse(orgID), blockID, p1, orphanClaimID, orphanClaimedAt)
+	t.Cleanup(func() { cleanupGCBlockFixturesForTest(t, uuid.MustParse(orgID), blockID) })
 	if err := blockStore.DeleteBlockByStorageKey(ctx, p1Key); err != nil {
 		t.Fatalf("delete condemned P1 bytes: %v", err)
 	}
@@ -103,15 +99,8 @@ func TestP3CondemnedIncarnationCannotBeRepaired(t *testing.T) {
 	if err := database.RemoveBlockReference(orgID, blockID, referrer); err != nil {
 		t.Fatalf("remove P1 reference: %v", err)
 	}
-	if err := database.Session().Query(`DELETE FROM blocks WHERE org_id = ? AND block_id = ?`, orgID, blockID).Exec(); err != nil {
-		t.Fatalf("complete P1 canonical lifecycle: %v", err)
-	}
-	if err := database.Session().Query(`
-		DELETE FROM gc_s3_orphans
-		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
-		  AND gc_claim_id = ? AND gc_claimed_at = ?
-	`, orgID, blockID, storageClass, p1Key, orphanClaimID, orphanClaimedAt).Exec(); err != nil {
-		t.Fatalf("clear P1 orphan lifecycle: %v", err)
+	if finalized, err := store.FinalizeBlockDelete(uuid.MustParse(orgID), blockID, committed); err != nil || finalized.Outcome != gcpkg.BlockDeleteFinalized {
+		t.Fatalf("retire exact P1: %+v %v", finalized, err)
 	}
 	if err := database.RepairBlockMetadataIfCurrent(orgID, db.PlainBlockRepresentationID, blockID, "", len(content), p1); !errors.Is(err, db.ErrBlockRepairAuthorityChanged) {
 		t.Fatalf("late P1 metadata repair = %v, want authority changed", err)
@@ -196,17 +185,11 @@ func TestP3ResidualRaceDoesNotRecreateCanonicalRow(t *testing.T) {
 	} else {
 		putCalls++
 	}
-	if err := database.Session().Query(`
-		INSERT INTO gc_s3_orphans (org_id, block_id, storage_class, storage_key, gc_claim_id, gc_claimed_at, first_seen_at, recovery_phase)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, orgID, blockID, storageClass, storageKey, orphanClaimID, orphanClaimedAt, time.Now().UTC(), "pending_s3").
-		Consistency(gocql.EachQuorum).
-		SerialConsistency(gocql.Serial).
-		Exec(); err != nil {
-		t.Fatalf("publish residual orphan fence: %v", err)
-	}
-	if err := database.Session().Query(`DELETE FROM blocks WHERE org_id = ? AND block_id = ?`, orgID, blockID).Exec(); err != nil {
-		t.Fatalf("delete condemned canonical row: %v", err)
+	store := gcpkg.NewCassandraStore(database)
+	committed := p3CommitExactDeleteForTest(t, store, uuid.MustParse(orgID), blockID, p1, orphanClaimID, orphanClaimedAt)
+	t.Cleanup(func() { cleanupGCBlockFixturesForTest(t, uuid.MustParse(orgID), blockID) })
+	if finalized, err := store.FinalizeBlockDelete(uuid.MustParse(orgID), blockID, committed); err != nil || finalized.Outcome != gcpkg.BlockDeleteFinalized {
+		t.Fatalf("retire exact P1 in residual race: %+v %v", finalized, err)
 	}
 
 	repairErr := database.RepairBlockMetadataIfCurrent(orgID, db.PlainBlockRepresentationID, blockID, sha1ID, len(content), p1)
@@ -240,4 +223,27 @@ func p3RequireCondemnedRepairEvidence(t *testing.T) *p3EvidenceGate {
 		}
 	})
 	return gate
+}
+
+// Fixtures use the same PREPARED -> COMMITTED handoff as the productive worker.
+func p3CommitExactDeleteForTest(t *testing.T, store *gcpkg.CassandraStore, org uuid.UUID, block string, target db.BlockPhysicalLocation, claim string, at time.Time) gcpkg.CommittedBlockDeleteAuthority {
+	t.Helper()
+	authority := gcpkg.BlockDeleteAuthority{Target: gcpkg.BlockDeleteTarget{StorageClass: target.StorageClass, StorageKey: target.StorageKey}, ClaimID: claim, ClaimedAt: at}
+	if claimed, err := store.ClaimBlockDelete(org, block, authority); err != nil || claimed.Outcome != gcpkg.BlockClaimAcquired {
+		t.Fatalf("claim exact P1: %+v %v", claimed, err)
+	}
+	if live, err := store.BlockPublicationLivenessGlobal(org, block); err != nil || live != db.BlockPublicationZero {
+		t.Fatalf("pre-D zero proof: %v %v", live, err)
+	}
+	if prepared := store.PrepareBlockDeleteOrphan(org, block, authority, "", at); prepared.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+		t.Fatalf("prepare exact D1: %+v", prepared)
+	}
+	handoff, err := store.CommitBlockDeleteOrphanHandoff(org, block, authority)
+	if err != nil || handoff.Outcome != gcpkg.BlockDeleteHandoffCommitted {
+		t.Fatalf("commit exact D1: %+v %v", handoff, err)
+	}
+	if promoted := store.PromoteBlockDeleteOrphan(org, block, handoff.Authority); promoted.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+		t.Fatalf("publish exact D1: %+v", promoted)
+	}
+	return handoff.Authority
 }

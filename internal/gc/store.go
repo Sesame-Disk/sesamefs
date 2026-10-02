@@ -186,31 +186,26 @@ type GCStore interface {
 
 	// Block operations (worker)
 	//
-	// BlockExists reports whether the canonical `blocks` row still exists.
-	// RecoverS3Orphans relies on this to distinguish a block still being
-	// claimed/finalized by GC (row present → skip) from one whose DB row was
-	// already removed (absent → proceed with S3 cleanup).
+	// BlockExists reports whether the current canonical blocks row exists.
+	// Legacy empty-state orphan recovery uses absence before its global ref proof.
+	// COMMITTED recovery instead retires/settles exact P1,D1 and permits live P2.
 	BlockExists(orgID uuid.UUID, blockID string) (bool, error)
-	// BlockHasReferences reports whether any block_references row still exists for
-	// the block, at the session consistency. TRUE is proof and may abort a delete;
-	// FALSE proves only local absence, so it may drive discovery but MUST NOT
-	// authorize destroying bytes. Use BlockHasReferencesGlobal for that.
+	// BlockHasReferences is a session-consistency discovery/pre-D hint. TRUE may
+	// postpone a new handoff; FALSE cannot authorize it. Neither result revokes D1.
 	BlockHasReferences(orgID uuid.UUID, blockID string) (bool, error)
-	// BlockHasReferencesGlobal is the same liveness check pinned to EACH_QUORUM, so
-	// it intersects every DC that can acknowledge a LOCAL_QUORUM reference write.
-	// Its FALSE answer is the ONLY one that may authorize a physical delete
-	// (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01). An unreachable DC makes it fail;
-	// callers must fail closed rather than treat the error as "no references".
+	// BlockHasReferencesGlobal pins reference visibility to EACH_QUORUM.
+	// Legacy recovery requires its FALSE proof before physical deletion.
+	// An unavailable DC or read error must never be interpreted as zero.
+	// Current COMMITTED recovery continues exact P,D authority, not a new ref proof.
 	BlockHasReferencesGlobal(orgID uuid.UUID, blockID string) (bool, error)
 	// BlockPublicationLivenessGlobal is pre-D only: real refs may settle work;
-	// repair-only must preserve candidate and queue. ZERO permits a new handoff.
-	// Committed and physical-delete readers use BlockHasReferencesGlobal instead.
+	// repair-only preserves candidate and queue. EACH_QUORUM ZERO permits COMMIT D(P1).
+	// After COMMITTED, exact orphan(P1,D1) and the published lifecycle certificate
+	// continue D1. Valid P2 references do not cancel D1 or authorize touching P2.
 	BlockPublicationLivenessGlobal(orgID uuid.UUID, blockID string) (db.BlockPublicationLiveness, error)
-	// ValidateDestructiveGCTopology reports whether the live keyspace replication
-	// still supports the per-datacenter EACH_QUORUM argument that authorizes
-	// physical deletes. It is part of this interface rather than an optional
-	// capability so the guarantee cannot be lost by wrapping the store: dropping it
-	// is a compile error, not a silently disarmed safety gate.
+	// ValidateDestructiveGCTopology checks that live replication supports the
+	// per-DC proof. Every physical execution requires a fresh topology check,
+	// including exact COMMITTED continuation. Wrappers must preserve this gate.
 	ValidateDestructiveGCTopology() error
 	GetBlockInfo(orgID uuid.UUID, blockID string) (BlockInfo, error)
 	// RemoveBlockReference deletes one (block, referrer) reference row. Idempotent.
@@ -228,11 +223,11 @@ type GCStore interface {
 	// tests columns for null applies against a MISSING partition, while an IF that names
 	// storage_class cannot.
 	//
-	// Callers MUST re-check BlockPublicationLivenessGlobal before a new D, including real references and repairs.
-	// Post-COMMITTED readers use BlockHasReferencesGlobal — the EACH_QUORUM form, never the
-	// session-consistency one — after a successful claim before deleting from S3
-	// (claim-then-verify). Verifying with the local read reopens
-	// ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01.
+	// After claiming and before a new D, callers MUST establish
+	// BlockPublicationLivenessGlobal ZERO at EACH_QUORUM, including refs and repairs.
+	// Post-COMMITTED execution settles exact P,D authority and a published lifecycle;
+	// it does not reauthorize D from logical references. A fresh topology check
+	// remains mandatory immediately before destroying bytes.
 	//
 	// The result is classified rather than boolean because a non-applied CAS is not
 	// completion (R16): see BlockClaimOutcome. It also carries the OWNER it observed, so

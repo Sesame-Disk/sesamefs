@@ -140,10 +140,15 @@ func TestR3WriterGCHandshakeAtRealCassandra(t *testing.T) {
 		r3CharacterizationEvidence.deletingFence = true
 	})
 
-	t.Run("GC orphan fences writer after irreversible handoff", func(t *testing.T) {
+	t.Run("retired P1 rejects stale repair without fencing fresh P2", func(t *testing.T) {
 		orgID := uuid.New()
 		blockID := r3TestBlockID("r3-gc-orphan-" + uuid.NewString())
 		target := seedCanonicalBlockRowForTest(t, database, orgID, blockID, "hot")
+		libraryID := uuid.NewString()
+		seedLibraryBaselineCertifierLibrary(t, database, orgID.String(), libraryID, uuid.NewString(), uuid.NewString(), 1)
+		t.Cleanup(func() {
+			_ = database.Session().Query("DELETE FROM libraries WHERE org_id = ? AND library_id = ?", orgID.String(), libraryID).Exec()
+		})
 		operationID := "r3-writer-" + uuid.NewString()
 		referrer := dbpkg.BlockReferrerForUpload(operationID)
 		cleanupR3LivenessFixture(t, database, orgID, blockID, referrer)
@@ -188,18 +193,24 @@ func TestR3WriterGCHandshakeAtRealCassandra(t *testing.T) {
 			t.Fatalf("orphan-only authority = claim %q key %q, want claim %q key %q", orphan.Authority.ClaimID, orphan.StorageKey, attempt.ClaimID, target.StorageKey)
 		}
 		err = v2pkg.NewFSHelper(database).RegisterUploadedBlockTarget(
-			t.Context(), orgID.String(), uuid.NewString(), blockID, operationID, 1,
+			t.Context(), orgID.String(), libraryID, blockID, operationID, 1,
 			v2pkg.BlockMaterializationTarget{StorageClass: target.StorageClass, StorageKey: target.StorageKey}, "",
 		)
-		if !errors.Is(err, v2pkg.ErrBlockDeleteInProgress) {
-			t.Fatalf("R3 GC-WINS ORPHAN EVIDENCE: materialization error = %v, want ErrBlockDeleteInProgress", err)
+		if !errors.Is(err, dbpkg.ErrBlockRepairAuthorityChanged) {
+			t.Fatalf("R3 RETIRED-TUPLE EVIDENCE: materialization error = %v, want stale P1 rejection", err)
 		}
 		assertR3ProductiveUploadPinVisible(t, database, store, orgID, blockID, referrer)
-		r3CharacterizationEvidence.orphanOnlyFence = true
+		if fenced, err := database.BlockDeleteFenceActive(orgID.String(), blockID); err != nil || fenced {
+			t.Fatalf("retired orphan fenced fresh writer: %v %v", fenced, err)
+		}
+		if probe, err := database.ProbeBlockReuse(orgID.String(), blockID); err != nil || probe.Decision != dbpkg.BlockReuseNeedsPut {
+			t.Fatalf("fresh writer cannot mint P2: %+v %v", probe, err)
+		}
+		r3CharacterizationEvidence.retiredTupleRejected = true
 	})
 
 	gate.observed = r3CharacterizationEvidence.complete()
-	t.Logf("R3_LIVENESS_CHARACTERIZATION_EVIDENCE writer_wins=%t deleting_fence=%t orphan_fence=%t", r3CharacterizationEvidence.writerWins, r3CharacterizationEvidence.deletingFence, r3CharacterizationEvidence.orphanOnlyFence)
+	t.Logf("R3_LIVENESS_CHARACTERIZATION_EVIDENCE writer_wins=%t deleting_fence=%t retired_tuple_rejected=%t", r3CharacterizationEvidence.writerWins, r3CharacterizationEvidence.deletingFence, r3CharacterizationEvidence.retiredTupleRejected)
 }
 
 func TestR3CharacterizationBaseIsDocumented(t *testing.T) {

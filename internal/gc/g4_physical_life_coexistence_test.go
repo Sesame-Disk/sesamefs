@@ -113,6 +113,8 @@ func TestG4RecoveryFailsClosedWithoutExactSettlement(t *testing.T) {
 					}
 				}
 			}
+			resetDestructivePairForTest(destructivePathOrphan)
+			t.Cleanup(func() { resetDestructivePairForTest(destructivePathOrphan) })
 			worker := NewWorker(store, sp, NewQueue(store), 100, 0, false, &Stats{})
 			_, err := worker.RecoverS3Orphans(context.Background(), 100)
 			if scenario != "certificate_terminal" && err == nil {
@@ -120,6 +122,9 @@ func TestG4RecoveryFailsClosedWithoutExactSettlement(t *testing.T) {
 			}
 			if len(sp.ScopedBlockDeletes()) != 0 {
 				t.Fatal("unsettled/terminal D reacquired delete authority")
+			}
+			if _, success := destructivePairForTest(t, destructivePathOrphan); success != 0 {
+				t.Fatalf("unsettled/terminal D manufactured authorization evidence: %v", success)
 			}
 			if scenario != "certificate_terminal" && store.S3OrphanCount() != 1 {
 				t.Fatal("unsettled authority disappeared")
@@ -196,5 +201,47 @@ func TestG4RecoveryPostDeleteFailuresPreserveReplacement(t *testing.T) {
 				t.Fatal("restart failed to settle D1")
 			}
 		})
+	}
+}
+
+// A committed certificate replaces the pre-D liveness read as recovery evidence.
+func TestG4CommittedRecoveryClearsTopologyBlockedSignal(t *testing.T) {
+	store := NewMockStore()
+	sp := &MockStorageProvider{}
+	org := uuid.New()
+	block := testSHA256BlockID("g4-monitoring")
+	store.AddBlock(org, block, "hot", 0)
+	store.EnqueueBlockForTest(org, time.Now().Add(-time.Hour), block, "hot", 0)
+	worker := NewWorker(store, sp, NewQueue(store), 100, 0, false, &Stats{})
+	if n, err := worker.ProcessOnce(context.Background()); n != 1 || err != nil {
+		t.Fatalf("handoff: %d %v", n, err)
+	}
+	resetDestructivePairForTest(destructivePathOrphan, destructivePathBlock)
+	t.Cleanup(func() { resetDestructivePairForTest(destructivePathOrphan, destructivePathBlock) })
+	worker.clock = advancingClock(time.Now())
+	store.SetValidateDestructiveGCTopologyErrForTest(errors.New("injected unsupported topology"))
+	if n, err := worker.RecoverS3Orphans(context.Background(), 100); n != 0 || err == nil {
+		t.Fatalf("topology refusal: %d %v", n, err)
+	}
+	blocked, success := destructivePairForTest(t, destructivePathOrphan)
+	if blocked <= success || success != 0 {
+		t.Fatalf("refusal must leave blocked signal: %v %v", blocked, success)
+	}
+	store.SetValidateDestructiveGCTopologyErrForTest(nil)
+	if n, err := worker.RecoverS3Orphans(context.Background(), 100); n != 1 || err != nil {
+		t.Fatalf("committed recovery: %d %v", n, err)
+	}
+	blocked, success = destructivePairForTest(t, destructivePathOrphan)
+	if success <= blocked {
+		t.Fatalf("exact recovery must clear blocked signal: blocked=%v success=%v", blocked, success)
+	}
+	if b, s := destructivePairForTest(t, destructivePathBlock); b != 0 || s != 0 {
+		t.Fatalf("orphan recovery contaminated block signal: %v %v", b, s)
+	}
+	if n, err := worker.RecoverS3Orphans(context.Background(), 100); n != 0 || err != nil {
+		t.Fatalf("idle recovery: %d %v", n, err)
+	}
+	if b, s := destructivePairForTest(t, destructivePathOrphan); b != blocked || s != success {
+		t.Fatalf("idle recovery manufactured evidence: %v %v", b, s)
 	}
 }

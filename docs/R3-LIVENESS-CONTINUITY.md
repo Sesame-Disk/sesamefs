@@ -508,3 +508,12 @@ for normal materialize-to-publish traffic. HEAD after a BorrowedFS cut is
 characterized in
 [R3-BORROWEDFS-HEAD-CHARACTERIZATION.md](R3-BORROWEDFS-HEAD-CHARACTERIZATION.md);
 that measurement does not close R3.
+
+
+### G4 evidence alignment (2026-10-02)
+
+The third required current leg is retired_tuple_rejected, replacing the
+historical orphan_fence expectation: P1 retirement leaves exact D1 recovery
+authority, a stale P1 repair cannot recreate the row, and the orphan does not
+fence a fresh P2 writer. The writer-wins and active deleting-claim legs remain
+required. This alignment does not close R3 or permit GC activation.

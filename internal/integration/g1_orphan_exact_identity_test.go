@@ -179,7 +179,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		})
 		g1DeleteOrphanProjection(t, database, orgID, blockID, authority.Authority(), created.FirstSeenAt)
 
-		worker := gcpkg.NewWorker(store, nil, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+		worker := gcpkg.NewWorker(&w2OwnedRecoveryStore{GCStore: store, org: orgID, block: blockID}, nil, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
 		if recovered, err := worker.RecoverS3Orphans(context.Background(), 100); err != nil || recovered != 0 {
 			t.Fatalf("old-root reconciliation = (%d, %v), want root repair without physical execution", recovered, err)
 		}
@@ -275,7 +275,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		g1DeleteOrphanProjection(t, database, orgID, blockID, authority.Authority(), created.FirstSeenAt)
 
 		storage := &gcpkg.MockStorageProvider{}
-		worker := gcpkg.NewWorker(store, storage, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+		worker := gcpkg.NewWorker(&w2OwnedRecoveryStore{GCStore: store, org: orgID, block: blockID}, storage, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
 		recovered, err := worker.RecoverS3Orphans(context.Background(), 100)
 		if err != nil || recovered != 1 {
 			t.Fatalf("RecoverS3Orphans = (%d, %v), want one exact root recovery", recovered, err)
@@ -306,7 +306,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		g1DeleteOrphanProjection(t, database, orgID, blockID, authority.Authority(), created.FirstSeenAt)
 
 		storage := &gcpkg.MockStorageProvider{}
-		worker := gcpkg.NewWorker(store, storage, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+		worker := gcpkg.NewWorker(&w2OwnedRecoveryStore{GCStore: store, org: orgID, block: blockID}, storage, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
 		recovered, err := worker.RecoverS3Orphans(context.Background(), 100)
 		if err != nil || recovered != 0 {
 			t.Fatalf("root-only recovery = (%d, %v), want no physical recovery", recovered, err)
@@ -318,7 +318,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		// A new worker represents a process restart: only Cassandra state is
 		// shared, so replay must remain retained and must not delete twice.
 		storageAfterRestart := &gcpkg.MockStorageProvider{}
-		restartedWorker := gcpkg.NewWorker(store, storageAfterRestart, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+		restartedWorker := gcpkg.NewWorker(&w2OwnedRecoveryStore{GCStore: store, org: orgID, block: blockID}, storageAfterRestart, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
 		recoveredAfterRestart, err := restartedWorker.RecoverS3Orphans(context.Background(), 100)
 		if err != nil || recoveredAfterRestart != 0 {
 			t.Fatalf("root-only recovery after worker restart = (%d, %v), want no physical recovery", recoveredAfterRestart, err)
@@ -377,7 +377,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		}
 
 		storage := &gcpkg.MockStorageProvider{}
-		worker := gcpkg.NewWorker(store, storage, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+		worker := gcpkg.NewWorker(&w2OwnedRecoveryStore{GCStore: store, org: orgID, block: blockID}, storage, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
 		recovered, err := worker.RecoverS3Orphans(context.Background(), 100)
 		if err != nil || recovered != 0 {
 			t.Fatalf("prepared recovery = (%d, %v), want retained state", recovered, err)
@@ -415,7 +415,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		})
 		g1DeleteOrphanCanonical(t, database, orgID, blockID, authority.Authority())
 
-		worker := gcpkg.NewWorker(store, &gcpkg.MockStorageProvider{}, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+		worker := gcpkg.NewWorker(&w2OwnedRecoveryStore{GCStore: store, org: orgID, block: blockID}, &gcpkg.MockStorageProvider{}, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
 		recovered, err := worker.RecoverS3Orphans(context.Background(), 100)
 		if err != nil || recovered != 1 {
 			t.Fatalf("terminal root settlement = (%d, %v), want one metadata settlement", recovered, err)
@@ -434,7 +434,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		}
 	})
 
-	t.Run("multiple orphan lives keep the writer fence", func(t *testing.T) {
+	t.Run("multiple retired orphan lives do not fence the current writer", func(t *testing.T) {
 		orgID := uuid.New()
 		blockID := g1IntegrationBlockID("writer-fence")
 		p1 := testCommittedOrphanAuthorityWithClaimID(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID), "g1-fence-p1-"+uuid.NewString())
@@ -448,19 +448,40 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 			_ = store.DeleteS3Orphan(orgID, blockID, p1.Authority(), createdP1.FirstSeenAt)
 			_ = store.DeleteS3Orphan(orgID, blockID, p2.Authority(), createdP2.FirstSeenAt)
 		})
-		if fenced, err := database.BlockDeleteFenceActive(orgID.String(), blockID); err != nil || !fenced {
-			t.Fatalf("writer fence with two lives = (%v, %v), want true", fenced, err)
+		if fenced, err := database.BlockDeleteFenceActive(orgID.String(), blockID); err != nil || fenced {
+			t.Fatalf("rowless writer with two retired lives = (%v, %v), want unfenced", fenced, err)
+		}
+		if probe, err := database.ProbeBlockReuse(orgID.String(), blockID); err != nil || probe.Decision != db.BlockReuseNeedsPut {
+			t.Fatalf("rowless writer with retired lives: %+v %v", probe, err)
+		}
+		current := seedCanonicalBlockRowForTest(t, database, orgID, blockID, "hot")
+		referrer := "up:g1-current"
+		if err := database.AddBlockReference(orgID.String(), blockID, referrer, uuid.NewString(), 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = database.RemoveBlockReference(orgID.String(), blockID, referrer)
+			_ = database.Session().Query("DELETE FROM blocks WHERE org_id = ? AND block_id = ?", orgID.String(), blockID).Exec()
+		})
+		if probe, err := database.ProbeBlockReuse(orgID.String(), blockID); err != nil || probe.Decision != db.BlockReuseReusable || probe.StorageKey != current.StorageKey {
+			t.Fatalf("current life blocked by retired siblings: %+v %v", probe, err)
 		}
 		if err := store.DeleteS3Orphan(orgID, blockID, p1.Authority(), createdP1.FirstSeenAt); err != nil {
 			t.Fatalf("settle first writer-fence life: %v", err)
 		}
-		if fenced, err := database.BlockDeleteFenceActive(orgID.String(), blockID); err != nil || !fenced {
-			t.Fatalf("writer fence after first life settlement = (%v, %v), want true for P2", fenced, err)
+		if fenced, err := database.BlockDeleteFenceActive(orgID.String(), blockID); err != nil || fenced {
+			t.Fatalf("writer after first retired life settlement = (%v, %v), want unfenced", fenced, err)
+		}
+		if sibling, found, err := store.GetS3OrphanExact(orgID, blockID, p2.Authority()); err != nil || !found || sibling.StorageKey != p2.Authority().Target.StorageKey {
+			t.Fatalf("settlement disturbed retired sibling: %+v %v", sibling, err)
+		}
+		if probe, err := database.ProbeBlockReuse(orgID.String(), blockID); err != nil || probe.Decision != db.BlockReuseReusable || probe.StorageKey != current.StorageKey {
+			t.Fatalf("settlement disturbed current life: %+v %v", probe, err)
 		}
 	})
 
 	gate.observed = true
-	t.Log("G1_ORPHAN_EXACT_IDENTITY_EVIDENCE exact_pd=1 root_repair=1 root_without_canonical_retained=1 restart_replay=1 prepared_retained=1 old_root=1 replay=1 terminal_settlement=1 writer_fence=1 no_ttl=1")
+	t.Log("G1_ORPHAN_EXACT_IDENTITY_EVIDENCE exact_pd=1 root_repair=1 root_without_canonical_retained=1 restart_replay=1 prepared_retained=1 old_root=1 replay=1 terminal_settlement=1 current_life_unfenced=1 stale_identity_isolated=1 no_ttl=1")
 }
 
 func g1IntegrationBlockID(label string) string {

@@ -276,19 +276,7 @@ func TestP3_WriterInAnotherDatacenterObservesTheFence(t *testing.T) {
 		ClaimID:   "p3-multidc-" + uuid.NewString(),
 		ClaimedAt: time.Now().UTC(),
 	}
-	outcome2Res, err := store.ClaimBlockDelete(orgUUID, blockID, authority)
-	if err != nil || outcome2Res.Outcome != gcpkg.BlockClaimAcquired {
-		t.Fatalf("claim P1 from dc-eu = %s, %v; want acquired", outcome2Res.Outcome, err)
-	}
-	handoff, err := store.CommitBlockDeleteOrphanHandoff(orgUUID, blockID, authority)
-	if err != nil || (handoff.Outcome != gcpkg.BlockDeleteHandoffCommitted && handoff.Outcome != gcpkg.BlockDeleteHandoffAlreadyCommitted) {
-		t.Fatalf("commit orphan handoff from dc-eu = %s, %v; want committed", handoff.Outcome, err)
-	}
-	committed := gcpkg.CommittedBlockDeleteAuthorityForTest(authority)
-	orphanResult := store.StartBlockDeleteOrphan(orgUUID, blockID, committed, "", time.Now().UTC())
-	if orphanResult.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
-		t.Fatalf("publish orphan fence from dc-eu: outcome=%s cause=%v", orphanResult.Outcome, orphanResult.Cause)
-	}
+	committed := p3CommitExactDeleteForTest(t, store, orgUUID, blockID, location, authority.ClaimID, authority.ClaimedAt)
 	if fenced, err := writer.BlockDeleteFenceActive(orgID, blockID); err != nil || !fenced {
 		t.Fatalf("dc-na must observe P1 claim before retirement: %v %v", fenced, err)
 	}
@@ -302,6 +290,29 @@ func TestP3_WriterInAnotherDatacenterObservesTheFence(t *testing.T) {
 		t.Fatalf("finalize P1 from dc-eu: %v", err)
 	}
 
+	// Retirement is not an EACH_QUORUM ordinary DELETE. A lagging local reader
+	// may still see P1/deleting: that must remain safely blocked, then converge.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		probe, err := writer.ProbeBlockReuse(orgID, blockID)
+		if err != nil {
+			t.Fatalf("dc-na retirement probe: %v", err)
+		}
+		if probe.Decision == dbpkg.BlockReuseNeedsPut {
+			break
+		}
+		if probe.Decision != dbpkg.BlockReuseBlockedByGC {
+			t.Fatalf("stale retirement view allowed P1 reuse: %+v", probe)
+		}
+		result, err := writer.ValidateBlockRepairAuthority(orgID, blockID, location)
+		if result != dbpkg.BlockRepairAuthorityBlocked && result != dbpkg.BlockRepairAuthorityChanged {
+			t.Fatalf("stale retirement view allowed P1 repair: %v %v", result, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("dc-na retirement did not converge within 30s")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	// P1 is retired. Its exact orphan cannot block a fresh P2 INSTALL.
 	if exists, err := gcpkg.NewCassandraStore(writer).BlockExists(orgUUID, blockID); err != nil || exists {
 		t.Fatalf("dc-na must observe retirement: %v %v", exists, err)

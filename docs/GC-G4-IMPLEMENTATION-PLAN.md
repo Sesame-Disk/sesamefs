@@ -95,7 +95,7 @@ blocks before retirement, fresh P2 is admitted afterwards, stale P1 repair
 returns Changed, and the exact orphan remains intact. That 3-DC leg was not
 executed in this single-DC validation; it remains separate evidence.
 
-Reproduce with `./scripts/g4-validation.ps1 -Stage All`. The runner snapshots
+Reproduce with `bash scripts/g4-validation.sh --stage all`. The runner snapshots
 current tracked and non-ignored new sources, retains ignored historical files
 in place, uses the configured local `.env` through Docker, writes separate
 logs in `tmp/g4-*`, and restricts physical-recovery enumeration to the fixture
@@ -132,3 +132,54 @@ if the inventory confirms no current dependency, and require the full suite
 plus current-protocol Cassandra/MinIO evidence. Historical deployment
 compatibility alone is not a reason to retain it. This evaluation is not an
 additional G4 prerequisite or a claim that old data exist.
+
+
+## Cross-audit corrections and activation invariant (2026-10-02)
+
+The earlier G4 runner executed the complete untagged Go suite and a directed
+G4 integration proof, not the complete integration suite. The cross-audits
+exposed outdated integration expectations and a monitoring regression.
+The supported Compose go-integration-test and go-all-test runners now require
+G4 evidence. This runner defaults to the full integration package tree and
+its required evidence gates; --scope g4 explicitly selects the
+narrow smoke proof.
+
+GCStore now distinguishes pre-D EACH_QUORUM zero proof, post-D exact
+COMMITTED/lifecycle continuation, independent legacy recovery and fresh topology
+before every physical delete. COMMITTED recovery contributes to the existing
+destructive-authorization timestamp pair only after exact settlement, fresh
+topology and final EACH_QUORUM canonical reload. Idle sweeps, terminal cleanup,
+missing certificates and failed settlement do not manufacture success.
+
+G1 and P4B recovery tests enumerate only their fixture org/block and preserve
+the shared scheduling cursor. The fixture discovery limit is applied after
+filtering so other rows cannot starve its projection. W2 requires exact K1
+absence, terminal D1, cleared exact orphan/root and an idle restart. G1,
+upload-link, P3 and R3 preserve stale-target, identity, reference and byte checks
+under the G4 contract. The 3-DC writer test accepts safe P1/deleting observations
+during a bounded convergence interval before demanding rowless admission.
+
+Activation invariant: G4 makes D irreversible after COMMITTED. E1/PRE-GC MUST
+prove that current publishers cannot create a new P1-dependent durable
+reference after D1 COMMITTED. References belonging to a valid later P2 do not
+revoke D1. TestG4CommittedHandoffIsNotRevokedByLateRefs proves irreversibility,
+not that every late reference belongs to P2.
+
+Confirmed source dependency: reachable publish repair invokes
+FSHelper.promotePendingPublishedFiles -> PromotePublishAttemptReferences ->
+RegisterFSObjectBlockReferences. Registration verifies the fs_object and
+resolves IDs, then writes fs: rows without binding them to current P or D.
+Promotion does not require the original pub: row to survive. E1 must reproduce
+the reachable-HEAD/temporary-zero/D1/late-repair sequence and close that
+structural gap before X1 closure, A1 or GC ON. A final refs==0 check in G4
+would leave a post-check race and does not close this dependency.
+
+Also retain the preexisting delayed-authority PUT/K1 physical resurrection
+window for E1/PRE-X1 characterization. Its leak risk is distinct from D1
+deleting K2. Legacy empty-state removal remains a separate evaluation PR.
+
+
+The authoritative G4 runner is scripts/g4-validation.sh, matching the
+repository's Bash test scripts and reusing go-test-stream.sh. Tests execute
+in Docker; the PowerShell launcher has been removed. The default executes
+the full suite with required evidence gates and a clean source snapshot.

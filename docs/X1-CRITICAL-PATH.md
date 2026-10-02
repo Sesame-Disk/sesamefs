@@ -296,3 +296,20 @@ does not close the non-fencing race.
 Status: the global SERIAL pin landed in PR #234 for the library, user and org
 leases (`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` closed); the generation-fenced
 final batch (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`) remains open.
+
+
+### Confirmed E1 / PRE-GC dependency from G4 cross-audit (2026-10-02)
+
+P1: reachable publication repair can promote permanent fs: references without
+binding them to the current physical life or a non-COMMITTED D. E1 must exercise
+reachable HEAD -> temporary zero -> COMMITTED D1(P1) -> late repair and prove
+that no new P1-dependent durable reference can appear after D1. This blocks
+X1 closure / A1 / GC ON until structurally closed or activation fails closed;
+it does not block GC-OFF G4/G5 development. A last refs==0 recheck in recovery
+does not eliminate the post-check publication race.
+
+P2 follow-up: an already-authorized delayed PUT can recreate retired K1 bytes.
+Characterize physical resurrection/leak at E1/PRE-X1. The separate greenfield
+evaluation of empty-state legacy recovery remains recorded in
+GC-G4-IMPLEMENTATION-PLAN.md. The G4 plan contains the confirmed source chain
+and the current integration/monitoring corrections.
