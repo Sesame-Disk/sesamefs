@@ -2783,6 +2783,12 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 					continue
 				}
 				committed := strings.EqualFold(strings.TrimSpace(canonical.RecoveryState), S3OrphanRecoveryStateCommitted)
+				if !committed && strings.TrimSpace(canonical.RecoveryState) != "" {
+					if phaseErr == nil {
+						phaseErr = fmt.Errorf("unsupported canonical S3 orphan recovery state %q for org=%s block=%s", canonical.RecoveryState, canonical.OrgID, canonical.BlockID)
+					}
+					continue
+				}
 				if strings.TrimSpace(canonical.StorageKey) == "" {
 					metrics.GCErrorsTotal.WithLabelValues("s3_orphan_empty_storage_key").Inc()
 					log.Printf("[GC Worker] S3 orphan recovery: canonical row has empty storage key for org=%s block=%s; retaining cursor", canonical.OrgID, canonical.BlockID)

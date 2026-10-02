@@ -127,3 +127,74 @@ func TestG4RecoveryFailsClosedWithoutExactSettlement(t *testing.T) {
 		})
 	}
 }
+
+// Recovery must retain the exact durable authority across post-delete failures.
+// P2 in another namespace makes an accidental class/key substitution observable.
+func TestG4RecoveryPostDeleteFailuresPreserveReplacement(t *testing.T) {
+	for _, failure := range []string{"persist_phase", "clear_orphan", "unknown_state"} {
+		t.Run(failure, func(t *testing.T) {
+			store := NewMockStore()
+			sp := &MockStorageProvider{}
+			org := uuid.New()
+			block := testSHA256BlockID("g4-post-delete-" + failure)
+			store.AddBlock(org, block, "hot", 0)
+			store.EnqueueBlockForTest(org, time.Now().Add(-time.Hour), block, "hot", 0)
+			worker := NewWorker(store, sp, NewQueue(store), 100, 0, false, &Stats{})
+			if n, err := worker.ProcessOnce(context.Background()); n != 1 || err != nil {
+				t.Fatalf("handoff: %d %v", n, err)
+			}
+			p1 := store.AllS3Orphans()[0]
+			if failure == "unknown_state" {
+				store.SetS3OrphanRecoveryStateForTest(org, block, "UNRECOGNIZED")
+				if n, err := worker.RecoverS3Orphans(context.Background(), 100); n != 0 || err == nil {
+					t.Fatalf("unknown state must fail closed: %d %v", n, err)
+				}
+				if len(sp.ScopedBlockDeletes()) != 0 || store.S3OrphanCount() != 1 {
+					t.Fatal("unknown state deleted bytes or lost durable authority")
+				}
+				return
+			}
+			p2Key := MockCanonicalStorageKey(org.String(), block) + "." + uuid.NewString()
+			store.AddBlock(org, block, "cold", 1)
+			store.SetBlockStorageKeyForTest(org, block, p2Key)
+			if failure == "persist_phase" {
+				store.SetMarkS3OrphanMappingCleanupPendingErrOnceForTest(errors.New("phase write outage"))
+			} else {
+				store.SetDeleteS3OrphanErrOnceForTest(errors.New("orphan cleanup outage"))
+			}
+			if n, err := worker.RecoverS3Orphans(context.Background(), 100); n != 0 || err == nil {
+				t.Fatalf("post-delete fault: %d %v", n, err)
+			}
+			if store.S3OrphanCount() != 1 || len(sp.ScopedBlockDeletes()) != 1 {
+				t.Fatal("post-delete fault lost authority or did not exercise the delete")
+			}
+			restarted := NewWorker(store, sp, NewQueue(store), 100, 0, false, &Stats{})
+			if n, err := restarted.RecoverS3Orphans(context.Background(), 100); n != 1 || err != nil {
+				t.Fatalf("restart: %d %v", n, err)
+			}
+			deletes := sp.ScopedBlockDeletes()
+			expectedDeletes := 1
+			if failure == "persist_phase" {
+				expectedDeletes = 2 // The same immutable K1 may be deleted idempotently.
+			}
+			if len(deletes) != expectedDeletes {
+				t.Fatalf("unexpected replay deletes: %+v", deletes)
+			}
+			for _, deleted := range deletes {
+				if deleted.OrgID != org.String() || deleted.StorageClass != p1.StorageClass || deleted.StorageKey != p1.StorageKey {
+					t.Fatalf("D1 escaped its physical identity: %+v", deleted)
+				}
+			}
+			current := store.GetBlock(org, block)
+			if current == nil || current.StorageClass != "cold" || current.StorageKey != p2Key {
+				t.Fatalf("D1 touched replacement: %+v", current)
+			}
+			if refs, err := store.BlockHasReferencesGlobal(org, block); !refs || err != nil {
+				t.Fatalf("replacement reference lost: %v %v", refs, err)
+			}
+			if store.S3OrphanCount() != 0 || store.BlockDeleteLifecyclePhaseForTest(org, block, p1.Authority.ClaimID) != BlockDeleteLifecyclePhaseTerminal {
+				t.Fatal("restart failed to settle D1")
+			}
+		})
+	}
+}

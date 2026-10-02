@@ -1,6 +1,9 @@
 # G4: independent physical lives and exact continuation
 
 Decision: 2026-10-02. GC remains disabled (`GC_ENABLED=false`).
+Deployment premise: clean greenfield installation; there are no old data to migrate.
+G4 validates lives created by the current protocol and crash recovery within that deployment.
+
 This decision supersedes the old requirement that every W2/R31 row close
 before G4/G5 development. It does not close those rows or permit activation.
 
@@ -98,3 +101,34 @@ in place, uses the configured local `.env` through Docker, writes separate
 logs in `tmp/g4-*`, and restricts physical-recovery enumeration to the fixture
 organization. It leaves the source snapshot for diagnosis. No service
 configuration, GC enablement, migration or rollout is performed.
+
+## Follow-up audit (2026-10-02)
+
+The full current-source suite and required Cassandra/MinIO proof were repeated.
+The audit added fail-closed rejection of unknown nonempty recovery states rather
+than interpreting them as legacy authority. Additional restart tests inject
+failure after DeleteExact(K1), both before phase persistence and during orphan
+cleanup, while P2 has live references in a different storage class. They verify
+that every initial or replayed delete retains the complete org/class/K1 identity,
+that cleanup resumes without reacquiring a terminal delete, and that P2 remains
+intact. This is current-protocol crash evidence; migration of historical data
+is outside the greenfield deployment premise.
+
+## Separate evaluation: remove obsolete orphan recovery compatibility
+
+The deployment is greenfield: production will start after GC is complete, and
+there are no historical deployment data to preserve. The empty recovery-state
+branch in RecoverS3Orphans predates the PREPARED/COMMITTED protocol. It checks
+BlockExists(L) and BlockHasReferencesGlobal(L), whereas current COMMITTED
+continuation settles the exact P,D certificate. StartBlockDeleteOrphan still
+creates the old empty-state shape and is used by historical test fixtures;
+the productive worker uses PrepareBlockDeleteOrphan, commit and promotion.
+
+Decision requested on 2026-10-02: retain this branch in the G4 PR and evaluate
+its removal in a separate PR. Inventory production callers and test fixtures,
+replace obsolete fixtures with current-protocol setup while retaining negative,
+identity, topology and crash coverage, remove the old publisher/recovery route
+if the inventory confirms no current dependency, and require the full suite
+plus current-protocol Cassandra/MinIO evidence. Historical deployment
+compatibility alone is not a reason to retain it. This evaluation is not an
+additional G4 prerequisite or a claim that old data exist.
