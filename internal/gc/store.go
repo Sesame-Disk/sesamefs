@@ -1378,8 +1378,8 @@ const (
 	BlockClaimAmbiguous
 	// BlockClaimCommittedOwner: the exact incarnation already carries a committed
 	// orphan handoff, confirmed visible at EACH_QUORUM. Resume the STORED authority.
-	// Do not mint a new claim, do not take over. Refs are re-checked as a
-	// contradiction detector (R3 still OPEN), not as a new authorization.
+	// Do not mint a new claim or take over. Resume exact stored P,D authority;
+	// refs(L) are not re-read to revoke an already COMMITTED D.
 	BlockClaimCommittedOwner
 )
 

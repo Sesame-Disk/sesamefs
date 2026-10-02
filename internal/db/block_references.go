@@ -822,7 +822,8 @@ func (db *DB) ValidateBlockRepairAuthority(orgID, blockID string, expected Block
 // docs/W2-0-GREENFIELD-RECONCILIATION.md and docs/X1-CRITICAL-PATH.md.
 // Under the live-pin premise, four cases cover the GC ordering:
 //
-//  1. GC's zero-proof read (BlockHasReferencesGlobal, EACH_QUORUM) happens
+//  1. GC's pre-D zero proof (BlockPublicationLivenessGlobal, whose real-ref
+//     read uses EACH_QUORUM) happens
 //     after that pin is durable. EACH_QUORUM queries a quorum of replicas in
 //     EVERY datacenter, including the writer's own -- so its component in
 //     the writer's DC necessarily intersects the LOCAL_QUORUM that
@@ -1327,8 +1328,9 @@ func (db *DB) ProbeBlockReuse(orgID, blockID string) (BlockReuseProbe, error) {
 //
 // It is the write half of the destructive-GC liveness argument
 // (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01). BlockHasReferencesGlobal reads at
-// EACH_QUORUM so a FALSE answer may authorize destroying bytes, and that answer is
-// only trustworthy because a reference acknowledged at LOCAL_QUORUM in some
+// EACH_QUORUM for the real-reference half of pre-D zero proof and legacy
+// empty-state recovery. Its absence proof is trustworthy because a reference
+// acknowledged at LOCAL_QUORUM in some
 // datacenter necessarily intersects the read's quorum in that same datacenter. Under
 // ONE a single replica can acknowledge a reference that a later per-DC read quorum of
 // 2-of-3 never sees — and `ONE` is an accepted `database.consistency`, so inheriting
@@ -1418,8 +1420,9 @@ func (db *DB) RemoveBlockReference(orgID, blockID, referrer string) error {
 // It runs at the session consistency (LOCAL_QUORUM in every shipped profile), so a
 // TRUE answer is proof — a row visible locally is a real reference — while a FALSE
 // answer proves only that the local DC has not seen one. That asymmetry is why this
-// call is safe for discovery and short-circuit aborts but MUST NOT authorize a
-// physical delete. Use BlockHasReferencesGlobal for that
+// call is safe for discovery and pre-D short-circuit aborts but MUST NOT
+// authorize a new D or physical deletion. Use EACH_QUORUM pre-D publication
+// liveness or legacy recovery proofs; neither local result revokes COMMITTED D
 // (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01).
 func (db *DB) BlockHasReferences(orgID, blockID string) (bool, error) {
 	return scanBlockHasReferences(db.Session().Query(`
@@ -1427,8 +1430,9 @@ func (db *DB) BlockHasReferences(orgID, blockID string) (bool, error) {
 	`, orgID, blockID))
 }
 
-// BlockHasReferencesGlobal is the destructive-authorization liveness read: the only
-// form whose FALSE answer may authorize deleting physical bytes.
+// BlockHasReferencesGlobal is the EACH_QUORUM real-reference read used by
+// pre-D zero proof and legacy empty-state physical recovery. It is not a
+// reauthorization required for exact COMMITTED continuation.
 //
 // It pins EACH_QUORUM per query rather than inheriting the session default, so the
 // read must obtain a quorum in EVERY datacenter. A reference write acknowledged at
@@ -1441,9 +1445,10 @@ func (db *DB) BlockHasReferences(orgID, blockID string) (bool, error) {
 // in the keyspace map; under SimpleStrategy EACH_QUORUM does not carry it. The
 // destructive path gates on that separately.
 // This reports REAL references only. Before committing a new D, callers must
-// also use BlockPublicationLivenessGlobal to check pending publication repairs.
-// After COMMITTED, repairs cannot veto that authority; real refs retain their
-// existing contradiction semantics.
+// use BlockPublicationLivenessGlobal, which also checks pending publication repairs.
+// After COMMITTED, refs(L) and repairs do not revoke D. Continuation settles
+// exact orphan P,D and its published lifecycle, checks fresh topology and reloads
+// exact canonical authority before DeleteExact(K1); it does not require refs==0.
 func (db *DB) BlockHasReferencesGlobal(orgID, blockID string) (bool, error) {
 	return scanBlockHasReferences(db.Session().Query(`
   SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? LIMIT 1
