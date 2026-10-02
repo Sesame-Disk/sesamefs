@@ -1,12 +1,14 @@
 package v2
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"time"
 
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
+	gcpkg "github.com/Sesame-Disk/sesamefs/internal/gc"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
@@ -169,8 +171,15 @@ func (h *DeletedLibraryHandler) RestoreDeletedRepo(c *gin.Context) {
 	}
 
 	if deletedAt.IsZero() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "library is not deleted"})
-		return
+		var marker time.Time
+		if err := h.db.Session().Query(`SELECT deleted_at FROM deleted_libraries WHERE library_id=?`, repoID).Consistency(gocql.Serial).Scan(&marker); err != nil {
+			if errors.Is(err, gocql.ErrNotFound) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "library is not deleted"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read restore completion"})
+			}
+			return
+		}
 	}
 
 	// Superadmin and org admin can restore any library in their scope; regular users only their own
@@ -207,66 +216,51 @@ func (h *DeletedLibraryHandler) RestoreDeletedRepo(c *gin.Context) {
 //
 // DELETE /api/v2.1/repos/deleted/:repo_id/
 func (h *DeletedLibraryHandler) PermanentDeleteRepo(c *gin.Context) {
-	repoID := c.Param("repo_id")
-	callerOrgID := c.GetString("org_id")
-	userID := c.GetString("user_id")
-
+	repoID, callerOrgID, userID := c.Param("repo_id"), c.GetString("org_id"), c.GetString("user_id")
 	if callerOrgID == "" || repoID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing parameters"})
 		return
 	}
-
 	callerRole, err := resolveDeletedLibraryCallerRole(c, h.permMiddleware)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
 		return
 	}
-
-	// Resolve the library's actual org_id. Admins can manage libraries that
-	// belong to any org, so we look up the real org via libraries_by_id first.
 	orgID := callerOrgID
 	var ownerID, storageClass string
 	var deletedAt time.Time
-	err = h.db.Session().Query(`
-		SELECT owner_id, storage_class, deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
-	`, orgID, repoID).Scan(&ownerID, &storageClass, &deletedAt)
-	if err != nil {
-		// Not found in caller's org.
-		// Only superadmin can manage libraries across orgs; org admin is scoped to their own org.
-		if !middleware.IsPlatformSuperAdmin(callerOrgID, callerRole) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
-			return
-		}
-		var resolvedOrgID string
-		if err2 := h.db.Session().Query(`
-			SELECT org_id FROM libraries_by_id WHERE library_id = ?
-		`, repoID).Scan(&resolvedOrgID); err2 != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
-			return
-		}
-		orgID = resolvedOrgID
-		// Re-fetch with the correct org_id
-		if err3 := h.db.Session().Query(`
-			SELECT owner_id, storage_class, deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
-		`, orgID, repoID).Scan(&ownerID, &storageClass, &deletedAt); err3 != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
-			return
+	err = h.db.Session().Query(`SELECT owner_id,storage_class,deleted_at FROM libraries WHERE org_id=? AND library_id=?`, orgID, repoID).Scan(&ownerID, &storageClass, &deletedAt)
+	if errors.Is(err, gocql.ErrNotFound) {
+		row, _, intentErr := gcpkg.ReadPermanentLibraryDeleteIntent(h.db.Session(), repoID)
+		if intentErr == nil && (row.OrgID == callerOrgID || middleware.IsPlatformSuperAdmin(callerOrgID, callerRole)) {
+			orgID, ownerID, storageClass, deletedAt = row.OrgID, row.OwnerID, row.StorageClass, *row.DeletedAt
+			err = nil
+		} else if intentErr != nil && !errors.Is(intentErr, gocql.ErrNotFound) {
+			err = intentErr
+		} else if middleware.IsPlatformSuperAdmin(callerOrgID, callerRole) {
+			var resolvedOrgID string
+			if lookupErr := h.db.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id=?`, repoID).Scan(&resolvedOrgID); lookupErr == nil {
+				orgID = resolvedOrgID
+				err = h.db.Session().Query(`SELECT owner_id,storage_class,deleted_at FROM libraries WHERE org_id=? AND library_id=?`, orgID, repoID).Scan(&ownerID, &storageClass, &deletedAt)
+			}
 		}
 	}
-
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read library"})
+		}
+		return
+	}
 	if deletedAt.IsZero() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "library is not in trash"})
 		return
 	}
-
-	// Only owner (or admin) can permanently delete
-	if ownerID != userID {
-		if !middleware.HasRequiredOrgRole(callerRole, middleware.RoleAdmin) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "only library owner or admin can permanently delete"})
-			return
-		}
+	if ownerID != userID && !middleware.HasRequiredOrgRole(callerRole, middleware.RoleAdmin) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only library owner or admin can permanently delete"})
+		return
 	}
-
 	h.permanentDeleteResolvedRepo(c, orgID, repoID, storageClass, deletedAt)
 }
 

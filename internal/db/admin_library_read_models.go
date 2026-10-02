@@ -70,13 +70,22 @@ func ResolveAdminLibraryOwnerFields(session *gocql.Session, orgID, ownerID strin
 }
 
 func ReadAdminLibraryProjectionRow(session *gocql.Session, orgID, libraryID string) (AdminLibraryProjectionRow, error) {
+	return scanAdminLibraryProjectionRow(session, adminLibraryProjectionQuery(session, orgID, libraryID), orgID, libraryID)
+}
+
+// ReadAdminLibraryProjectionRowSerial is a cold lifecycle-completion reader.
+// Ordinary upload/dedup read-model reads remain outside the SERIAL domain.
+func ReadAdminLibraryProjectionRowSerial(session *gocql.Session, orgID, libraryID string) (AdminLibraryProjectionRow, error) {
+	return scanAdminLibraryProjectionRow(session, adminLibraryProjectionQuery(session, orgID, libraryID).Consistency(gocql.Serial), orgID, libraryID)
+}
+
+func adminLibraryProjectionQuery(session *gocql.Session, orgID, libraryID string) *gocql.Query {
+	return session.Query(`SELECT owner_id,name,encrypted,storage_class,size_bytes,file_count,created_at,updated_at,deleted_at FROM libraries WHERE org_id=? AND library_id=?`, orgID, libraryID)
+}
+func scanAdminLibraryProjectionRow(session *gocql.Session, query *gocql.Query, orgID, libraryID string) (AdminLibraryProjectionRow, error) {
 	row := AdminLibraryProjectionRow{OrgID: orgID, LibraryID: libraryID}
 	var deletedAt time.Time
-	err := session.Query(`
-		SELECT owner_id, name, encrypted, storage_class, size_bytes, file_count, created_at, updated_at, deleted_at
-		FROM libraries
-		WHERE org_id = ? AND library_id = ?
-	`, orgID, libraryID).Scan(
+	err := query.Scan(
 		&row.OwnerID,
 		&row.Name,
 		&row.Encrypted,
@@ -155,7 +164,7 @@ func AddRefreshAdminLibraryReadModelQueries(batch *gocql.Batch, row AdminLibrary
 	if previous != nil && adminLibraryProjectionDeleteRequired(*previous, row) {
 		AddDeleteAdminLibraryReadModelQuery(batch, *previous)
 	}
-	if previous != nil && !adminLibraryProjectionDeletedAtEqual(previous.DeletedAt, row.DeletedAt) && previous.DeletedAt != nil && !previous.DeletedAt.IsZero() && row.DeletedAt == nil {
+	if previous != nil && !adminLibraryProjectionDeletedAtEqual(previous.DeletedAt, row.DeletedAt) && previous.DeletedAt != nil && !previous.DeletedAt.IsZero() {
 		batch.Query(`
 			DELETE FROM libraries_deleted_by_org
 			WHERE org_id = ? AND deleted_at = ? AND library_id = ?
@@ -443,7 +452,7 @@ func ReconcileDeletedAdminLibraryRowsByOrg(session *gocql.Session, orgID string)
 
 	for _, row := range rows {
 		liveRow, err := ReadAdminLibraryProjectionRow(session, row.OrgID, row.LibraryID)
-		if err == nil && liveRow.DeletedAt != nil && !liveRow.DeletedAt.IsZero() {
+		if err == nil && liveRow.DeletedAt != nil && liveRow.DeletedAt.Equal(row.DeletedAt) {
 			kept = append(kept, row)
 			continue
 		}

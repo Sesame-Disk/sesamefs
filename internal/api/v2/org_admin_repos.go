@@ -2,6 +2,7 @@ package v2
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sort"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
+	gcpkg "github.com/Sesame-Disk/sesamefs/internal/gc"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 )
 
@@ -436,12 +439,24 @@ func (h *OrgAdminHandler) DeleteOrgTrashLibrary(c *gin.Context) {
 	// Verify it's actually trashed
 	var deletedAt time.Time
 	var storageClass string
-	if err := h.db.Session().Query(`
-		SELECT deleted_at, storage_class FROM libraries WHERE org_id = ? AND library_id = ?
-	`, targetOrgID, repoID).Scan(&deletedAt, &storageClass); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+	err := h.db.Session().Query(`SELECT deleted_at,storage_class FROM libraries WHERE org_id=? AND library_id=?`, targetOrgID, repoID).Scan(&deletedAt, &storageClass)
+	if errors.Is(err, gocql.ErrNotFound) {
+		row, _, intentErr := gcpkg.ReadPermanentLibraryDeleteIntent(h.db.Session(), repoID)
+		if intentErr == nil && row.OrgID == targetOrgID {
+			deletedAt, storageClass, err = *row.DeletedAt, row.StorageClass, nil
+		} else if intentErr != nil && !errors.Is(intentErr, gocql.ErrNotFound) {
+			err = intentErr
+		}
+	}
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read library"})
+		}
 		return
 	}
+
 	if deletedAt.IsZero() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "library is not in trash"})
 		return
@@ -470,8 +485,15 @@ func (h *OrgAdminHandler) RestoreOrgTrashLibrary(c *gin.Context) {
 		return
 	}
 	if deletedAt.IsZero() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "library is not in trash"})
-		return
+		var marker time.Time
+		if err := h.db.Session().Query(`SELECT deleted_at FROM deleted_libraries WHERE library_id=?`, repoID).Consistency(gocql.Serial).Scan(&marker); err != nil {
+			if errors.Is(err, gocql.ErrNotFound) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "library is not in trash"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read restore completion"})
+			}
+			return
+		}
 	}
 
 	if err := restoreDeletedLibrary(h.db, targetOrgID, ownerID, repoID); err != nil {

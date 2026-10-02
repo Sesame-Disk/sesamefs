@@ -3,6 +3,7 @@ package v2
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -60,6 +61,7 @@ type LibraryHandler struct {
 }
 
 var softDeleteLibraryFn = softDeleteLibrary
+var readLibraryStateForDeleteRetryFn = db.ReadLibraryState
 
 // SetGCEnqueuer sets the GC enqueuer for library deletion cleanup.
 func (h *LibraryHandler) SetGCEnqueuer(enqueuer LibraryGCEnqueuer) {
@@ -1133,6 +1135,9 @@ func (h *LibraryHandler) DeleteLibrary(c *gin.Context) {
 	}
 
 	libraryState, err := readLiveLibraryStateFn(h.db.Session(), orgID, repoID)
+	if errors.Is(err, db.ErrLibraryDeleted) {
+		libraryState, err = readLibraryStateForDeleteRetryFn(h.db.Session(), orgID, repoID)
+	}
 	if err != nil {
 		writeLiveLibraryStateError(c, err)
 		return

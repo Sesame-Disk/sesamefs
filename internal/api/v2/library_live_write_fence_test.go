@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
@@ -701,7 +702,13 @@ func TestUpdateLibrary_LibraryStateErrorReturnsInternalServerError(t *testing.T)
 	})
 }
 
-func TestDeleteLibrary_DeletedLibraryReturnsNotFound(t *testing.T) {
+func TestDeleteLibrary_DeletedLibraryRetryRetainsOwnerCheck(t *testing.T) {
+	oldRead := readLibraryStateForDeleteRetryFn
+	t.Cleanup(func() { readLibraryStateForDeleteRetryFn = oldRead })
+	readLibraryStateForDeleteRetryFn = func(_ *gocql.Session, orgID, repoID string) (dbpkg.LibraryState, error) {
+		deletedAt := time.Now().UTC()
+		return dbpkg.LibraryState{OrgID: orgID, LibraryID: repoID, OwnerID: "another-owner", DeletedAt: &deletedAt}, nil
+	}
 	withDeletedLibraryStateStub(t, func() {
 		r := gin.New()
 		handler := newLibraryHandlerForLiveFenceTests()
@@ -716,10 +723,10 @@ func TestDeleteLibrary_DeletedLibraryReturnsNotFound(t *testing.T) {
 
 		r.ServeHTTP(w, req)
 
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusForbidden)
 		}
-		assertJSONError(t, w.Body, "library not found")
+		assertJSONError(t, w.Body, "only library owner can delete the library")
 	})
 }
 

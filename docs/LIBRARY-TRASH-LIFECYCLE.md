@@ -1,9 +1,9 @@
 # Library trash lifecycle contract
 
 **Status:** normative. Closes `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`.
-**Supersedes:** the lifecycle redesign proposed in PR #240 (closed unmerged). That PR
-treated the lifecycle as broken; it is not. The only real gap was the window between a
-lease fence and an unconditional final write, closed here.
+**Supersedes:** the lifecycle redesign proposed in PR #240 (closed unmerged).
+The canonical generation CAS is retained. Completion now also handles interrupted
+operations and delayed publication of derived state.
 
 > A stale trash generation cannot commit the canonical lifecycle transition or authorize
 > generation-bound content destruction. A library is destroyed only while its canonical
@@ -48,10 +48,10 @@ pause can reorder transitions.
 
 | Writer | Generation write | Loses when |
 |---|---|---|
-| Soft delete (`softDeleteLibrary`, `CassandraStore.SoftDeleteLibrary`) | `UPDATE … SET deleted_at = D … IF deleted_at = null AND created_at != null` (`SoftDeleteCanonicalLibraryGeneration`) | already trashed → idempotent (it completes a missing marker for the current generation once), or the row is absent |
+| Soft delete (`softDeleteLibrary`, `CassandraStore.SoftDeleteLibrary`) | `UPDATE … SET deleted_at = D … IF deleted_at = null AND created_at != null` (`SoftDeleteCanonicalLibraryGeneration`) | already trashed → idempotent (it repairs the current generation on retry), or the row is absent |
 | Restore (`restoreDeletedLibrary`) | `UPDATE … SET deleted_at = null, deleted_by = null, updated_at = ? … IF deleted_at = D` (`ClearCanonicalLibraryGeneration`) | the row was purged or is at another generation → `library is pending permanent deletion` |
 | GC cascade (`CassandraStore.HardDeleteLibrary`) | `DELETE FROM libraries … IF deleted_at = D` (`DeleteCanonicalLibraryAtGeneration`) | the row exists under another generation → the item finishes as stale |
-| API permanent delete (`hardDeleteLibraryRowsFn`) | same statement | the row exists under another generation, or is already gone → `409 library is no longer in trash` |
+| API permanent delete (`hardDeleteLibraryRowsFn`) | same statement | the row exists under another generation, or absent without a valid durable purge intent → `409 library is no longer in trash` |
 
 Restore, the GC cascade and the permanent delete also hold the shared library
 hard-delete lease and fence it right before their CAS. The fence is not enough by
@@ -67,63 +67,84 @@ DELETE) and `pcd1b4ExpectedLifecycleStatements`.
 
 ## 3. Marker and completion order
 
-The marker `deleted_libraries` is a discovery root for Phase 13. It never authorizes
-destruction on its own: the worker and the children also check the canonical row. Each
-writer runs its generation CAS first and only then touches derived state:
+`deleted_libraries` is discovery and recovery metadata, never canonical destruction
+authority. Marker creation, generation replacement and generation-scoped deletion
+use global-SERIAL LWTs. An insert cannot lose to a previous LWT tombstone because
+of a client clock behind Cassandra. Lifecycle marker writes use TTL 0. Marker replacement observes its expected
+marker before checking canonical state, then conditions the LWT on that identity.
+ACTIVE completion removes only the marker captured at entry; it cannot consume a
+newer generation's durable purge intent.
 
-- **Soft delete**: CAS, then one batch with marker `D`, the aggregate reconciliation
-  request and the read models, then the aggregate adjustment.
-- **Restore**: CAS. Then marker `D` is removed **only while it is still `D`**
-  (`DeleteLibraryMarkerAtGeneration`), so a newer generation's marker survives. Then the
-  read models are refreshed from the snapshot to the **current** canonical row, re-read
-  after the CAS. If the library was trashed again (`D2`) meanwhile, `D2` is published,
-  not ACTIVE. If it was purged, nothing is published. Storage is re-added only while the
-  row is still active.
-- **GC cascade and permanent delete**: CAS, then the batch that removes
-  `libraries_by_id`, the policies and the read models, and either removes the marker
-  (GC) or rewrites it with `purge_requested_at` (permanent delete). A losing CAS writes
-  nothing.
+- **Soft delete:** canonical CAS, then `CompleteLibraryTrashLifecycle`. A repeated
+  authenticated owner DELETE may read a trashed canonical row and finish completion.
+  An existing marker is not sufficient to skip indices or accounting.
+- **Restore:** retain/create the current generation marker before the canonical CAS.
+  Complete derived state and accounting before removing the recovery marker. A
+  present ACTIVE row with an outstanding marker is an interrupted-completion retry;
+  an ordinary ACTIVE row without a marker still rejects restore. Both user and org
+  admin restore endpoints support this retry under their existing authorization.
+- **API permanent delete:** before the canonical CAS, persist `purge_requested_at`,
+  owner, creation time, org, storage class and representation on the generation-bound
+  marker. Migration 028 adds the owner and creation-time keys. If the row disappears
+  after a committed CAS, the same authorized HTTP DELETE can finish exact index,
+  lookup and policy cleanup using this intent with GC disabled. A live canonical
+  row always controls whether the delete is stale; the intent cannot override it.
+- **GC hard delete:** canonical generation CAS, idempotent derived cleanup, then
+  conditional marker deletion. Its marker deletion shares the marker LWT domain.
 
-An ambiguous restore CAS is claimed as won only if the restore **still owns the lease**
-(a re-fence succeeds) **and** a SERIAL read shows the row present with `deleted_at`
-null. A cleared `deleted_at` alone proves that some restore committed, not that this
-one did. Anything else fails as unknown and runs no completion
-(`settleAmbiguousLibraryGenerationClear`).
+`RepairLibraryTrashDerivedState` reads canonical state through SERIAL, publishes
+its current marker and indices, then reads canonical state again. If the generation
+changed during publication, it repairs the newer state. Canonical absence removes
+old projections and never upserts `libraries`. It removes obsolete trash projection
+keys for the library, including D1 when canonical state is D2. The read-side trash
+reconciler also checks the exact generation, rather than keeping any trashed row.
+Four unsuccessful repair rounds return an error rather than success.
+
+Accounting completion reconciles the organization, owner and platform shard from
+canonical live `size_bytes`/`file_count`. It checks both canonical totals and physical
+counter values after applying the correction. This avoids replaying an old +storage
+or a clamped -storage after D2 or an ambiguous counter result. Eight bounded rounds
+with contention backoff return an error if usage does not settle; the existing
+`gc_storage_counter_reconciliation` requests remain durable. This cold path scans
+canonical library metadata; its cost grows with the number of libraries. It adds no
+SERIAL reads to upload/dedup paths and does not serialize ordinary size writers.
+
+An ambiguous restore CAS is attributed only after a successful lease fence, a
+SERIAL observation of a present ACTIVE canonical row, and a **second** successful
+lease fence after that observation. A different restorer's clear is not evidence of
+ownership by the original request.
 
 ## 4. Crash and ambiguity analysis
 
 | Interruption | Durable state | Recovery |
 |---|---|---|
-| Soft delete after its CAS, before the marker batch | canonical at `D`, no marker | The library is in trash: listed, restorable, permanently deletable. A repeated soft delete (for example a user/org cascade) completes the missing marker once. Until then it is not auto-purged, which is the safe direction. |
-| Restore after its CAS, before removing the marker | canonical active (or `D2`), marker `D` | The GC cascade for `D` finds the canonical generation ≠ `D` under its lease, removes marker `D` and stops. Children never destroy while the row exists. |
-| Restore after the marker, before the read-model batch | canonical active, no marker | The library is live. The admin read model shows it trashed until the next library write refreshes it. |
-| Restore CAS with an unknown outcome | either | Settled only as described in §3; otherwise an error and no completion. |
-| GC after winning the CAS, before the follow-up batch | canonical absent, marker `D` | The item retries. The CAS finds no row (`absent`) and the cleanup batch finishes idempotently (read models via the deleted-projection fallback). |
-| GC CAS with an unknown outcome | either | Error → retry → same as above, or a fresh CAS. |
-| Permanent delete after winning the CAS, before the batch | canonical absent, soft-delete marker `D` without `purge_requested_at` | Phase 13 picks the marker up after `TrashRetentionDays` and the GC cascade finishes the cleanup. Reclamation is delayed; nothing is lost. |
+| Soft delete after CAS, before completion | canonical D; marker/indices may be absent | Authenticated owner DELETE repeats the canonical conditional operation and repairs current derived state and usage. No GC service is required. |
+| Old soft-delete/restore publishes after D2 | canonical D2; derived snapshot may temporarily be stale | Post-publication SERIAL validation repairs D2. If the process stops before validation, owner DELETE of D2 remains reachable and repairs its projections/marker/usage. |
+| Restore after CAS, before completion | ACTIVE canonical plus retained marker | Authorized user/org restore retry completes indices and accounting before removing the marker. If GC is enabled, its existing stale-generation handling and aggregate reconciliation requests also remain available. |
+| Restore accounting fails | canonical ACTIVE/D2; reconciliation request; ACTIVE recovery marker retained | An error is returned. The authorized retry reconciles canonical totals rather than replaying a signed obligation. |
+| Restore CAS has an unknown result | generation outcome uncertain | Two lease fences surrounding the SERIAL observation are required to attribute success; otherwise return an error. |
+| API permanent delete after CAS, before batch | canonical absent; durable purge intent with exact keys | The original owner, same-org admin or platform superadmin can retry the HTTP endpoint with GC off. Repeated cleanup is idempotent. |
+| API permanent delete CAS is ambiguous | durable intent; canonical may be present or absent | Retry under the lease; canonical generation still gates deletion. |
+| GC after canonical CAS, before batch | canonical absent; generation marker remains | Existing cascade retry completes derived cleanup, then conditionally deletes its marker. |
+
+These are explicit retry contracts, not an automatic repair service when GC is off.
+Neither marker writes nor ordinary projection batches are transactional with the
+canonical partition. Persistent contention may require another request.
 
 ## 5. Known residuals (not changed here)
 
-- **Other ordinary writers of the `libraries` row.** Owner transfer, renames, size
-  updates and the like are plain client-timestamped upserts. One that lands after a hard
-  delete can leave partial cells (`ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` and related
-  follow-ups). This change does not convert them; they do not write `deleted_at`.
-- **Marker table timestamps.** Marker inserts are plain writes and generation-scoped
-  marker deletes are LWTs. A plain insert can only lose to an earlier-timestamped
-  delete, which leaves a library unreclaimed (safe direction), never destroyed.
-- **Link cleanup before the permanent-delete CAS.** Share/upload links can be removed by
-  a permanent delete that then loses its CAS to a restore. This is pre-existing and
-  tracked as a follow-up.
-- **Local clock skew.** A Docker Desktop/WSL host measured **~240 ms** ahead of the
-  Cassandra VM. Host-run integration tests that mix client-timestamped writes with LWTs
-  on the same cells (PC-D1B.4 R9/R9g/R9i, the lease TTL test) fail intermittently there.
-  Inside the compose network they pass:
-  `docker compose run --rm --build --no-deps go-integration-test /bin/sh -c 'go test -tags integration …'`.
-  The tests here seed rows `USING TIMESTAMP` in the past for the same reason.
+- Ordinary owner transfer, rename and size writers remain plain upserts. Their
+  ghost-cell behavior after a hard delete is tracked separately in
+  `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` and related follow-ups.
+- Link cleanup still precedes the permanent-delete CAS. A losing request can remove
+  links; `ISSUE-LIBRARY-PERMANENT-DELETE-LINK-CLEANUP-BEFORE-CAS-01` remains open.
+- Single-node Docker Cassandra validates these completion interleavings, not network
+  partitions or a multi-DC deployment. Global SERIAL remains the declared domain.
 
 ## 6. Evidence
 
-Each test below was RED against the code it fixes and is GREEN now.
+The original boundary regressions and mutation evidence are listed below. Completion
+regressions and their final validation are recorded in [LIBRARY-TRASH-COMPLETION-AUDIT.md](./LIBRARY-TRASH-COMPLETION-AUDIT.md).
 
 Unit (MockStore, `internal/gc/library_trash_boundary_test.go`):
 

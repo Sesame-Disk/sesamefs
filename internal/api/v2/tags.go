@@ -820,11 +820,15 @@ func CleanupAllLibraryTags(database *db.DB, repoID string) error {
 	// Repo-scoped partition deletes are a small fixed set; keep them in one logged
 	// batch and run them last so the tag-id source survives a projection-delete
 	// failure above.
+	// Counter-table mutations cannot share a logged batch with ordinary tables.
+	// Delete this partition first; if it fails the tag-id sources remain for retry.
+	if err := database.Session().Query(`DELETE FROM repo_tag_file_counts WHERE repo_id = ?`, repoUUID).Exec(); err != nil {
+		return fmt.Errorf("failed to delete library tag counters for %s: %w", repoID, err)
+	}
 	batch := database.Session().Batch(gocql.LoggedBatch)
 	batch.Query(`DELETE FROM file_tags WHERE repo_id = ?`, repoUUID)
 	batch.Query(`DELETE FROM file_tags_by_id WHERE repo_id = ?`, repoUUID)
 	batch.Query(`DELETE FROM repo_tags WHERE repo_id = ?`, repoUUID)
-	batch.Query(`DELETE FROM repo_tag_file_counts WHERE repo_id = ?`, repoUUID)
 	batch.Query(`DELETE FROM repo_tag_counters WHERE repo_id = ?`, repoUUID)
 	batch.Query(`DELETE FROM file_tag_counters WHERE repo_id = ?`, repoUUID)
 	if err := batch.Exec(); err != nil {

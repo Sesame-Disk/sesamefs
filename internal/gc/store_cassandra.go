@@ -5825,52 +5825,16 @@ func (s *CassandraStore) SoftDeleteLibrary(orgID, libraryID, deletedBy uuid.UUID
 		return fmt.Errorf("resolve block representation for soft delete %s/%s: %w", orgID, libraryID, repErr)
 	}
 
-	// The trash generation is opened by the canonical CAS; the marker, accounting and
-	// read models follow it. See docs/LIBRARY-TRASH-LIFECYCLE.md.
 	now := time.Now().UTC()
-	applied, current, exists, casErr := SoftDeleteCanonicalLibraryGeneration(s.db.Session(), orgID.String(), libraryID.String(), now, deletedBy.String(), now)
+	_, _, exists, casErr := SoftDeleteCanonicalLibraryGeneration(s.db.Session(), orgID.String(), libraryID.String(), now, deletedBy.String(), now)
 	if casErr != nil {
+		// A committed but ambiguous CAS is completed by a repeated delete.
 		return casErr
 	}
 	if !exists {
 		return nil
 	}
-	generation := now
-	if !applied {
-		if current.IsZero() {
-			return fmt.Errorf("soft delete of library %s/%s did not apply", orgID, libraryID)
-		}
-		// Already trashed. Finish a soft delete that crashed between its CAS and the
-		// marker; otherwise there is nothing left to do.
-		marker, markerErr := s.GetLibraryDeletedAt(libraryID)
-		if markerErr != nil {
-			return markerErr
-		}
-		if marker != nil && marker.Equal(current) {
-			return nil
-		}
-		generation = current
-	}
-	batch := s.db.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`
-		INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id) VALUES (?, ?, ?, ?, ?)
-	`, libraryID.String(), orgID.String(), generation, storageClass, blockRepresentationID)
-	traffic.AddAggregateStorageReconciliationQueries(batch, orgID.String(), ownerID, now)
-	if err == nil {
-		nextRow := previousRow
-		nextRow.UpdatedAt = now
-		nextRow.DeletedAt = &generation
-		db.AddRefreshAdminLibraryReadModelQueries(batch, nextRow, &previousRow)
-	}
-	if err := batch.Exec(); err != nil {
-		return err
-	}
-
-	// Adjust storage counters: subtract library's usage from aggregate scopes.
-	if ownerID != "" {
-		traffic.AdjustAggregateStorageCounters(s.db, orgID.String(), ownerID, libraryID.String(), false)
-	}
-	return nil
+	return CompleteLibraryTrashLifecycle(s.db, orgID.String(), ownerID, libraryID.String(), previousRow, blockRepresentationID)
 }
 
 func (s *CassandraStore) ListGroupMembershipsByUser(orgID, userID uuid.UUID) ([]uuid.UUID, error) {
@@ -6261,14 +6225,14 @@ func (s *CassandraStore) HardDeleteLibrary(orgID, libraryID uuid.UUID, deletedAt
 	db.AddDeleteLibraryPolicyQuery(batch, db.GCLibraryPolicyAutoDelete, orgID.String(), libraryID.String())
 	batch.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`,
 		libraryID.String())
-	batch.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`,
-		libraryID.String())
-
 	applied, absent, err := DeleteCanonicalLibraryAtGeneration(session, orgID.String(), libraryID.String(), deletedAt)
 	if err != nil || (!applied && !absent) {
 		return false, err
 	}
 	if err := batch.Exec(); err != nil {
+		return false, err
+	}
+	if err := DeleteLibraryMarkerAtGeneration(session, libraryID.String(), deletedAt); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -6348,6 +6312,9 @@ func settleAmbiguousLibraryGenerationClear(casErr error, fence func() error, rea
 		return false, errors.Join(casErr, fmt.Errorf("settle ambiguous restore: %w", err))
 	}
 	if exists && current.IsZero() {
+		if fenceErr := fence(); fenceErr != nil {
+			return false, errors.Join(casErr, fmt.Errorf("settle ambiguous restore after observation: %w", fenceErr))
+		}
 		return true, nil
 	}
 	return false, casErr

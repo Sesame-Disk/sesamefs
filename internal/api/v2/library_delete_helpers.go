@@ -27,9 +27,19 @@ type trashLibraryCandidate struct {
 	DeletedAt time.Time
 }
 
+var hardDeleteLibraryAfterCASHook func() error
+
 var (
 	resolveDeleteBlockRepresentationFn = func(database *dbpkg.DB, orgID, libraryID string) (string, error) {
-		return dbpkg.ResolveBlockRepresentationIDForDelete(database.Session(), orgID, libraryID)
+		representation, err := dbpkg.ResolveBlockRepresentationIDForDelete(database.Session(), orgID, libraryID)
+		if !errors.Is(err, gocql.ErrNotFound) {
+			return representation, err
+		}
+		row, representation, intentErr := gcpkg.ReadPermanentLibraryDeleteIntent(database.Session(), libraryID)
+		if intentErr != nil || row.OrgID != orgID {
+			return "", err
+		}
+		return representation, nil
 	}
 	cleanupLibraryLinksForDeleteFn = func(database *dbpkg.DB, orgID, libraryID string) error {
 		return cleanupLibraryLinks(database, orgID, libraryID, nil)
@@ -38,7 +48,18 @@ var (
 		return cleanupLibraryLinks(database, orgID, libraryID, beforeMutation)
 	}
 	readPermanentDeleteLibraryStateFn = func(database *dbpkg.DB, orgID, libraryID string, _ time.Time) (dbpkg.LibraryState, error) {
-		return dbpkg.ReadLibraryState(database.Session(), orgID, libraryID)
+		state, err := dbpkg.ReadLibraryState(database.Session(), orgID, libraryID)
+		if !errors.Is(err, gocql.ErrNotFound) {
+			return state, err
+		}
+		row, _, intentErr := gcpkg.ReadPermanentLibraryDeleteIntent(database.Session(), libraryID)
+		if intentErr != nil {
+			return state, intentErr
+		}
+		if row.OrgID != orgID {
+			return state, gocql.ErrNotFound
+		}
+		return dbpkg.LibraryState{OrgID: orgID, LibraryID: libraryID, OwnerID: row.OwnerID, StorageClass: row.StorageClass, DeletedAt: row.DeletedAt}, nil
 	}
 	acquireLibraryHardDeleteLockLeaseFn = func(database *dbpkg.DB, libraryID, leaseToken uuid.UUID) (bool, error) {
 		return gcpkg.AcquireLibraryHardDeleteLockLease(database.Session(), libraryID, leaseToken)
@@ -50,43 +71,51 @@ var (
 		return gcpkg.ReleaseLibraryHardDeleteLockLease(database.Session(), libraryID, leaseToken)
 	}
 	hardDeleteLibraryRowsFn = func(database *dbpkg.DB, orgID, libraryID, storageClass, blockRepresentationID string, deletedAt time.Time) error {
-		batch := database.Session().Batch(gocql.LoggedBatch)
-		if err := addDeleteAdminLibraryReadModelQueries(database, batch, orgID, libraryID); err != nil {
+		row, err := dbpkg.ReadAdminLibraryProjectionRowSerial(database.Session(), orgID, libraryID)
+		if errors.Is(err, gocql.ErrNotFound) {
+			row, _, err = gcpkg.ReadPermanentLibraryDeleteIntent(database.Session(), libraryID)
+			if err != nil && !errors.Is(err, gocql.ErrNotFound) {
+				return errors.Join(errHardDeleteLibraryReadModel, err)
+			}
+			if err != nil || row.OrgID != orgID || row.DeletedAt == nil || !row.DeletedAt.Equal(deletedAt) {
+				return errPermanentDeleteCandidateStale
+			}
+		} else if err != nil {
 			return errors.Join(errHardDeleteLibraryReadModel, err)
+		} else {
+			if row.DeletedAt == nil || !row.DeletedAt.Equal(deletedAt) {
+				return errPermanentDeleteCandidateStale
+			}
+			// Recovery authorization/keys survive a crash after the canonical CAS.
+			if err := gcpkg.PreparePermanentLibraryDelete(database.Session(), row, blockRepresentationID); err != nil {
+				return errors.Join(errHardDeleteLibraryBatchExec, err)
+			}
 		}
-		batch.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, libraryID)
-		// This is a *permanent* delete. Two invariants:
-		//   1. PRESERVE the original deleted_at (the library's trash time). Phase 13 dedups
-		//      library_cascade by deleted_at; resetting it to now() would change the identity
-		//      and let a cascade already queued under the old deleted_at be enqueued a second
-		//      time. deletedAt is the authoritative libraries.deleted_at captured by the caller;
-		//      fall back to now() only if it is somehow zero.
-		//   2. Stamp purge_requested_at = now() so Phase 13 makes the library eligible on its
-		//      next scan instead of waiting out the configured TrashRetentionDays. The cascade
-		//      is still gated by the GC grace period before the worker processes it — reclamation
-		//      happens on the order of the grace period, not the retention period.
-		// See migration 012 / ISSUE-GC-ORG-TRASH-NO-CASCADE-01.
-		markerDeletedAt := deletedAt
-		if markerDeletedAt.IsZero() {
-			markerDeletedAt = time.Now()
-		}
-		batch.Query(`INSERT INTO deleted_libraries (library_id, org_id, deleted_at, storage_class, block_representation_id, purge_requested_at) VALUES (?, ?, ?, ?, ?, ?)`, libraryID, orgID, markerDeletedAt, storageClass, blockRepresentationID, time.Now())
-		// The canonical row goes first, through the same generation CAS restore uses:
-		// the caller's lease fence cannot stop a restore that took the lease over while
-		// this request paused. Only after winning it may the marker be rewritten — a
-		// marker must never outlive a restored canonical row, because cascade children
-		// trust it as their generation authority.
-		applied, _, err := gcpkg.DeleteCanonicalLibraryAtGeneration(database.Session(), orgID, libraryID, deletedAt)
+		batch := database.Session().Batch(gocql.LoggedBatch)
+		traffic.AddAggregateStorageReconciliationQueries(batch, orgID, row.OwnerID, time.Now().UTC())
+		dbpkg.AddDeleteAdminLibraryReadModelQuery(batch, row)
+		batch.Query(`DELETE FROM libraries_by_id WHERE library_id=?`, libraryID)
+		dbpkg.AddDeleteLibraryPolicyQuery(batch, dbpkg.GCLibraryPolicyVersionTTL, orgID, libraryID)
+		dbpkg.AddDeleteLibraryPolicyQuery(batch, dbpkg.GCLibraryPolicyAutoDelete, orgID, libraryID)
+		applied, absent, err := gcpkg.DeleteCanonicalLibraryAtGeneration(database.Session(), orgID, libraryID, deletedAt)
 		if err != nil {
 			return errors.Join(errHardDeleteLibraryBatchExec, err)
 		}
-		if !applied {
+		if !applied && !absent {
+			if repairErr := gcpkg.CompleteLibraryTrashLifecycle(database, orgID, row.OwnerID, libraryID, row, blockRepresentationID); repairErr != nil {
+				return repairErr
+			}
 			return errPermanentDeleteCandidateStale
+		}
+		if hardDeleteLibraryAfterCASHook != nil {
+			if err := hardDeleteLibraryAfterCASHook(); err != nil {
+				return err
+			}
 		}
 		if err := batch.Exec(); err != nil {
 			return errors.Join(errHardDeleteLibraryBatchExec, err)
 		}
-		return nil
+		return traffic.ReconcileLibraryLifecycleStorage(database, orgID, row.OwnerID)
 	}
 	cleanupAllLibraryTagsForDeleteFn       = CleanupAllLibraryTags
 	deleteLibraryStorageCounterForDeleteFn = traffic.DeleteLibraryStorageCounter

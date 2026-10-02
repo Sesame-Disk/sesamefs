@@ -154,3 +154,19 @@ func TestSettleAmbiguousLibraryGenerationClear(t *testing.T) {
 		t.Fatalf("still owner and deleted_at null: the clear is ours (won=%v err=%v)", won, err)
 	}
 }
+
+// Ownership before the observation is insufficient when a paused owner resumes
+// after another restorer took the lease and performed the observed clear.
+func TestSettleAmbiguousLibraryGenerationClear_LosesLeaseDuringObservation(t *testing.T) {
+	owned := true
+	fence := func() error {
+		if !owned {
+			return errors.New("lease stolen")
+		}
+		return nil
+	}
+	read := func() (time.Time, bool, error) { owned = false; return time.Time{}, true, nil }
+	if won, err := settleAmbiguousLibraryGenerationClear(errors.New("unknown CAS"), fence, read); won || err == nil {
+		t.Fatalf("must not claim another restorer's clear: won=%v err=%v", won, err)
+	}
+}

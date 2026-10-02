@@ -142,6 +142,8 @@ func TestP3SerialReadsStayOffTheDedupPath(t *testing.T) {
 		"settleInstalledBlockMetadataFn":        true,
 		"apply":                                 true,
 		"settleLibraryContinuityWitnessContext": true,
+		// Cold trash/restore completion only; calls from internal/db are forbidden below.
+		"ReadAdminLibraryProjectionRowSerial": true,
 	}
 	found := map[string]bool{}
 	for _, file := range source.files {
@@ -149,6 +151,18 @@ func TestP3SerialReadsStayOffTheDedupPath(t *testing.T) {
 			enclosing := p3EnclosingName(declaration)
 			ast.Inspect(declaration, func(node ast.Node) bool {
 				call, ok := node.(*ast.CallExpr)
+				if ok {
+					coldCall := false
+					switch fun := call.Fun.(type) {
+					case *ast.Ident:
+						coldCall = fun.Name == "ReadAdminLibraryProjectionRowSerial"
+					case *ast.SelectorExpr:
+						coldCall = fun.Sel.Name == "ReadAdminLibraryProjectionRowSerial"
+					}
+					if coldCall {
+						t.Errorf("%s calls cold lifecycle SERIAL reader from internal/db; keep upload/dedup paths outside this reader", enclosing)
+					}
+				}
 				if !ok || len(call.Args) != 1 {
 					return true
 				}

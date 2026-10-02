@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -508,4 +509,92 @@ func ReconcileStorageScopeSharded(db DBSession, scope string, expectedByShard ma
 func DeleteLibraryStorageCounter(db DBSession, orgID, libraryID string) error {
 	scope := LibraryStorageScope(orgID, libraryID)
 	return db.Session().Query(`DELETE FROM storage_counters WHERE scope = ? AND shard = ?`, scope, counterShardZero).Exec()
+}
+
+// ReconcileLibraryLifecycleStorage completes a trash/restore accounting obligation
+// from canonical live totals. An old delta must not be replayed after D2 or after
+// an ambiguous counter write. Existing reconciliation requests remain durable.
+// Both canonical totals and the physical counter values are checked after writing;
+// competing completers repair a stale delta with a bounded retry instead of
+// reporting success from a snapshot they subsequently overwrote.
+func ReconcileLibraryLifecycleStorage(db DBSession, orgID, ownerID string) error {
+	shard := CounterShard(orgID)
+	for attempt := 0; attempt < 8; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(5+rand.IntN(20)) * time.Millisecond)
+		}
+		expected, err := readLibraryLifecycleTotals(db, orgID, ownerID, shard)
+		if err != nil {
+			return err
+		}
+		routes := []storageScopeRoute{{OrganizationStorageScope(orgID), 0}, {PlatformStorageScope(), shard}}
+		if ownerID != "" {
+			routes = append(routes, storageScopeRoute{UserStorageScope(orgID, ownerID), 0})
+		}
+		today := time.Now().UTC().Truncate(24 * time.Hour)
+		for _, route := range routes {
+			current, err := readStorageSnapshotAtShardErr(db, route.scope, route.shard, storageTotalDay)
+			if err != nil {
+				return err
+			}
+			target := expected[route.scope]
+			bytes, files := target.BytesUsed-current.BytesUsed, target.FileCount-current.FileCount
+			if bytes == 0 && files == 0 {
+				continue
+			}
+			if err := storageUpdateErr(db.Session(), route.scope, route.shard, storageTotalDay, bytes, files); err != nil {
+				return err
+			}
+			if err := storageUpdateErr(db.Session(), route.scope, route.shard, today, bytes, files); err != nil {
+				return err
+			}
+		}
+		after, err := readLibraryLifecycleTotals(db, orgID, ownerID, shard)
+		if err != nil {
+			return err
+		}
+		stable := true
+		for _, route := range routes {
+			actual, err := readStorageSnapshotAtShardErr(db, route.scope, route.shard, storageTotalDay)
+			if err != nil {
+				return err
+			}
+			if after[route.scope] != expected[route.scope] || actual != after[route.scope] {
+				stable = false
+			}
+		}
+		if stable {
+			return nil
+		}
+	}
+	return fmt.Errorf("library lifecycle accounting did not settle for org %s", orgID)
+}
+
+func readLibraryLifecycleTotals(db DBSession, orgID, ownerID string, shard int) (map[string]StorageSnapshot, error) {
+	totals := map[string]StorageSnapshot{}
+	iter := db.Session().Query(`SELECT org_id,owner_id,size_bytes,file_count,deleted_at FROM libraries`).Iter()
+	var org, owner string
+	var bytes, files int64
+	var deleted *time.Time
+	add := func(scope string) {
+		value := totals[scope]
+		value.BytesUsed += bytes
+		value.FileCount += files
+		totals[scope] = value
+	}
+	for iter.Scan(&org, &owner, &bytes, &files, &deleted) {
+		if deleted != nil && !deleted.IsZero() {
+			continue
+		}
+		if CounterShard(org) == shard {
+			add(PlatformStorageScope())
+		}
+		if org == orgID {
+			add(OrganizationStorageScope(orgID))
+			if owner == ownerID && ownerID != "" {
+				add(UserStorageScope(orgID, ownerID))
+			}
+		}
+	}
+	return totals, iter.Close()
 }

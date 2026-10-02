@@ -35,6 +35,9 @@ func restoreGuardDBForTest(t *testing.T) *dbpkg.DB {
 			Password:    os.Getenv("CASSANDRA_PASSWORD"),
 		}
 		restoreGuardDB, restoreGuardDBErr = dbpkg.New(cfg)
+		if restoreGuardDBErr == nil {
+			restoreGuardDBErr = restoreGuardDB.Migrate()
+		}
 	})
 	if restoreGuardDBErr != nil {
 		t.Fatalf("connect Cassandra for restore-guard test: %v", restoreGuardDBErr)
