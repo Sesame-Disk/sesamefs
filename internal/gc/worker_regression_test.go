@@ -365,8 +365,9 @@ func TestWorker_ProcessOrg_PreservesActiveOrgOnConcurrentEnqueue(t *testing.T) {
 		return base.Add(2 * time.Second)
 	}
 
-	store.AddBlock(orgID, "old-block", "hot", 1)
-	ensureAndEnqueueBlockForTest(t, store, orgID, "old-block", "hot", queuedAt, 0)
+	if err := store.EnqueueItem(orgID, queuedAt, ItemShareLink, "already-absent-token", uuid.Nil, "", 0); err != nil {
+		t.Fatal(err)
+	}
 
 	hooked := atomic.Bool{}
 	store.removeActiveOrgHook = func(hookOrgID uuid.UUID, activeBefore time.Time) {
@@ -510,8 +511,8 @@ func TestWorker_StorageLeak_LWTSkipsLiveBlock(t *testing.T) {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
 	// Item is counted as "processed" (skipped gracefully via LWT)
-	if n != 1 {
-		t.Errorf("expected 1 processed (skipped by LWT), got %d", n)
+	if n != 0 {
+		t.Errorf("expected 0 consumed (skipped by LWT), got %d", n)
 	}
 
 	// Block MUST still exist — deleting it would cause data corruption

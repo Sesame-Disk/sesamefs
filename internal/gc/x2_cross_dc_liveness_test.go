@@ -264,8 +264,8 @@ func TestX2_ReferencedBlockLeavesAFreshClaimAlone(t *testing.T) {
 	} else if blk.GCState != "" {
 		t.Errorf("block still fenced (gc_state=%q) after its claim went stale; uploads of this content would stay blocked forever", blk.GCState)
 	}
-	if got := store.AllBlockGCCandidates(); len(got) != 0 {
-		t.Errorf("candidate rows = %d after the fence was lifted, want 0", len(got))
+	if got := store.AllBlockGCCandidates(); len(got) != 1 {
+		t.Errorf("candidate rows = %d after the fence was lifted, want 1 (current-P scheduling retained)", len(got))
 	}
 	if deletes := sp.ScopedBlockDeletes(); len(deletes) != 0 {
 		t.Errorf("deleted a referenced block: %+v", deletes)
@@ -360,8 +360,8 @@ func TestX2_StaleClaimReleaseFailureSurvivesTheRetryBudget(t *testing.T) {
 	} else if blk.GCState != "" {
 		t.Errorf("fence still up (gc_state=%q) after the release recovered", blk.GCState)
 	}
-	if got := store.AllBlockGCCandidates(); len(got) != 0 {
-		t.Errorf("candidate rows = %d after recovery, want the item settled", len(got))
+	if got := store.AllBlockGCCandidates(); len(got) != 1 {
+		t.Errorf("candidate rows = %d after recovery, want the current-P candidate retained", len(got))
 	}
 }
 
@@ -464,8 +464,8 @@ func TestX2_ReReferencedBlockSurvivesAFailedClaimRelease(t *testing.T) {
 	} else if blk.GCState != "" {
 		t.Errorf("fence still up (gc_state=%q) after the abandoned claim aged out; a referenced block would stay fenced forever", blk.GCState)
 	}
-	if got := store.AllBlockGCCandidates(); len(got) != 0 {
-		t.Errorf("candidate rows = %d after recovery, want the item settled", len(got))
+	if got := store.AllBlockGCCandidates(); len(got) != 1 {
+		t.Errorf("candidate rows = %d after recovery, want the current-P candidate retained", len(got))
 	}
 	if deletes := sp.ScopedBlockDeletes(); len(deletes) != 0 {
 		t.Fatalf("recovery deleted a block the global verify reported as referenced: %+v", deletes)
@@ -603,8 +603,8 @@ func TestX2_StaleClaimReleaseFailureKeepsTheCandidate(t *testing.T) {
 	} else if blk.GCState != "" {
 		t.Errorf("fence still up (gc_state=%q) after the release succeeded", blk.GCState)
 	}
-	if got := store.AllBlockGCCandidates(); len(got) != 0 {
-		t.Errorf("candidate rows = %d after recovery, want the item settled", len(got))
+	if got := store.AllBlockGCCandidates(); len(got) != 1 {
+		t.Errorf("candidate rows = %d after recovery, want the current-P candidate retained", len(got))
 	}
 }
 
@@ -743,6 +743,7 @@ func TestX2_TopologyGateAlsoGuardsOrphanRecovery(t *testing.T) {
 		return errors.New("replication map lost the local datacenter")
 	})
 
+	seedS3Orphan(t, store, uuid.New(), testSHA256BlockID("topology-orphan"), "hot", "", "", time.Now().UTC())
 	recovered, err := w.RecoverS3Orphans(context.Background(), 10)
 	if err == nil {
 		t.Fatal("expected RecoverS3Orphans to fail closed when the topology gate rejects")
@@ -755,13 +756,9 @@ func TestX2_TopologyGateAlsoGuardsOrphanRecovery(t *testing.T) {
 	}
 }
 
-// TestX2_OrphanRecoveryRefusesAReferencedBlock covers the second destructive path's
-// own authorization. Recovery used to delete bytes purely on the existence of a
-// gc_s3_orphans row, which is only sound while every such row descends from an
-// EACH_QUORUM verify — true forward in time, but not for a row written by an older
-// binary. It now establishes the global zero itself, so a block that still has
-// references keeps its bytes no matter who wrote the orphan row.
-func TestX2_OrphanRecoveryRefusesAReferencedBlock(t *testing.T) {
+// Unknown recovery state cannot authorize physical deletion. References do not
+// turn an invalid state into current-protocol COMMITTED authority.
+func TestX2_OrphanRecoveryRejectsUnknownStateDespiteReferences(t *testing.T) {
 	store := NewMockStore()
 	sp := &MockStorageProvider{}
 	stats := &Stats{}
@@ -773,6 +770,7 @@ func TestX2_OrphanRecoveryRefusesAReferencedBlock(t *testing.T) {
 
 	orgID := uuid.New()
 	seedS3Orphan(t, store, orgID, "orph-referenced", "hot", "", "", now.AddDate(0, 0, -1))
+	store.SetS3OrphanRecoveryStateForTest(orgID, "orph-referenced", "unknown")
 	// The canonical row is gone (that is why there is an orphan row at all), but a
 	// reference to the content exists somewhere in the fleet.
 	store.AddBlockReferenceForTest(orgID, "orph-referenced", "fs:lib:obj")
@@ -787,13 +785,10 @@ func TestX2_OrphanRecoveryRefusesAReferencedBlock(t *testing.T) {
 	if store.S3OrphanCount() != 1 {
 		t.Error("orphan row discarded; it must survive for an operator to inspect")
 	}
-	// The refusal must NOT surface as a sweep error. The orphan row is permanent
-	// until an operator acts, so a returned error would fail this scanner phase on
-	// every pass, and a failed phase suppresses the scanner's last_scan_success
-	// timestamp — one such row would permanently mask the health of everything else.
-	// The refusal is reported through its audit counter and the log instead.
-	if err != nil {
-		t.Errorf("refusing a referenced orphan must not fail the sweep (it would freeze last_scan_success forever); got %v", err)
+	// Keep the root and expose the unsupported state as an operational error;
+	// bounded seeking still visits other roots on subsequent ticks.
+	if err == nil {
+		t.Error("unknown state must fail closed with an observable error")
 	}
 }
 
@@ -812,7 +807,7 @@ func TestX2_OrphanRecoveryFailsClosedOnAnUnavailableDatacenter(t *testing.T) {
 
 	orgID := uuid.New()
 	seedS3Orphan(t, store, orgID, "orph-dc-down", "hot", "", "", now.AddDate(0, 0, -1))
-	store.SetBlockHasReferencesGlobalErrForTest(fakeRequestError{code: gocql.ErrCodeUnavailable, msg: "Cannot achieve consistency level EACH_QUORUM in DC dc-asia"})
+	store.SetGetS3OrphanGlobalErrForTest(fakeRequestError{code: gocql.ErrCodeUnavailable, msg: "Cannot achieve consistency level EACH_QUORUM in DC dc-asia"})
 
 	recovered, err := w.RecoverS3Orphans(context.Background(), 100)
 	if err == nil {

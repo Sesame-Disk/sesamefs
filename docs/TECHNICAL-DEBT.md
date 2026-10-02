@@ -54,7 +54,11 @@ discovery projection before deleting the root.
 
 - `gc_s3_orphan_recovery_roots` has deliberate indefinite growth; a bounded
   archival/reconciliation policy is deferred.
-- `_by_day LIMIT` starvation and broader scheduling hardening remain G5 work.
+- G5 replaces physical `_by_day` enumeration with one bounded seek page per
+  durable-root bucket and finite-cycle checkpoints. Prefix pressure, restart and
+  exact post-D authority have unit/race and real one/three-DC Cassandra/MinIO
+  evidence. Full required single-DC integration passed; additional P3 multi-DC
+  CAS timeouts remain an E1 evidence limitation. See [G5 plan](./GC-G5-IMPLEMENTATION-PLAN.md).
 - Per-row orphan mutual exclusion, G2-G5, W2/R31, and X1 remain outside this
   change.
 - `scripts/p4b-authority-mutation-validation.sh`'s `m_worker_releases_after_handoff`

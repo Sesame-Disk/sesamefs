@@ -3195,7 +3195,17 @@ The invariant now enforced is:
   `ReleaseStaleBlockClaim` in `internal/gc/store_cassandra.go`, which already
   narrates this resolution. This entry was stale documentation, not a live gap;
   found and corrected while re-auditing `#212` (G3) on 2026-09-10.
-- **`ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` (open, pre-existing, PRE-GC).**
+- **`ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` (G5 CLOSED-EVIDENCE for covered same-P interleavings).**
+  The G5 RED probe reproduces a same-P new claim between an Absent observation
+  and settlement, with no PREPARED root yet. Current referenced P candidates and
+  their queue/pending lifecycles now postpone without consuming retries after
+  either pre-check stale release or owner-exact post-claim release. Retirement
+  and target replacement still settle only the exact old candidate. This closes
+  the destructive settlement window by retaining scheduling, rather than adding
+  a second non-atomic claim read. Unit/race and real Cassandra same-P evidence passed in one and three DCs.
+  Broader multi-DC availability/activation remains E1; see the G5 final audit.
+  Historical counterexample follows.
+
   `ReleaseStaleBlockClaim`'s SERIAL observation and the caller's later
   `settleBlockCandidate` are two separate operations, not one CAS: after the
   observation reports `BlockClaimAbsent` (row present for this exact P, no

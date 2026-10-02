@@ -170,7 +170,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		blockID := g1IntegrationBlockID("old-root")
 		authority := testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID))
 		firstSeenAt := time.Now().UTC().AddDate(0, 0, -120).Truncate(time.Millisecond)
-		created := store.StartBlockDeleteOrphan(orgID, blockID, authority, "", firstSeenAt)
+		created := seedCurrentS3Orphan(t, store, orgID, blockID, authority.Authority(), "", firstSeenAt)
 		if created.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
 			t.Fatalf("publish old root = %s: %v", created.Outcome, created.Cause)
 		}
@@ -265,7 +265,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		blockID := g1IntegrationBlockID("repair")
 		authority := testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID))
 		firstSeenAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
-		created := store.StartBlockDeleteOrphan(orgID, blockID, authority, "", firstSeenAt)
+		created := seedCurrentS3Orphan(t, store, orgID, blockID, authority.Authority(), "", firstSeenAt)
 		if created.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
 			t.Fatalf("publish repair row = %s: %v", created.Outcome, created.Cause)
 		}

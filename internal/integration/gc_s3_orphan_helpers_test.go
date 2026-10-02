@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"testing"
 	"time"
 
@@ -52,4 +54,33 @@ func testCommittedOrphanAuthorityWithClaimID(blockID, storageClass, storageKey, 
 		ClaimID:   claimID,
 		ClaimedAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
 	})
+}
+
+// Current-protocol fixture; no empty-state publisher or direct recovery-state write.
+func seedCurrentS3Orphan(t *testing.T, store gcpkg.GCStore, org uuid.UUID, block string, authority gcpkg.BlockDeleteAuthority, sha1 string, firstSeen time.Time) gcpkg.StartBlockDeleteOrphanResult {
+	t.Helper()
+	database := shareProjectionDBForTest(t)
+	location := db.BlockPhysicalLocation{StorageClass: authority.Target.StorageClass, StorageKey: authority.Target.StorageKey}
+	if result := database.InstallBlockMetadata(context.Background(), org.String(), db.PlainBlockRepresentationID, block, "", 1, location); result.Outcome != db.InstallBlockMetadataApplied {
+		t.Fatalf("fixture install: %+v", result)
+	}
+	if result, err := store.ClaimBlockDelete(org, block, authority); err != nil || result.Outcome != gcpkg.BlockClaimAcquired {
+		t.Fatalf("fixture claim: %+v %v", result, err)
+	}
+	prepared := store.PrepareBlockDeleteOrphan(org, block, authority, sha1, firstSeen)
+	if prepared.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+		t.Fatalf("fixture prepare: %+v", prepared)
+	}
+	handoff, err := store.CommitBlockDeleteOrphanHandoff(org, block, authority)
+	if err != nil || handoff.Outcome != gcpkg.BlockDeleteHandoffCommitted {
+		t.Fatalf("fixture commit: %+v %v", handoff, err)
+	}
+	promoted := store.PromoteBlockDeleteOrphan(org, block, handoff.Authority)
+	if promoted.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+		t.Fatalf("fixture promote: %+v", promoted)
+	}
+	if result, err := store.FinalizeBlockDelete(org, block, handoff.Authority); err != nil || result.Outcome != gcpkg.BlockDeleteFinalized {
+		t.Fatalf("fixture retirement: %+v %v", result, err)
+	}
+	return promoted
 }

@@ -377,7 +377,7 @@ func TestWorker_RecoverS3Orphans_CanonicalStateChangeBeforeCommitFailsClosed(t *
 	orgID := uuid.New()
 	seedS3Orphan(t, store, orgID, "orph-canonical-reload", "hot", "", "previous failure", time.Now())
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 3 {
+		if call == 2 {
 			info.StorageClass = "cold"
 		}
 		return info, nil
@@ -393,8 +393,8 @@ func TestWorker_RecoverS3Orphans_CanonicalStateChangeBeforeCommitFailsClosed(t *
 	if got := sp.BlockStoreRequests(); len(got) != 0 {
 		t.Fatalf("storage was resolved after canonical state changed: %+v", got)
 	}
-	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 3 {
-		t.Fatalf("canonical reads=%d, want root read, initial read, and commit-point reload", calls)
+	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 2 {
+		t.Fatalf("canonical reads=%d, want root canonical read and commit-point reload", calls)
 	}
 }
 
@@ -500,7 +500,7 @@ func TestWorker_RecoverS3Orphans_BackfilledSHA1ChangeBeforeCommitFailsClosed(t *
 	backfilledSHA1 := strings.Repeat("2", 40)
 	seedS3Orphan(t, store, orgID, blockID, "hot", "", "", time.Now())
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 3 {
+		if call == 2 {
 			// Keep first_seen_at, storage_class and recovery_phase identical. Only the
 			// SHA-1 is backfilled while canonical recovery state
 			// remains otherwise unchanged.
@@ -522,8 +522,8 @@ func TestWorker_RecoverS3Orphans_BackfilledSHA1ChangeBeforeCommitFailsClosed(t *
 	if store.S3OrphanCount() != 1 {
 		t.Fatalf("orphan rows=%d, want the row retained for retry", store.S3OrphanCount())
 	}
-	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 3 {
-		t.Fatalf("canonical reads=%d, want root read, initial read, and commit-point reload", calls)
+	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 2 {
+		t.Fatalf("canonical reads=%d, want root canonical read and commit-point reload", calls)
 	}
 }
 
@@ -548,7 +548,7 @@ func TestWorker_RecoverS3Orphans_MappingCleanupCanonicalStateChangeBeforeCommitF
 		t.Fatalf("advance canonical orphan phase: %v", err)
 	}
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 3 {
+		if call == 2 {
 			info.ExternalSHA1 = "sha1-changed-under-us"
 		}
 		return info, nil
@@ -567,8 +567,8 @@ func TestWorker_RecoverS3Orphans_MappingCleanupCanonicalStateChangeBeforeCommitF
 	if store.S3OrphanCount() != 1 {
 		t.Fatalf("orphan rows=%d, want the row retained for retry", store.S3OrphanCount())
 	}
-	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 3 {
-		t.Fatalf("canonical reads=%d, want root read, initial read, and commit-point reload", calls)
+	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 2 {
+		t.Fatalf("canonical reads=%d, want root canonical read and commit-point reload", calls)
 	}
 }
 
@@ -589,7 +589,7 @@ func TestWorker_RecoverS3Orphans_ResurrectedDiscardCanonicalStateChangeBeforeCom
 		t.Fatalf("advance canonical orphan phase: %v", err)
 	}
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 3 {
+		if call == 2 {
 			info.RecoveryPhase = S3OrphanPhasePendingS3
 		}
 		return info, nil
@@ -611,8 +611,8 @@ func TestWorker_RecoverS3Orphans_ResurrectedDiscardCanonicalStateChangeBeforeCom
 	if got := sp.DeletedBlocks(); len(got) != 0 {
 		t.Fatalf("S3 must not be touched on this path, got %v", got)
 	}
-	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 3 {
-		t.Fatalf("canonical reads=%d, want root read, initial read, and commit-point reload", calls)
+	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 2 {
+		t.Fatalf("canonical reads=%d, want root canonical read and commit-point reload", calls)
 	}
 }
 
@@ -1119,102 +1119,49 @@ func TestWorker_RecoverS3Orphans_ColdStartSeesOldRows(t *testing.T) {
 	if got := store.S3OrphanCount(); got != 0 {
 		t.Fatalf("expected old orphan to be cleared, got %d rows", got)
 	}
-	cursorValue, err := store.LoadGCStats(gcS3OrphansCursorKey)
-	if err != nil {
-		t.Fatalf("expected S3 orphan cursor to be persisted, got err=%v", err)
-	}
-	wantCursor := db.GCProjectionDateString(now.AddDate(0, 0, -1))
-	if cursorValue != wantCursor {
-		t.Fatalf("cursor=%q, want %q", cursorValue, wantCursor)
+	if _, err := store.LoadGCStats(gcS3OrphansCursorKey); !errors.Is(err, gocql.ErrNotFound) {
+		t.Fatalf("unused day cursor changed: %v", err)
 	}
 }
 
-func TestWorker_RecoverS3Orphans_PartitionLimitKeepsCursorUnchanged(t *testing.T) {
+func TestWorker_RecoverS3Orphans_RootLimitCheckpointsAndResumes(t *testing.T) {
 	store := NewMockStore()
 	sp := &MockStorageProvider{}
-	stats := &Stats{}
-	q := NewQueue(store)
-	w := NewWorker(store, sp, q, 100, 0, false, stats)
-
-	now := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
-	w.clock = func() time.Time { return now }
-	orgID := uuid.New()
-	targetBucket := 0
-	seeded := 0
-	for i := 0; seeded < 101; i++ {
-		blockID := testSHA256BlockID(fmt.Sprintf("orphan-bucket-%03d", i))
-		if db.GCDiscoveryBucket(orgID.String(), blockID) != targetBucket {
-			continue
-		}
-		seedS3Orphan(t, store, orgID, blockID, "hot", "", "prev", now.AddDate(0, 0, -30))
-		seeded++
+	now := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	for i := 0; i < 101; i++ {
+		g5SeedRoot(t, store, 0, now.Add(time.Duration(i)*time.Second))
 	}
-
-	recovered, err := w.RecoverS3Orphans(context.Background(), 100)
-	if err == nil {
-		t.Fatal("RecoverS3Orphans() error = nil, want non-nil on incomplete partition")
+	worker := NewWorker(store, sp, NewQueue(store), 100, 0, false, &Stats{})
+	if n, err := worker.RecoverS3Orphans(context.Background(), 100); err != nil || n != 100 {
+		t.Fatalf("first bounded page: %d %v", n, err)
 	}
-	if recovered != 100 {
-		t.Fatalf("recovered=%d, want 100", recovered)
+	if store.S3OrphanCount() != 1 || len(sp.ScopedBlockDeletes()) != 100 {
+		t.Fatal("page bound not preserved")
 	}
-	if got := store.S3OrphanCount(); got != 1 {
-		t.Fatalf("expected 1 orphan left behind for next pass, got %d", got)
+	if value, err := store.LoadGCStats("gc.scan.s3_roots.bucket.00"); err != nil || value == "" {
+		t.Fatalf("missing continuation: %q %v", value, err)
 	}
-	if _, err := store.LoadGCStats(gcS3OrphansCursorKey); !errors.Is(err, gocql.ErrNotFound) {
-		t.Fatalf("expected cursor to remain unset after incomplete partition, got err=%v", err)
+	worker = NewWorker(store, sp, NewQueue(store), 100, 0, false, &Stats{})
+	if n, err := worker.RecoverS3Orphans(context.Background(), 100); err != nil || n != 1 {
+		t.Fatalf("restart tail: %d %v", n, err)
 	}
-	if got := len(sp.DeletedBlocks()); got != 100 {
-		t.Fatalf("expected 100 S3 deletes on first pass, got %d", got)
-	}
-
-	recovered, err = w.RecoverS3Orphans(context.Background(), 100)
-	if err != nil {
-		t.Fatalf("second RecoverS3Orphans: %v", err)
-	}
-	if recovered != 1 {
-		t.Fatalf("second recovered=%d, want 1", recovered)
-	}
-	if got := store.S3OrphanCount(); got != 0 {
-		t.Fatalf("expected partition to drain on second pass, got %d rows", got)
-	}
-	wantCursor := db.GCProjectionDateString(now.AddDate(0, 0, -1))
-	cursorValue, err := store.LoadGCStats(gcS3OrphansCursorKey)
-	if err != nil {
-		t.Fatalf("expected cursor after full drain, got err=%v", err)
-	}
-	if cursorValue != wantCursor {
-		t.Fatalf("cursor=%q, want %q", cursorValue, wantCursor)
+	if store.S3OrphanCount() != 0 || len(sp.ScopedBlockDeletes()) != 101 {
+		t.Fatal("remaining authority lost")
 	}
 }
 
-func TestWorker_RecoverS3Orphans_RefCountLookupErrorKeepsCursorUnchanged(t *testing.T) {
+func TestWorker_RecoverS3Orphans_CommittedDoesNotReadLegacyRefCount(t *testing.T) {
 	store := NewMockStore()
 	sp := &MockStorageProvider{}
-	stats := &Stats{}
-	q := NewQueue(store)
-	w := NewWorker(store, sp, q, 100, 0, false, stats)
-
-	now := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
-	w.clock = func() time.Time { return now }
-	orgID := uuid.New()
-	seedS3Orphan(t, store, orgID, "orph-refcount-error", "hot", "", "prev", now.AddDate(0, 0, -10))
-	store.getBlockRefCountErr = fmt.Errorf("temporary cassandra failure")
-
-	recovered, err := w.RecoverS3Orphans(context.Background(), 100)
-	if err == nil {
-		t.Fatal("RecoverS3Orphans() error = nil, want non-nil")
+	org := uuid.New()
+	block := testSHA256BlockID("committed-no-counter-read")
+	seedS3Orphan(t, store, org, block, "hot", "", "", time.Now().UTC())
+	store.getBlockRefCountErr = fmt.Errorf("legacy counter lookup must not be used")
+	if n, err := NewWorker(store, sp, NewQueue(store), 100, 0, false, &Stats{}).RecoverS3Orphans(context.Background(), 100); err != nil || n != 1 {
+		t.Fatalf("existing D reauthorized by legacy counter: %d %v", n, err)
 	}
-	if recovered != 0 {
-		t.Fatalf("recovered=%d, want 0", recovered)
-	}
-	if got := sp.DeletedBlocks(); len(got) != 0 {
-		t.Fatalf("S3 should not be touched on refcount lookup error, got %v", got)
-	}
-	if got := store.S3OrphanCount(); got != 1 {
-		t.Fatalf("orphan should remain after refcount lookup error, got %d", got)
-	}
-	if _, err := store.LoadGCStats(gcS3OrphansCursorKey); !errors.Is(err, gocql.ErrNotFound) {
-		t.Fatalf("expected cursor to remain unset after refcount lookup error, got err=%v", err)
+	if got := sp.ScopedBlockDeletes(); len(got) != 1 || got[0].StorageKey != MockCanonicalStorageKey(org.String(), block) {
+		t.Fatalf("exact K1: %+v", got)
 	}
 }
 

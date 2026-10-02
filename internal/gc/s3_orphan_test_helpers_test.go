@@ -7,6 +7,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const gcS3OrphansCursorKey = "gc.scan.s3_orphans.last_first_seen_day"
+
 func testOrphanClaimedAt() time.Time {
 	return time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 }
@@ -27,7 +29,8 @@ func testCommittedOrphanAuthorityForOrg(orgID uuid.UUID, blockID, storageClass s
 	return testCommittedOrphanAuthority(blockID, storageClass, MockCanonicalStorageKey(orgID.String(), blockID))
 }
 
-// seedS3Orphan creates test state through the production lifecycle entry point.
+// seedS3Orphan creates an exact published lifecycle and a COMMITTED unit fixture.
+// Productive PREPARED/COMMIT/promotion/retirement is covered separately by G2-G5.
 // A failed initial delete is represented by the same follow-up mutation the
 // worker uses, rather than by a second row-creating API.
 func seedS3Orphan(t *testing.T, store GCStore, orgID uuid.UUID, blockID, storageClass, externalSHA1, errMsg string, firstSeenAt time.Time) time.Time {
@@ -37,6 +40,13 @@ func seedS3Orphan(t *testing.T, store GCStore, orgID uuid.UUID, blockID, storage
 	if result.Outcome != StartBlockDeleteOrphanCreated && result.Outcome != StartBlockDeleteOrphanSameAuthority {
 		t.Fatalf("StartBlockDeleteOrphan: outcome=%s cause=%v", result.Outcome, result.Cause)
 	}
+	stateStore, ok := store.(interface {
+		SetS3OrphanRecoveryStateForTest(uuid.UUID, string, string)
+	})
+	if !ok {
+		t.Fatal("COMMITTED fixture requires the mock state setter")
+	}
+	stateStore.SetS3OrphanRecoveryStateForTest(orgID, blockID, S3OrphanRecoveryStateCommitted)
 	effectiveFirstSeenAt := result.FirstSeenAt
 	if errMsg != "" {
 		if err := store.UpdateS3OrphanAttempt(orgID, blockID, testCommittedOrphanAuthorityForOrg(orgID, blockID, storageClass).Authority(), errMsg, firstSeenAt); err != nil {

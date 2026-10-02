@@ -349,7 +349,25 @@ func TestX1PhysicalLifeHandoffCurrentProcessBlockOrder(t *testing.T) {
 	if recovery == nil {
 		t.Fatal("RecoverS3Orphans not found; D0 recovery-ref pin is vacuous")
 	}
-	_ = x1FirstCallIn(t, recovery.Body, "RecoverS3Orphans", "BlockHasReferencesGlobal")
+	_ = x1FirstCallIn(t, recovery.Body, "RecoverS3Orphans", "recoverS3OrphanRoot")
+	root := findGCFunction(file, "recoverS3OrphanRoot")
+	if root == nil {
+		t.Fatal("root executor missing")
+	}
+	_ = x1FirstCallIn(t, root.Body, "recoverS3OrphanRoot", "recoverCanonicalS3Orphan")
+	physical := findGCFunction(file, "recoverCanonicalS3Orphan")
+	if physical == nil {
+		t.Fatal("canonical executor missing")
+	}
+	_ = x1FirstCallIn(t, physical.Body, "recoverCanonicalS3Orphan", "ObserveBlockDeleteLifecycle")
+	_ = x1FirstCallIn(t, physical.Body, "recoverCanonicalS3Orphan", "FinalizeBlockDelete")
+	_ = x1FirstCallIn(t, physical.Body, "recoverCanonicalS3Orphan", "DeleteBlockByStorageKey")
+	ast.Inspect(physical.Body, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallExpr); ok && x1CallName(call) == "BlockHasReferencesGlobal" {
+			t.Fatal("COMMITTED D must not be revoked by logical references")
+		}
+		return true
+	})
 }
 
 func TestX1PhysicalLifeHandoffCurrentOrphanIdentityAndTTL(t *testing.T) {

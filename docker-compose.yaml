@@ -561,6 +561,7 @@ services:
       - SESAMEFS_REQUIRE_P4B_EVIDENCE=1
       - SESAMEFS_REQUIRE_G1_ORPHAN_EVIDENCE=1
       - SESAMEFS_REQUIRE_G4_EVIDENCE=1
+      - SESAMEFS_REQUIRE_G5_EVIDENCE=1
       # R26 is the exact-P IDENTITY half: it needs the real engine because what
       # it changed is a set of PRIMARY KEYs, and a map-backed mock keeps rows
       # apart under any key the Go code invents.
@@ -611,6 +612,7 @@ services:
       - SESAMEFS_REQUIRE_P4B_EVIDENCE=1
       - SESAMEFS_REQUIRE_G1_ORPHAN_EVIDENCE=1
       - SESAMEFS_REQUIRE_G4_EVIDENCE=1
+      - SESAMEFS_REQUIRE_G5_EVIDENCE=1
       # R26 is the exact-P IDENTITY half: it needs the real engine because what
       # it changed is a set of PRIMARY KEYs, and a map-backed mock keeps rows
       # apart under any key the Go code invents.

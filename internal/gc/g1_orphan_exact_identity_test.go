@@ -75,6 +75,7 @@ func TestG1RecoveryRootRepairsMissingProjectionAndRecoversCanonical(t *testing.T
 	if result.Outcome != StartBlockDeleteOrphanCreated {
 		t.Fatalf("seed root repair orphan: %s: %v", result.Outcome, result.Cause)
 	}
+	store.SetS3OrphanRecoveryStateForTest(orgID, blockID, S3OrphanRecoveryStateCommitted)
 	store.DeleteS3OrphanProjectionForTest(orgID, blockID, result.FirstSeenAt)
 
 	recovered, err := worker.RecoverS3Orphans(context.Background(), 100)
@@ -387,8 +388,16 @@ func TestG1TerminalRootSettlementIsPageBoundedAndExact(t *testing.T) {
 		t.Fatalf("seeded %d terminal roots in one bucket, want 5", len(seeded))
 	}
 
-	recovered, err := worker.RecoverS3Orphans(context.Background(), 2)
-	if err != nil || recovered != len(seeded) {
+	recovered := 0
+	for tick := 0; tick < 3; tick++ {
+		n, err := worker.RecoverS3Orphans(context.Background(), 2)
+		if err != nil || n > 2 {
+			t.Fatalf("bounded tick %d: %d %v", tick, n, err)
+		}
+		recovered += n
+	}
+	var err error
+	if recovered != len(seeded) {
 		t.Fatalf("page-bounded terminal settlement = (%d, %v), want (%d, nil)", recovered, err, len(seeded))
 	}
 	for _, item := range seeded {
@@ -462,7 +471,7 @@ func TestG1RecoveryRootPaginationUsesContinuationState(t *testing.T) {
 func TestG1OldRootRepairsDiscoveryWithoutRewindingHistoricalScan(t *testing.T) {
 	store := NewMockStore()
 	storage := &MockStorageProvider{}
-	worker := NewWorker(store, storage, NewQueue(store), 100, 0, false, &Stats{})
+	worker := NewWorker(store, nil, NewQueue(store), 100, 0, false, &Stats{})
 	orgID := uuid.New()
 	blockID := testSHA256BlockID("g1-old-root")
 	authority := testCommittedOrphanAuthorityForOrg(orgID, blockID, "hot")
@@ -471,6 +480,7 @@ func TestG1OldRootRepairsDiscoveryWithoutRewindingHistoricalScan(t *testing.T) {
 	if created.Outcome != StartBlockDeleteOrphanCreated {
 		t.Fatalf("seed old root: %s: %v", created.Outcome, created.Cause)
 	}
+	store.SetS3OrphanRecoveryStateForTest(orgID, blockID, S3OrphanRecoveryStateCommitted)
 	store.DeleteS3OrphanProjectionForTest(orgID, blockID, created.FirstSeenAt)
 
 	recovered, err := worker.RecoverS3Orphans(context.Background(), 100)
@@ -485,7 +495,7 @@ func TestG1OldRootRepairsDiscoveryWithoutRewindingHistoricalScan(t *testing.T) {
 	}
 }
 
-func TestG1RootScanReturnsUTCProjectionDay(t *testing.T) {
+func TestG1RootRepairPreservesCanonicalUTCProjectionDay(t *testing.T) {
 	store := NewMockStore()
 	worker := NewWorker(store, nil, NewQueue(store), 100, 0, false, &Stats{})
 	orgID := uuid.New()
@@ -496,17 +506,19 @@ func TestG1RootScanReturnsUTCProjectionDay(t *testing.T) {
 	if created.Outcome != StartBlockDeleteOrphanCreated {
 		t.Fatalf("seed root scan token: %s: %v", created.Outcome, created.Cause)
 	}
-	cutoffDay := db.GCProjectionUTCDate(firstSeenAt.Add(24 * time.Hour))
-	_, err, rootScanStart, _ := worker.reconcileS3OrphanRecoveryRoots(context.Background(), 100, cutoffDay)
-	if err != nil {
-		t.Fatalf("reconcile roots: %v", err)
+	store.SetS3OrphanRecoveryStateForTest(orgID, blockID, S3OrphanRecoveryStateCommitted)
+	store.DeleteS3OrphanProjectionForTest(orgID, blockID, firstSeenAt)
+	if _, err := worker.RecoverS3Orphans(context.Background(), 100); err != nil {
+		t.Fatalf("root repair: %v", err)
 	}
-	if want := db.GCProjectionUTCDate(firstSeenAt); !rootScanStart.Equal(want) {
-		t.Fatalf("root scan start = %v, want UTC projection day %v", rootScanStart, want)
+	rows, err := store.ListS3OrphansByDay(db.GCProjectionUTCDate(firstSeenAt), db.GCDiscoveryBucket(orgID.String(), blockID), 100)
+	if err != nil || len(rows) != 1 || !rows[0].FirstSeenAt.Equal(firstSeenAt) {
+		t.Fatalf("root repair lost canonical first_seen_at: %+v %v", rows, err)
 	}
+
 }
 
-func TestG1RootErrorDoesNotFreezeByDayCursor(t *testing.T) {
+func TestG1RootErrorDoesNotModifyIgnoredDayCursor(t *testing.T) {
 	store := NewMockStore()
 	worker := NewWorker(store, &MockStorageProvider{}, NewQueue(store), 100, 0, false, &Stats{})
 	rootErr := errors.New("test: recovery-root enumeration unavailable")
@@ -522,7 +534,7 @@ func TestG1RootErrorDoesNotFreezeByDayCursor(t *testing.T) {
 		t.Fatalf("RecoverS3Orphans error = %v, want root error", err)
 	}
 	cursor, cursorErr := store.LoadGCStats(gcS3OrphansCursorKey)
-	wantCursor := db.GCProjectionDateString(cutoffDay.AddDate(0, 0, -1))
+	wantCursor := previousCursor
 	if cursorErr != nil || cursor != wantCursor {
 		t.Fatalf("cursor after root-only error = %q, err=%v, recovery err=%v, want %q", cursor, cursorErr, err, wantCursor)
 	}

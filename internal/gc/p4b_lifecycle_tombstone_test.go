@@ -150,7 +150,15 @@ func TestG4ProcessBlockCommittedOwnerDoesNotReauthorizeByRefs(t *testing.T) {
 		}
 	}
 
-	recovery := formattedGCFunction(t, file, "RecoverS3Orphans")
+	entry := formattedGCFunction(t, file, "RecoverS3Orphans")
+	if !strings.Contains(entry, "recoverS3OrphanRoot") {
+		t.Fatal("root scheduler must reach exact recovery")
+	}
+	root := formattedGCFunction(t, file, "recoverS3OrphanRoot")
+	if !strings.Contains(root, "recoverCanonicalS3Orphan") {
+		t.Fatal("root identity must enter exact canonical executor")
+	}
+	recovery := formattedGCFunction(t, file, "recoverCanonicalS3Orphan")
 	if !strings.Contains(recovery, "ObserveBlockDeleteLifecycle") {
 		t.Fatal("pending_s3 recovery must observe the SERIAL lifecycle tombstone before S3")
 	}

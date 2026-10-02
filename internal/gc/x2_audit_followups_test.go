@@ -72,8 +72,8 @@ func TestX2_StaleClaimFromAnotherCandidateIsReleased(t *testing.T) {
 	if blk.GCState != "" {
 		t.Errorf("block left fenced (gc_state=%q) by a claim from an abandoned candidate; every future upload of this content would be refused forever", blk.GCState)
 	}
-	if got := store.AllBlockGCCandidates(); len(got) != 0 {
-		t.Errorf("candidate rows = %d after the fence was lifted, want 0", len(got))
+	if got := store.AllBlockGCCandidates(); len(got) != 1 {
+		t.Errorf("candidate rows = %d after the fence was lifted, want 1 (current-P scheduling retained)", len(got))
 	}
 	if deletes := sp.ScopedBlockDeletes(); len(deletes) != 0 {
 		t.Errorf("deleted a referenced block: %+v", deletes)
@@ -815,7 +815,7 @@ func TestX2_DestructiveTimestampsArePerPath(t *testing.T) {
 	orgID := uuid.New()
 	blockID := testSHA256BlockID("x2-orphan-path")
 	seedS3Orphan(t, store, orgID, blockID, "hot", "", "", now.AddDate(0, 0, -1))
-	store.SetBlockHasReferencesGlobalErrForTest(fakeRequestError{code: gocql.ErrCodeUnavailable, msg: "Cannot achieve consistency level EACH_QUORUM in DC dc-asia"})
+	store.SetGetS3OrphanGlobalErrForTest(fakeRequestError{code: gocql.ErrCodeUnavailable, msg: "Cannot achieve consistency level EACH_QUORUM in DC dc-asia"})
 	if _, err := w.RecoverS3Orphans(context.Background(), 100); err == nil {
 		t.Fatal("expected the sweep to fail closed")
 	}
@@ -825,7 +825,7 @@ func TestX2_DestructiveTimestampsArePerPath(t *testing.T) {
 	}
 
 	// Now a worker pass with no work at all. It must not speak for the orphan path.
-	store.SetBlockHasReferencesGlobalErrForTest(nil)
+	store.SetGetS3OrphanGlobalErrForTest(nil)
 	if _, err := w.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("ProcessOnce returned a fatal error: %v", err)
 	}
@@ -907,12 +907,12 @@ func TestX2_OrphanRefusalDoesNotContaminateTheWorkerPass(t *testing.T) {
 //
 // Both halves are asserted because only checking the counter would pass on a change
 // that fixed the label and left the mark, which is the half an alert actually watches.
-func TestX2_OrphanRecoveryClassifiesItsGlobalVerifyFailure(t *testing.T) {
+func TestX2_OrphanRecoveryClassifiesItsCanonicalProofFailure(t *testing.T) {
 	seedRefusedOrphan := func(t *testing.T, w *Worker, store *MockStore, sp *MockStorageProvider, at time.Time, livenessErr error) {
 		t.Helper()
 		orgID := uuid.New()
 		seedS3Orphan(t, store, orgID, "orph-1", "hot", "", "", at.AddDate(0, 0, -1))
-		store.SetBlockHasReferencesGlobalErrForTest(livenessErr)
+		store.SetGetS3OrphanGlobalErrForTest(livenessErr)
 		if _, err := w.RecoverS3Orphans(context.Background(), 100); err == nil {
 			t.Fatal("the sweep must defer when its global verify fails, whatever the error was")
 		}
@@ -932,19 +932,19 @@ func TestX2_OrphanRecoveryClassifiesItsGlobalVerifyFailure(t *testing.T) {
 		w.clock = advancingClock(now)
 		resetDestructivePairForTest(destructivePathOrphan)
 
-		beforeUnavailable := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("liveness_verify_unavailable"))
-		beforeFailed := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("liveness_verify_failed"))
+		beforeUnavailable := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_read_unavailable"))
+		beforeFailed := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_read_failed"))
 
 		seedRefusedOrphan(t, w, store, sp, now, fakeRequestError{
 			code: gocql.ErrCodeUnavailable,
 			msg:  "Cannot achieve consistency level EACH_QUORUM in DC dc-asia",
 		})
 
-		if got := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("liveness_verify_unavailable")); got != beforeUnavailable+1 {
-			t.Errorf("liveness_verify_unavailable = %v, want %v: a DC that cannot be reached is exactly what this label is for", got, beforeUnavailable+1)
+		if got := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_read_unavailable")); got != beforeUnavailable+1 {
+			t.Errorf("s3_orphan_canonical_read_unavailable = %v, want %v: a DC that cannot be reached is exactly what this label is for", got, beforeUnavailable+1)
 		}
-		if got := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("liveness_verify_failed")); got != beforeFailed {
-			t.Errorf("liveness_verify_failed moved on an availability failure: %v -> %v", beforeFailed, got)
+		if got := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_read_failed")); got != beforeFailed {
+			t.Errorf("s3_orphan_canonical_read_failed moved on an availability failure: %v -> %v", beforeFailed, got)
 		}
 		if blocked, livenessSuccess := destructivePairForTest(t, destructivePathOrphan); blocked <= livenessSuccess {
 			t.Errorf("last_blocked=%v last_liveness_success=%v, want blocked later: an unreachable DC is the environment refusing to authorize deletes, which is what the pair reports", blocked, livenessSuccess)
@@ -963,19 +963,19 @@ func TestX2_OrphanRecoveryClassifiesItsGlobalVerifyFailure(t *testing.T) {
 		w.recordDestructiveLivenessSuccess(destructivePathOrphan)
 		_, baselineSuccess := destructivePairForTest(t, destructivePathOrphan)
 
-		beforeUnavailable := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("liveness_verify_unavailable"))
-		beforeFailed := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("liveness_verify_failed"))
+		beforeUnavailable := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_read_unavailable"))
+		beforeFailed := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_read_failed"))
 
 		seedRefusedOrphan(t, w, store, sp, now, fakeRequestError{
 			code: gocql.ErrCodeReadFailure,
 			msg:  "Operation failed - received 0 responses and 1 failures: TOMBSTONE_OVERWHELMING",
 		})
 
-		if got := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("liveness_verify_failed")); got != beforeFailed+1 {
-			t.Errorf("liveness_verify_failed = %v, want %v: a ReadFailure is specific to this partition and permanent until someone looks at it", got, beforeFailed+1)
+		if got := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_read_failed")); got != beforeFailed+1 {
+			t.Errorf("s3_orphan_canonical_read_failed = %v, want %v: a ReadFailure is specific to this partition and permanent until someone looks at it", got, beforeFailed+1)
 		}
-		if got := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("liveness_verify_unavailable")); got != beforeUnavailable {
-			t.Errorf("liveness_verify_unavailable moved on a non-availability failure: %v -> %v; this pages whoever is on call to inspect datacenter health for a condition that survives every DC being up", beforeUnavailable, got)
+		if got := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_read_unavailable")); got != beforeUnavailable {
+			t.Errorf("s3_orphan_canonical_read_unavailable moved on a non-availability failure: %v -> %v; this pages whoever is on call to inspect datacenter health for a condition that survives every DC being up", beforeUnavailable, got)
 		}
 		if blocked, livenessSuccess := destructivePairForTest(t, destructivePathOrphan); blocked > livenessSuccess {
 			t.Errorf("last_blocked=%v last_liveness_success=%v (baseline success %v), want the mark unmoved: one poisoned partition does not answer whether this path can authorize deletes, which is the pair's only question", blocked, livenessSuccess, baselineSuccess)
@@ -1084,7 +1084,7 @@ func TestX2_OrphanRecoveryCanonicalReloadUnavailableMovesBlockedMark(t *testing.
 	orgID := uuid.New()
 	seedS3Orphan(t, store, orgID, "orph-reload-unavailable", "hot", "", "previous failure", now.AddDate(0, 0, -1))
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 3 {
+		if call == 2 {
 			return S3OrphanInfo{}, fakeRequestError{
 				code: gocql.ErrCodeUnavailable,
 				msg:  "Cannot achieve consistency level EACH_QUORUM in DC dc-asia",
@@ -1101,8 +1101,8 @@ func TestX2_OrphanRecoveryCanonicalReloadUnavailableMovesBlockedMark(t *testing.
 	if deletes := sp.BlockStoreRequests(); len(deletes) != 0 {
 		t.Fatalf("resolved storage after an unavailable canonical reload: %+v", deletes)
 	}
-	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 3 {
-		t.Fatalf("canonical reads=%d, want root read, initial read, and reload", calls)
+	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 2 {
+		t.Fatalf("canonical reads=%d, want root canonical read and reload", calls)
 	}
 	if got := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_reload_unavailable")); got != beforeUnavailable+1 {
 		t.Errorf("canonical reload unavailable = %v, want %v", got, beforeUnavailable+1)
@@ -1130,8 +1130,13 @@ func TestX2_OrphanRecoveryCanonicalReloadMissingIsDistinctFromInitialMissing(t *
 	orgID := uuid.New()
 	blockID := "orph-reload-missing"
 	seedS3Orphan(t, store, orgID, blockID, "hot", "", "previous failure", now.AddDate(0, 0, -1))
+	// Exercise canonical disappearance at the post-S3 finalization commit point.
+	authority := mockS3OrphanAuthority(t, store, orgID, blockID)
+	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, authority, "", now); err != nil {
+		t.Fatal(err)
+	}
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 2 {
+		if call == 1 {
 			// The first read has already returned a canonical row. Remove it before
 			// the commit-point reload to model a lifecycle clear in the race window.
 			store.DeleteS3OrphanCanonicalForTest(orgID, blockID)
@@ -1147,8 +1152,8 @@ func TestX2_OrphanRecoveryCanonicalReloadMissingIsDistinctFromInitialMissing(t *
 	if deletes := sp.BlockStoreRequests(); len(deletes) != 0 {
 		t.Fatalf("resolved storage after a missing canonical reload: %+v", deletes)
 	}
-	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 3 {
-		t.Fatalf("canonical reads=%d, want root read, initial read, and reload", calls)
+	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 2 {
+		t.Fatalf("canonical reads=%d, want root canonical read and reload", calls)
 	}
 	if got := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_reload_missing")); got != beforeReloadMissing+1 {
 		t.Errorf("canonical reload missing = %v, want %v", got, beforeReloadMissing+1)
@@ -1173,7 +1178,7 @@ func TestX2_OrphanRecoveryCanonicalReloadPermanentErrorIsNotAnOutage(t *testing.
 	orgID := uuid.New()
 	seedS3Orphan(t, store, orgID, "orph-reload-failed", "hot", "", "previous failure", now.AddDate(0, 0, -1))
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 3 {
+		if call == 2 {
 			return S3OrphanInfo{}, errors.New("canonical row has an incompatible recovery schema")
 		}
 		return info, nil
