@@ -527,24 +527,39 @@ func TestGC_S3OrphanRecovery_DeletesLingeringObject(t *testing.T) {
 	blockID := hex.EncodeToString(sum[:])
 	orgID := uuid.New()
 	bs := newVerificationBlockStore(t, orgID.String())
+	storageKey, err := bs.MintStorageKey(blockID)
+	if err != nil {
+		t.Fatalf("mint exact orphan key: %v", err)
+	}
 	siblingOrgID := uuid.New()
 	siblingStore := newVerificationBlockStore(t, siblingOrgID.String())
 
-	if _, err := bs.PutBlockData(ctx, &storage.BlockData{Hash: blockID, Data: content, Size: int64(len(content))}); err != nil {
+	if _, err := bs.PutObjectAutoDirect(ctx, storageKey, content); err != nil {
 		t.Fatalf("seed PutBlockData: %v", err)
 	}
 	if _, err := siblingStore.PutBlockData(ctx, &storage.BlockData{Hash: blockID, Data: content, Size: int64(len(content))}); err != nil {
 		t.Fatalf("seed sibling PutBlockData: %v", err)
 	}
-	if exists, err := bs.BlockExists(ctx, blockID); err != nil || !exists {
+	if exists, err := bs.ObjectExists(ctx, storageKey); err != nil || !exists {
 		t.Fatalf("seed orphan object not present in S3 (exists=%v err=%v)", exists, err)
 	}
 	t.Cleanup(func() {
-		_ = bs.DeleteBlockByStorageKey(ctx, bs.StorageKeyForHash(blockID))
+		_ = bs.DeleteBlockByStorageKey(ctx, storageKey)
 		_ = siblingStore.DeleteBlockByStorageKey(ctx, siblingStore.StorageKeyForHash(blockID))
 	})
 
-	seedS3OrphanWithStorageKey(t, store, orgID, blockID, bs.StorageKeyForHash(blockID), storageClass, "", "seed: simulated S3 delete failure", time.Now().UTC())
+	// Seed the current COMMITTED protocol through its real claim, handoff and
+	// retirement; empty-state recovery is not a greenfield deletion authority.
+	firstSeen := time.Now().UTC().Truncate(time.Millisecond)
+	authority := gcpkg.BlockDeleteAuthority{
+		Target:  gcpkg.BlockDeleteTarget{StorageClass: storageClass, StorageKey: storageKey},
+		ClaimID: uuid.NewString(), ClaimedAt: firstSeen,
+	}
+	seedCurrentS3Orphan(t, store, orgID, blockID, authority, "", firstSeen)
+	if err := store.UpdateS3OrphanAttempt(orgID, blockID, authority, "seed: simulated S3 delete failure", firstSeen); err != nil {
+		t.Fatalf("record failed exact delete attempt: %v", err)
+	}
+	t.Cleanup(func() { cleanupGCBlockFixturesForTest(t, orgID, blockID) })
 	if _, found, err := shareProjectionDBForTest(t).GetBlockS3OrphanInfo(orgID.String(), blockID); err != nil || !found {
 		t.Fatalf("orphan fence not recorded (found=%v err=%v)", found, err)
 	}
@@ -553,7 +568,7 @@ func TestGC_S3OrphanRecovery_DeletesLingeringObject(t *testing.T) {
 	// gone from S3.
 	objectGone := pollUntil(t, 90*time.Second, 2*time.Second, func() bool {
 		triggerGCScanner(t)
-		exists, err := bs.BlockExists(ctx, blockID)
+		exists, err := bs.ObjectExists(ctx, storageKey)
 		if err != nil {
 			t.Fatalf("BlockExists(S3): %v", err)
 		}
