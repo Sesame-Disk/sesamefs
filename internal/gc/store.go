@@ -186,31 +186,26 @@ type GCStore interface {
 
 	// Block operations (worker)
 	//
-	// BlockExists reports whether the canonical `blocks` row still exists.
-	// RecoverS3Orphans relies on this to distinguish a block still being
-	// claimed/finalized by GC (row present → skip) from one whose DB row was
-	// already removed (absent → proceed with S3 cleanup).
+	// BlockExists reports whether the current canonical blocks row exists.
+	// Legacy empty-state orphan recovery uses absence before its global ref proof.
+	// COMMITTED recovery instead retires/settles exact P1,D1 and permits live P2.
 	BlockExists(orgID uuid.UUID, blockID string) (bool, error)
-	// BlockHasReferences reports whether any block_references row still exists for
-	// the block, at the session consistency. TRUE is proof and may abort a delete;
-	// FALSE proves only local absence, so it may drive discovery but MUST NOT
-	// authorize destroying bytes. Use BlockHasReferencesGlobal for that.
+	// BlockHasReferences is a session-consistency discovery/pre-D hint. TRUE may
+	// postpone a new handoff; FALSE cannot authorize it. Neither result revokes D1.
 	BlockHasReferences(orgID uuid.UUID, blockID string) (bool, error)
-	// BlockHasReferencesGlobal is the same liveness check pinned to EACH_QUORUM, so
-	// it intersects every DC that can acknowledge a LOCAL_QUORUM reference write.
-	// Its FALSE answer is the ONLY one that may authorize a physical delete
-	// (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01). An unreachable DC makes it fail;
-	// callers must fail closed rather than treat the error as "no references".
+	// BlockHasReferencesGlobal pins reference visibility to EACH_QUORUM.
+	// Legacy recovery requires its FALSE proof before physical deletion.
+	// An unavailable DC or read error must never be interpreted as zero.
+	// Current COMMITTED recovery continues exact P,D authority, not a new ref proof.
 	BlockHasReferencesGlobal(orgID uuid.UUID, blockID string) (bool, error)
 	// BlockPublicationLivenessGlobal is pre-D only: real refs may settle work;
-	// repair-only must preserve candidate and queue. ZERO permits a new handoff.
-	// Committed and physical-delete readers use BlockHasReferencesGlobal instead.
+	// repair-only preserves candidate and queue. EACH_QUORUM ZERO permits COMMIT D(P1).
+	// After COMMITTED, exact orphan(P1,D1) and the published lifecycle certificate
+	// continue D1. Valid P2 references do not cancel D1 or authorize touching P2.
 	BlockPublicationLivenessGlobal(orgID uuid.UUID, blockID string) (db.BlockPublicationLiveness, error)
-	// ValidateDestructiveGCTopology reports whether the live keyspace replication
-	// still supports the per-datacenter EACH_QUORUM argument that authorizes
-	// physical deletes. It is part of this interface rather than an optional
-	// capability so the guarantee cannot be lost by wrapping the store: dropping it
-	// is a compile error, not a silently disarmed safety gate.
+	// ValidateDestructiveGCTopology checks that live replication supports the
+	// per-DC proof. Every physical execution requires a fresh topology check,
+	// including exact COMMITTED continuation. Wrappers must preserve this gate.
 	ValidateDestructiveGCTopology() error
 	GetBlockInfo(orgID uuid.UUID, blockID string) (BlockInfo, error)
 	// RemoveBlockReference deletes one (block, referrer) reference row. Idempotent.
@@ -228,11 +223,11 @@ type GCStore interface {
 	// tests columns for null applies against a MISSING partition, while an IF that names
 	// storage_class cannot.
 	//
-	// Callers MUST re-check BlockPublicationLivenessGlobal before a new D, including real references and repairs.
-	// Post-COMMITTED readers use BlockHasReferencesGlobal — the EACH_QUORUM form, never the
-	// session-consistency one — after a successful claim before deleting from S3
-	// (claim-then-verify). Verifying with the local read reopens
-	// ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01.
+	// After claiming and before a new D, callers MUST establish
+	// BlockPublicationLivenessGlobal ZERO at EACH_QUORUM, including refs and repairs.
+	// Post-COMMITTED execution settles exact P,D authority and a published lifecycle;
+	// it does not reauthorize D from logical references. A fresh topology check
+	// remains mandatory immediately before destroying bytes.
 	//
 	// The result is classified rather than boolean because a non-applied CAS is not
 	// completion (R16): see BlockClaimOutcome. It also carries the OWNER it observed, so
@@ -294,19 +289,17 @@ type GCStore interface {
 	// authority still owns it — incarnation, claim id, claimed_at, and
 	// gc_orphan_handoff=true. Skipping the handoff cannot finalize.
 	//
-	// AlreadyFinalized classifies "blocks is gone and the lifecycle certificate is
+	// AlreadyFinalized classifies "P1 is gone and the lifecycle certificate is
 	// still published for this exact (P, D)". Neither outcome is permission to
 	// delete bytes: G3's processBlock retires blocks(L) on Finalized and treats
 	// AlreadyFinalized as a no-op settlement, but does not perform the physical
 	// S3 delete itself either way — that remains a future physical executor's job,
 	// authorized separately from this call.
 	//
-	// It deliberately does NOT pin Consistency(EACH_QUORUM) the way ClaimBlockDelete
-	// does. The window this DELETE opens — a writer in another DC that has not yet seen
-	// the row vanish — is covered by the gc_s3_orphans row, which IS published at
-	// EACH_QUORUM and is written BEFORE this call. That row, not this one, is the fence
-	// that spans the physical delete; see db.BlockAuthorityRead for the intersection
-	// argument this relies on.
+	// G4 also classifies P1 retirement when SERIAL observes a different P2,
+	// but only with the exact orphan and published (P1,D1) certificate. Its
+	// CAS never removes P2. A lagging reader still sees P1's deleting claim;
+	// a reader seeing retirement must use fresh INSTALL, never repair P1.
 	FinalizeBlockDelete(orgID uuid.UUID, blockID string, authority CommittedBlockDeleteAuthority) (BlockDeleteFinalizeResult, error)
 	// EnsureBlockGCCandidate records a block as a delete candidate together with the
 	// EXACT physical incarnation it was observed at.
@@ -1385,8 +1378,8 @@ const (
 	BlockClaimAmbiguous
 	// BlockClaimCommittedOwner: the exact incarnation already carries a committed
 	// orphan handoff, confirmed visible at EACH_QUORUM. Resume the STORED authority.
-	// Do not mint a new claim, do not take over. Refs are re-checked as a
-	// contradiction detector (R3 still OPEN), not as a new authorization.
+	// Do not mint a new claim or take over. Resume exact stored P,D authority;
+	// refs(L) are not re-read to revoke an already COMMITTED D.
 	BlockClaimCommittedOwner
 )
 

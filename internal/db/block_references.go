@@ -76,7 +76,7 @@ var ErrInstallBlockMetadataIdentityContradiction = errors.New("single-use block 
 var ErrBlockRepairAuthorityChanged = errors.New("block repair authority changed")
 
 // ErrBlockRepairBlocked means GC currently owns or fences the logical block.
-// Repair must wait until both the in-row claim and the A+ orphan fence are clear.
+// Repair must wait until the exact canonical in-row claim is clear.
 var ErrBlockRepairBlocked = errors.New("block repair blocked by GC")
 
 // ErrBlockRepairAuthorityPermanent marks malformed input or canonical row state.
@@ -318,8 +318,8 @@ var readBlockIdentityForRepairFn = func(database *DB, orgID, blockID string) (bl
 // wherever the answer gates an early-out and the real authority is enforced
 // structurally downstream — by the single-use INSTALL LWT for a fresh
 // incarnation, or by the tuple-bound, non-creating CAS in
-// RepairBlockMetadataIfCurrent (R17). Because ClaimBlockDelete and
-// StartBlockDeleteOrphan publish with EACH_QUORUM commit visibility, a
+// RepairBlockMetadataIfCurrent (R17). Because ClaimBlockDelete publishes
+// its in-row claim with EACH_QUORUM commit visibility, a
 // LOCAL_QUORUM read intersects that commit in every DC and therefore observes
 // every committed fence; what it may miss is a fence whose Paxos commit is still
 // in flight, and every such caller has downstream authority that rejects the
@@ -328,9 +328,9 @@ var readBlockIdentityForRepairFn = func(database *DB, orgID, blockID string) (bl
 // The level is pinned rather than inherited BECAUSE that intersection is the
 // whole argument. `database.consistency` accepts ONE (config.go), and a ONE read
 // can land on a replica that never received the commit — which would let a writer
-// see no fence at all and mint a new incarnation while the previous lifecycle's
-// orphan is still live. A fence read therefore declares the consistency its own
-// correctness requires instead of trusting operator configuration, exactly as
+// miss the canonical life's active delete claim. A retired orphan owns only P1;
+// G4 permits a newly minted P2 while that orphan is live. A fence read
+// therefore declares the consistency its own correctness requires instead of trusting operator configuration, exactly as
 // BlockHasReferencesGlobal does for the destructive side.
 type BlockAuthorityRead int
 
@@ -387,20 +387,6 @@ var readBlockRepairAuthorityFn = func(database *DB, orgID, blockID string, mode 
 		row.StorageKeyPresent = true
 	}
 	return row, true, nil
-}
-
-var blockRepairHasS3OrphanFn = func(database *DB, orgID, blockID string, mode BlockAuthorityRead) (bool, error) {
-	var existingBlockID string
-	err := mode.apply(database.Session().Query(`
-		SELECT block_id FROM gc_s3_orphans WHERE org_id = ? AND block_id = ? LIMIT 1
-	`, orgID, blockID)).Scan(&existingBlockID)
-	if err != nil {
-		if errors.Is(err, gocql.ErrNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	return existingBlockID != "", nil
 }
 
 var backfillCurrentBlockRepresentationIDFn = func(database *DB, orgID, blockID, representationID, expectedCurrent string, expected BlockPhysicalLocation, expectedCreatedAt time.Time, expectedSizeBytes int) (bool, error) {
@@ -790,8 +776,8 @@ func PromotePublishAttemptReferences(database *DB, orgID, attemptID string, bloc
 }
 
 // ValidateBlockRepairAuthority grants authority only for the exact canonical
-// physical incarnation the caller supplies. Under conservative A+, either GC
-// ownership shape or any gc_s3_orphans row blocks repair.
+// physical incarnation the caller supplies. The canonical GC ownership blocks
+// repair; an orphan for retired P1 does not own a later P2.
 // ValidateBlockRepairAuthority is the pre-PUT boundary (R10) and therefore always
 // reads at BlockAuthorityStrong: it is the one decision that must observe a fence
 // published moments earlier, and it runs only when an existing physical object
@@ -836,7 +822,8 @@ func (db *DB) ValidateBlockRepairAuthority(orgID, blockID string, expected Block
 // docs/W2-0-GREENFIELD-RECONCILIATION.md and docs/X1-CRITICAL-PATH.md.
 // Under the live-pin premise, four cases cover the GC ordering:
 //
-//  1. GC's zero-proof read (BlockHasReferencesGlobal, EACH_QUORUM) happens
+//  1. GC's pre-D zero proof (BlockPublicationLivenessGlobal, whose real-ref
+//     read uses EACH_QUORUM) happens
 //     after that pin is durable. EACH_QUORUM queries a quorum of replicas in
 //     EVERY datacenter, including the writer's own -- so its component in
 //     the writer's DC necessarily intersects the LOCAL_QUORUM that
@@ -856,22 +843,11 @@ func (db *DB) ValidateBlockRepairAuthority(orgID, blockID string, expected Block
 //     EACH_QUORUM-visible write -- the same kind of write case 1 shows a
 //     LOCAL_QUORUM read reliably intersects. This read therefore observes
 //     gc_state='deleting' -> Blocked.
-//  3. GC has already fully retired P1 (D committed, orphan published,
-//     Finalize's row DELETE, and the settled orphan DELETE all applied)
-//     before the pin was written. FinalizeBlockDelete and DeleteS3Orphan do
-//     not themselves pin EACH_QUORUM -- only the LWT's serial phase -- so
-//     this read's specific replicas may or may not have received either
-//     delete yet; that is a per-replica question, not an every-DC one, and
-//     this function makes no claim about global propagation. What matters is
-//     the direction of the two possible outcomes: if this read's replicas
-//     have NOT yet received a given delete, they still hold the prior
-//     committed state (blocks(L) with gc_state='deleting', or the orphan row
-//     not yet cleared) -> Blocked. If they HAVE received it, that delete is
-//     one this read's own replicas actually applied, not a hypothetical
-//     future one -> Changed once both deletes are visible there. Neither
-//     direction can manufacture a false Authorized for the observed P1: a
-//     replica cannot report a row absent before it has itself received the
-//     tombstone that removed it.
+//  3. GC has retired P1 after confirming COMMITTED(P1,D1). A replica
+//     still holding P1 reports the settled deleting claim -> Blocked. A
+//     replica observing retirement reports absence or a freshly installed P2
+//     -> Changed for the caller's P1 tuple. The orphan does not own P2.
+//     Fresh INSTALL and non-creating repair CAS cannot resurrect retired P1.
 //  4. GC's claim was released or taken over before D committed: a
 //     released/superseded claim can no longer reach the irreversible commit,
 //     so it cannot later produce a fence this read would need to catch.
@@ -894,28 +870,13 @@ func (db *DB) validateBlockRepairAuthority(orgID, blockID string, expected Block
 		return blockRepairAuthorityRow{}, BlockRepairAuthorityPermanent, blockRepairPermanentError("invalid storage key for block %s", blockID)
 	}
 
-	// Read order is load-bearing, and the proof is the GC lifecycle's own write
-	// order: ClaimBlockDelete stamps gc_state, StartBlockDeleteOrphan writes the
-	// orphan, and only then does FinalizeBlockDelete remove the canonical row
-	// (worker.go). The orphan is therefore the LAST fence read on every path, so
-	// that an absent canonical row can never be mistaken for "no fence": if the
-	// row is already gone when we read it, that lifecycle's orphan was durably
-	// written strictly earlier, and the orphan read that follows must observe it.
-	// Reading the orphan first would leave exactly the window this ordering
-	// closes — orphan absent, then GC orphans and drops the row, then a rowless
-	// read reports no fence at all.
+	// G4: authority follows the exact canonical life, never an orphan of L.
+	// Retired P1 cannot regain canonicity through the single-use INSTALL LWT.
 	row, found, err := readBlockRepairAuthorityFn(db, orgID, blockID, mode)
 	if err != nil {
 		return blockRepairAuthorityRow{}, BlockRepairAuthorityUnknown, fmt.Errorf("read block repair authority for %s: %w", blockID, err)
 	}
-	hasOrphan, err := blockRepairHasS3OrphanFn(db, orgID, blockID, mode)
-	if err != nil {
-		return blockRepairAuthorityRow{}, BlockRepairAuthorityUnknown, fmt.Errorf("read S3 orphan repair fence for %s: %w", blockID, err)
-	}
 	if !found {
-		if hasOrphan {
-			return blockRepairAuthorityRow{}, BlockRepairAuthorityBlocked, fmt.Errorf("%w: block %s has an orphan fence without a canonical row", ErrBlockRepairBlocked, blockID)
-		}
 		return blockRepairAuthorityRow{}, BlockRepairAuthorityChanged, fmt.Errorf("%w: canonical row for block %s is absent", ErrBlockRepairAuthorityChanged, blockID)
 	}
 	if row.CreatedAt == nil || !row.StorageClassPresent || !row.StorageKeyPresent || !config.IsCanonicalStorageClassName(row.StorageClass) || row.StorageKey == "" || strings.TrimSpace(row.StorageKey) != row.StorageKey {
@@ -935,9 +896,6 @@ func (db *DB) validateBlockRepairAuthority(orgID, blockID string, expected Block
 	if activeClaim || repairClaim {
 		return blockRepairAuthorityRow{}, BlockRepairAuthorityBlocked, fmt.Errorf("%w: block %s has an active %s claim", ErrBlockRepairBlocked, blockID, strings.TrimSpace(row.GCState))
 	}
-	if hasOrphan {
-		return blockRepairAuthorityRow{}, BlockRepairAuthorityBlocked, fmt.Errorf("%w: block %s has an S3 orphan fence", ErrBlockRepairBlocked, blockID)
-	}
 	return row, BlockRepairAuthorityAuthorized, nil
 }
 
@@ -947,7 +905,7 @@ func blockRepairPermanentError(format string, args ...interface{}) error {
 }
 
 // RepairBlockMetadataIfCurrent repairs immutable identity metadata only while the
-// canonical row still names expected and remains outside every A+ GC fence. It
+// canonical row still names expected and has no current GC claim. It
 // never executes INSERT and its conditional UPDATE statements cannot create a row.
 func (db *DB) RepairBlockMetadataIfCurrent(orgID, representationID, blockID, sha1 string, sizeBytes int, expected BlockPhysicalLocation) error {
 	if !IsCanonicalBlockRepresentationID(representationID) {
@@ -1197,7 +1155,6 @@ func (db *DB) RepairReleasedBlockStub(orgID, blockID string) (bool, error) {
 		}
 	}
 
-	hasOrphan, orphanErr := probeBlockReuseHasS3OrphanFn(db, orgID, blockID)
 	deleted, deleteErr := db.deleteOwnedBlockStubRepairClaim(orgID, blockID, repairID)
 	if deleteErr != nil {
 		return false, fmt.Errorf("remove block stub repair claim: %w", deleteErr)
@@ -1208,12 +1165,6 @@ func (db *DB) RepairReleasedBlockStub(orgID, blockID string) (bool, error) {
 		// concurrency loss, not corruption: nothing was deleted and the CAS stayed
 		// closed. Report it as retryable so the caller re-probes and converges to
 		// Reusable or BlockedByGC instead of surfacing a hard 500.
-		return false, nil
-	}
-	if orphanErr != nil {
-		return false, fmt.Errorf("recheck S3 orphan fence during stub repair: %w", orphanErr)
-	}
-	if hasOrphan {
 		return false, nil
 	}
 	return true, nil
@@ -1308,20 +1259,6 @@ var probeBlockReuseHasReferencesFn = func(database *DB, orgID, blockID string) (
 	return database.BlockHasReferences(orgID, blockID)
 }
 
-var probeBlockReuseHasS3OrphanFn = func(database *DB, orgID, blockID string) (bool, error) {
-	var existingBlockID string
-	err := database.Session().Query(`
-		SELECT block_id FROM gc_s3_orphans WHERE org_id = ? AND block_id = ? LIMIT 1
-	`, orgID, blockID).Consistency(BlockFenceReadConsistency).Scan(&existingBlockID)
-	if err != nil {
-		if errors.Is(err, gocql.ErrNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	return existingBlockID != "", nil
-}
-
 // ProbeBlockReuse classifies whether an uploaded block can safely skip S3 PUT,
 // needs a direct PUT, or must back off because GC still owns the object.
 func (db *DB) ProbeBlockReuse(orgID, blockID string) (BlockReuseProbe, error) {
@@ -1330,13 +1267,6 @@ func (db *DB) ProbeBlockReuse(orgID, blockID string) (BlockReuseProbe, error) {
 		return BlockReuseProbe{Decision: BlockReuseUnknownError}, fmt.Errorf("read block metadata for %s: %w", blockID, err)
 	}
 	if !found {
-		hasOrphan, orphanErr := probeBlockReuseHasS3OrphanFn(db, orgID, blockID)
-		if orphanErr != nil {
-			return BlockReuseProbe{Decision: BlockReuseUnknownError}, fmt.Errorf("read S3 orphan fence for %s: %w", blockID, orphanErr)
-		}
-		if hasOrphan {
-			return BlockReuseProbe{Decision: BlockReuseBlockedByGC}, nil
-		}
 		return BlockReuseProbe{Decision: BlockReuseNeedsPut}, nil
 	}
 
@@ -1352,13 +1282,6 @@ func (db *DB) ProbeBlockReuse(orgID, blockID string) (BlockReuseProbe, error) {
 			return BlockReuseProbe{Decision: BlockReuseBlockedByGC}, nil
 		}
 		if repairClaim && strings.TrimSpace(metadata.GCClaimID) != blockStubRepairIDFn(orgID, blockID) {
-			return BlockReuseProbe{Decision: BlockReuseBlockedByGC}, nil
-		}
-		hasOrphan, orphanErr := probeBlockReuseHasS3OrphanFn(db, orgID, blockID)
-		if orphanErr != nil {
-			return BlockReuseProbe{Decision: BlockReuseUnknownError}, fmt.Errorf("read S3 orphan fence for %s: %w", blockID, orphanErr)
-		}
-		if hasOrphan {
 			return BlockReuseProbe{Decision: BlockReuseBlockedByGC}, nil
 		}
 		return BlockReuseProbe{Decision: BlockReuseRepairableStub}, nil
@@ -1391,14 +1314,6 @@ func (db *DB) ProbeBlockReuse(orgID, blockID string) (BlockReuseProbe, error) {
 	if refErr != nil {
 		return BlockReuseProbe{Decision: BlockReuseUnknownError}, fmt.Errorf("read block references for %s: %w", blockID, refErr)
 	}
-	hasOrphan, orphanErr := probeBlockReuseHasS3OrphanFn(db, orgID, blockID)
-	if orphanErr != nil {
-		return BlockReuseProbe{Decision: BlockReuseUnknownError}, fmt.Errorf("read S3 orphan fence for %s: %w", blockID, orphanErr)
-	}
-	if hasOrphan {
-		probe.Decision = BlockReuseBlockedByGC
-		return probe, nil
-	}
 	if hasReferences {
 		probe.Decision = BlockReuseReusable
 		return probe, nil
@@ -1413,8 +1328,9 @@ func (db *DB) ProbeBlockReuse(orgID, blockID string) (BlockReuseProbe, error) {
 //
 // It is the write half of the destructive-GC liveness argument
 // (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01). BlockHasReferencesGlobal reads at
-// EACH_QUORUM so a FALSE answer may authorize destroying bytes, and that answer is
-// only trustworthy because a reference acknowledged at LOCAL_QUORUM in some
+// EACH_QUORUM for the real-reference half of pre-D zero proof and legacy
+// empty-state recovery. Its absence proof is trustworthy because a reference
+// acknowledged at LOCAL_QUORUM in some
 // datacenter necessarily intersects the read's quorum in that same datacenter. Under
 // ONE a single replica can acknowledge a reference that a later per-DC read quorum of
 // 2-of-3 never sees — and `ONE` is an accepted `database.consistency`, so inheriting
@@ -1504,8 +1420,9 @@ func (db *DB) RemoveBlockReference(orgID, blockID, referrer string) error {
 // It runs at the session consistency (LOCAL_QUORUM in every shipped profile), so a
 // TRUE answer is proof — a row visible locally is a real reference — while a FALSE
 // answer proves only that the local DC has not seen one. That asymmetry is why this
-// call is safe for discovery and short-circuit aborts but MUST NOT authorize a
-// physical delete. Use BlockHasReferencesGlobal for that
+// call is safe for discovery and pre-D short-circuit aborts but MUST NOT
+// authorize a new D or physical deletion. Use EACH_QUORUM pre-D publication
+// liveness or legacy recovery proofs; neither local result revokes COMMITTED D
 // (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01).
 func (db *DB) BlockHasReferences(orgID, blockID string) (bool, error) {
 	return scanBlockHasReferences(db.Session().Query(`
@@ -1513,8 +1430,9 @@ func (db *DB) BlockHasReferences(orgID, blockID string) (bool, error) {
 	`, orgID, blockID))
 }
 
-// BlockHasReferencesGlobal is the destructive-authorization liveness read: the only
-// form whose FALSE answer may authorize deleting physical bytes.
+// BlockHasReferencesGlobal is the EACH_QUORUM real-reference read used by
+// pre-D zero proof and legacy empty-state physical recovery. It is not a
+// reauthorization required for exact COMMITTED continuation.
 //
 // It pins EACH_QUORUM per query rather than inheriting the session default, so the
 // read must obtain a quorum in EVERY datacenter. A reference write acknowledged at
@@ -1527,9 +1445,10 @@ func (db *DB) BlockHasReferences(orgID, blockID string) (bool, error) {
 // in the keyspace map; under SimpleStrategy EACH_QUORUM does not carry it. The
 // destructive path gates on that separately.
 // This reports REAL references only. Before committing a new D, callers must
-// also use BlockPublicationLivenessGlobal to check pending publication repairs.
-// After COMMITTED, repairs cannot veto that authority; real refs retain their
-// existing contradiction semantics.
+// use BlockPublicationLivenessGlobal, which also checks pending publication repairs.
+// After COMMITTED, refs(L) and repairs do not revoke D. Continuation settles
+// exact orphan P,D and its published lifecycle, checks fresh topology and reloads
+// exact canonical authority before DeleteExact(K1); it does not require refs==0.
 func (db *DB) BlockHasReferencesGlobal(orgID, blockID string) (bool, error) {
 	return scanBlockHasReferences(db.Session().Query(`
   SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? LIMIT 1
@@ -1643,39 +1562,15 @@ type BlockS3OrphanInfo struct {
 	FirstSeenAt  time.Time
 }
 
-// BlockDeleteFenceActive reports whether GC still owns the physical object for
-// this block. Writers must treat both an in-row gc_state='deleting' claim and a
-// pending gc_s3_orphans row as an active fence; otherwise a re-upload can race
-// with orphan recovery and lose the object after the canonical block row was
-// already deleted.
-// The canonical row is read FIRST and the orphan LAST, and that order is the
-// whole correctness argument. GC writes gc_state, then the orphan, then removes
-// the row. Reading the orphan first admits this sequence:
-//
-//	writer reads orphan   -> absent
-//	GC     StartBlockDeleteOrphan  -> orphan(P1) now exists
-//	GC     FinalizeBlockDelete     -> blocks(L) removed
-//	writer reads blocks   -> absent, reported as "no fence"
-//	writer installs P2    -> blocks(L) -> P2 while orphan(P1) is live
-//
-// which is precisely the overlapped state conservative A+ forbids (R13). Reading
-// the row first inverts the dependency: an absent row proves the orphan of that
-// lifecycle was already durable, so the orphan read that follows observes it.
-// Both reads are ordinary. The fence publishers commit at EACH_QUORUM, so an
-// ordinary read already sees every committed fence, and the authority that
-// actually admits a write is downstream and structural -- the single-use INSTALL
-// LWT for a fresh incarnation, the tuple-bound non-creating CAS for a repair.
+// BlockDeleteFenceActive reports the current canonical life's delete claim.
+// G4 permits P2 while orphan(P1,D1) continues: an orphan owns only its exact P.
+// Missing metadata is not repair authority; INSTALL must mint a fresh key.
 func (db *DB) BlockDeleteFenceActive(orgID, blockID string) (bool, error) {
 	gcState, found, err := blockDeleteFenceGCStateFn(db, orgID, blockID)
 	if err != nil {
 		return false, err
 	}
-	if found && gcState == BlockGCStateDeleting {
-		return true, nil
-	}
-	// A rowless read is deliberately NOT an early "no fence" return: it is the
-	// exact observation the orphan read below exists to disambiguate.
-	return blockDeleteFenceHasS3OrphanFn(db, orgID, blockID)
+	return found && gcState == BlockGCStateDeleting, nil
 }
 
 var blockDeleteFenceGCStateFn = func(database *DB, orgID, blockID string) (string, bool, error) {
@@ -1690,20 +1585,6 @@ var blockDeleteFenceGCStateFn = func(database *DB, orgID, blockID string) (strin
 		return "", false, err
 	}
 	return gcState, true, nil
-}
-
-var blockDeleteFenceHasS3OrphanFn = func(database *DB, orgID, blockID string) (bool, error) {
-	var existingBlockID string
-	err := database.Session().Query(`
-		SELECT block_id FROM gc_s3_orphans WHERE org_id = ? AND block_id = ? LIMIT 1
-	`, orgID, blockID).Consistency(BlockFenceReadConsistency).Scan(&existingBlockID)
-	if err != nil {
-		if errors.Is(err, gocql.ErrNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	return existingBlockID != "", nil
 }
 
 func (db *DB) GetBlockS3OrphanInfo(orgID, blockID string) (BlockS3OrphanInfo, bool, error) {

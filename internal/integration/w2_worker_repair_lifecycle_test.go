@@ -32,15 +32,32 @@ type w2OwnedRecoveryStore struct {
 func (s *w2OwnedRecoveryStore) LoadGCStats(string) (string, error) { return "", gocql.ErrNotFound }
 func (s *w2OwnedRecoveryStore) SaveGCStats(string, string) error   { return nil }
 func (s *w2OwnedRecoveryStore) ListS3OrphansByDay(day time.Time, bucket, limit int) ([]gcpkg.S3OrphanDiscoveryInfo, error) {
-	rows, err := s.GCStore.ListS3OrphansByDay(day, bucket, limit)
-	var own []gcpkg.S3OrphanDiscoveryInfo
-	for _, r := range rows {
-		if r.OrgID == s.org && r.BlockID == s.block {
-			own = append(own, r)
+	// The productive LIMIT is global. Apply the fixture limit after filtering,
+	// otherwise unrelated older rows can starve this test's exact projection.
+	if limit <= 0 {
+		limit = 100
+	}
+	for requested := limit; requested <= 1<<20; requested *= 2 {
+		rows, err := s.GCStore.ListS3OrphansByDay(day, bucket, requested)
+		if err != nil {
+			return nil, err
+		}
+		var own []gcpkg.S3OrphanDiscoveryInfo
+		for _, r := range rows {
+			if r.OrgID == s.org && r.BlockID == s.block {
+				own = append(own, r)
+			}
+		}
+		if len(own) >= limit {
+			return own[:limit], nil
+		}
+		if len(rows) < requested {
+			return own, nil
 		}
 	}
-	return own, err
+	return nil, fmt.Errorf("fixture discovery partition exceeds isolation scan bound")
 }
+
 func (s *w2OwnedRecoveryStore) ListS3OrphanRecoveryRoots(bucket int, state []byte, limit int) (gcpkg.S3OrphanRecoveryRootPage, error) {
 	page, err := s.GCStore.ListS3OrphanRecoveryRoots(bucket, state, limit)
 	var own []gcpkg.S3OrphanRecoveryRootInfo
@@ -81,6 +98,7 @@ func w2AssertCommittedContinuation(t *testing.T, store *gcpkg.CassandraStore, or
 	}
 	// Discovery supplies identity only; confirm the exact canonical COMMITTED row.
 	found := false
+	var exactAuthority gcpkg.BlockDeleteAuthority
 	for bucket := 0; bucket < dbpkg.GCDiscoveryBucketCount; bucket++ {
 		var pageState []byte
 		for {
@@ -96,6 +114,7 @@ func w2AssertCommittedContinuation(t *testing.T, store *gcpkg.CassandraStore, or
 				if err != nil || !exists || orphan.RecoveryState != gcpkg.S3OrphanRecoveryStateCommitted || orphan.StorageClass != class || orphan.StorageKey != key {
 					t.Fatalf("lost exact committed continuation: %+v exists=%v err=%v", orphan, exists, err)
 				}
+				exactAuthority = root.Authority
 				found = true
 			}
 			pageState = page.PageState
@@ -109,15 +128,24 @@ func w2AssertCommittedContinuation(t *testing.T, store *gcpkg.CassandraStore, or
 	}
 
 	scope := &w2OwnedRecoveryStore{GCStore: store, org: org, block: block}
-	if n, err := w2Worker(t, scope, class).RecoverS3Orphans(t.Context(), 1000); err != nil || n != 0 {
+	if n, err := w2Worker(t, scope, class).RecoverS3Orphans(t.Context(), 1000); err != nil || n != 1 {
 		t.Fatalf("physical continuation recovered=%d err=%v", n, err)
 	}
-	if exists, err := bs.ObjectExists(t.Context(), key); err != nil || !exists {
-		t.Fatalf("committed physical continuation must retain P: %v %v", exists, err)
+	if exists, err := bs.ObjectExists(t.Context(), key); err != nil || exists {
+		t.Fatalf("committed physical continuation must delete exact K1: %v %v", exists, err)
+	}
+	if _, found, err := store.GetS3OrphanExact(org, block, exactAuthority); err != nil || found {
+		t.Fatalf("completed D1 orphan survived: found=%v err=%v", found, err)
+	}
+	if _, found, err := store.GetS3OrphanRecoveryRootExact(org, block, exactAuthority); err != nil || found {
+		t.Fatalf("completed D1 root survived: found=%v err=%v", found, err)
+	}
+	if n, err := w2Worker(t, scope, class).RecoverS3Orphans(t.Context(), 1000); err != nil || n != 0 {
+		t.Fatalf("terminal restart recovered=%d err=%v", n, err)
 	}
 	var phase string
-	if err := shareProjectionDBForTest(t).Session().Query(`SELECT phase FROM gc_block_delete_lifecycles WHERE org_id = ? AND block_id = ?`, org.String(), block).Scan(&phase); err != nil || phase != gcpkg.BlockDeleteLifecyclePhasePublished {
-		t.Fatalf("expected nonterminal D phase=%s err=%v", phase, err)
+	if err := shareProjectionDBForTest(t).Session().Query(`SELECT phase FROM gc_block_delete_lifecycles WHERE org_id = ? AND block_id = ? AND claim_id = ?`, org.String(), block, exactAuthority.ClaimID).Scan(&phase); err != nil || phase != gcpkg.BlockDeleteLifecyclePhaseTerminal {
+		t.Fatalf("expected terminal D phase=%s err=%v", phase, err)
 	}
 }
 

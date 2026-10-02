@@ -3485,14 +3485,16 @@ func (s *CassandraStore) BlockHasReferences(orgID uuid.UUID, blockID string) (bo
 	return s.db.BlockHasReferences(orgID.String(), blockID)
 }
 
-// BlockHasReferencesGlobal is the EACH_QUORUM liveness read that authorizes physical
-// deletion. Errors (including an unreachable DC) propagate so the caller fails closed.
+// BlockHasReferencesGlobal reads real references at EACH_QUORUM for the pre-D
+// zero proof and legacy empty-state recovery. It is not a reauthorization of
+// COMMITTED D. Errors, including an unreachable DC, propagate and fail closed.
 func (s *CassandraStore) BlockHasReferencesGlobal(orgID uuid.UUID, blockID string) (bool, error) {
 	return s.db.BlockHasReferencesGlobal(orgID.String(), blockID)
 }
 
-// BlockPublicationLivenessGlobal distinguishes pre-D publication protection from
-// real references. It does not change the post-COMMITTED contradiction primitive.
+// BlockPublicationLivenessGlobal is strictly pre-D: it distinguishes real
+// references from pending publication protection before committing a new D.
+// COMMITTED continuation resumes exact stored authority without this read.
 func (s *CassandraStore) BlockPublicationLivenessGlobal(orgID uuid.UUID, blockID string) (db.BlockPublicationLiveness, error) {
 	return s.db.BlockPublicationLivenessGlobal(orgID.String(), blockID)
 }
@@ -4346,6 +4348,9 @@ func (s *CassandraStore) settleBlockDeleteFinalize(orgID uuid.UUID, blockID stri
 	if !found {
 		return s.classifyFinalizeAbsentRow(orgID, blockID, authority, cause)
 	}
+	if row.Target != authority.Authority().Target && !row.Target.IsZero() {
+		return s.classifyFinalizeAbsentRow(orgID, blockID, authority, cause)
+	}
 	classified := classifyFinalizeAgainstRow(row, authority)
 	if classified.Cause == nil {
 		classified.Cause = cause
@@ -4362,6 +4367,9 @@ func (s *CassandraStore) classifyFinalizeNotApplied(orgID uuid.UUID, blockID str
 		}, fmt.Errorf("finalize block %s: not applied and serial settlement failed: %w", blockID, err)
 	}
 	if !found {
+		return s.classifyFinalizeAbsentRow(orgID, blockID, authority, nil)
+	}
+	if row.Target != authority.Authority().Target && !row.Target.IsZero() {
 		return s.classifyFinalizeAbsentRow(orgID, blockID, authority, nil)
 	}
 	classified := classifyFinalizeAgainstRow(row, authority)

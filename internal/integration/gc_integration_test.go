@@ -1511,7 +1511,7 @@ func TestGC_ConcurrentUploadDuringGC(t *testing.T) {
 	t.Log("Concurrent upload safety: LWT prevented deletion of re-referenced block — correct")
 }
 
-func TestUploadLink_ReuploadBlockedByS3OrphanFence(t *testing.T) {
+func TestUploadLink_ReuploadCurrentLifeWithRetiredOrphan(t *testing.T) {
 	requireCassandra(t)
 
 	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-upload-orphan-fence-%d", time.Now().UnixNano()))
@@ -1536,6 +1536,10 @@ func TestUploadLink_ReuploadBlockedByS3OrphanFence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse orgID %q: %v", orgID, err)
 	}
+	current, err := store.GetBlockInfo(orgUUID, blockID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	firstSeenAt := time.Now().UTC().Truncate(time.Millisecond)
 	effectiveFirstSeenAt := seedS3Orphan(t, store, orgUUID, blockID, "hot", "", "seed orphan fence", firstSeenAt)
 	t.Cleanup(func() {
@@ -1547,16 +1551,14 @@ func TestUploadLink_ReuploadBlockedByS3OrphanFence(t *testing.T) {
 		t.Fatal("expected gc_s3_orphans_by_day projection row to exist before retry upload")
 	}
 
-	status, body := uploadFileThroughLinkStatus(t, adminClient, uploadURL, "blocked-retry.txt", "/", content)
-	if status != http.StatusConflict {
-		t.Fatalf("reupload status = %d body=%s, want 409 conflict", status, body)
-	}
-	if !strings.Contains(body, "block is being deleted; retry the upload") {
-		t.Fatalf("reupload body = %q, want retryable block-delete message", body)
+	status, body := uploadFileThroughLinkStatus(t, adminClient, uploadURL, "current-retry.txt", "/", content)
+	if status != http.StatusOK {
+		t.Fatalf("reupload status = %d body=%s, want successful current-life reuse", status, body)
 	}
 
+	// Identical content shares one content-addressed fs_object/referrer.
 	if rc := readBlockRefCount(t, orgID, blockID); rc != 1 {
-		t.Fatalf("permanent refs after blocked reupload = %d, want 1", rc)
+		t.Fatalf("permanent refs after identical current-life reupload = %d, want 1", rc)
 	}
 	assertHasTTLBoundUploadReferrer(t, repoID, "/", "seed.txt")
 
@@ -1565,26 +1567,37 @@ func TestUploadLink_ReuploadBlockedByS3OrphanFence(t *testing.T) {
 		t.Fatalf("GetBlockS3OrphanInfo(%s): %v", blockID, err)
 	}
 	if !found {
-		t.Fatal("writer should leave gc_s3_orphans fence active for GC recovery")
+		t.Fatal("writer must leave retired orphan identity available for recovery")
 	}
 	if !orphanInfo.FirstSeenAt.UTC().Equal(effectiveFirstSeenAt.UTC()) {
 		t.Fatalf("gc_s3_orphans first_seen_at = %v, want %v", orphanInfo.FirstSeenAt.UTC(), effectiveFirstSeenAt.UTC())
 	}
 	if !gcS3OrphanProjectionExists(t, orgID, blockID, effectiveFirstSeenAt) {
-		t.Fatal("writer should not remove gc_s3_orphans_by_day projection during retryable upload failure")
+		t.Fatal("writer should not remove gc_s3_orphans_by_day projection during current-life reuse")
 	}
 
+	after, err := store.GetBlockInfo(orgUUID, blockID)
+	if err != nil || after.StorageClass != current.StorageClass || after.StorageKey != current.StorageKey {
+		t.Fatalf("retired orphan changed current metadata: before=%+v after=%+v err=%v", current, after, err)
+	}
 	listResp := adminClient.Get(t, fmt.Sprintf("/api/v2.1/repos/%s/dir/?p=/", repoID))
 	expectStatus(t, listResp, http.StatusOK)
 	defer listResp.Body.Close()
 	var dirList map[string]interface{}
 	decodeJSON(t, listResp, &dirList)
 	entries, _ := dirList["dirent_list"].([]interface{})
+	foundFile := false
 	for _, rawEntry := range entries {
 		entry, _ := rawEntry.(map[string]interface{})
-		if name, _ := entry["name"].(string); name == "blocked-retry.txt" {
-			t.Fatal("retry-blocked upload should not create a file entry")
+		if name, _ := entry["name"].(string); name == "current-retry.txt" {
+			foundFile = true
 		}
+	}
+	if !foundFile {
+		t.Fatal("current-life upload did not publish its file entry")
+	}
+	if got, err := newVerificationBlockStore(t, orgID).GetBlockByStorageKey(t.Context(), current.StorageKey); err != nil || string(got) != content {
+		t.Fatalf("current-life bytes changed during reupload: err=%v", err)
 	}
 }
 

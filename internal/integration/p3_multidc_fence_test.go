@@ -245,18 +245,9 @@ func p3RequireNoFenceOnSurvivors(t *testing.T, orgID, blockID string, endpoints 
 	}
 }
 
-// TestP3_WriterInAnotherDatacenterObservesTheFence runs the REAL destructive
-// lifecycle from dc-eu -- claim, orphan, finalize -- and then asks dc-na the
-// question a fresh writer asks: is this block free to mint?
-//
-// Running the whole lifecycle is what makes this the rowless-mint gate rather than
-// merely an orphan read. After finalize, blocks(L) is gone, so dc-na sees the exact
-// state the A+ handoff is about -- no canonical row, live orphan -- and must still
-// refuse. An earlier version of this leg published only the orphan and left the
-// canonical row in place, which measured the fence read but not the gate.
-//
-// It is the cross-datacenter form of what
-// TestP3BlockDeleteFenceSurvivesOrphanHandoff pins inside a single process.
+// G4 preserves visibility of P1's in-row claim across datacenters. After
+// exact retirement a fresh writer may mint P2, while a stale P1 repair must
+// return Changed. The orphan is authority for P1, never a mutex on L.
 func TestP3_WriterInAnotherDatacenterObservesTheFence(t *testing.T) {
 	endpoints := x2DCEndpoints(t)
 	p3RequireAllDCsUp(t, endpoints)
@@ -285,63 +276,61 @@ func TestP3_WriterInAnotherDatacenterObservesTheFence(t *testing.T) {
 		ClaimID:   "p3-multidc-" + uuid.NewString(),
 		ClaimedAt: time.Now().UTC(),
 	}
-	outcome2Res, err := store.ClaimBlockDelete(orgUUID, blockID, authority)
-	if err != nil || outcome2Res.Outcome != gcpkg.BlockClaimAcquired {
-		t.Fatalf("claim P1 from dc-eu = %s, %v; want acquired", outcome2Res.Outcome, err)
+	committed := p3CommitExactDeleteForTest(t, store, orgUUID, blockID, location, authority.ClaimID, authority.ClaimedAt)
+	if fenced, err := writer.BlockDeleteFenceActive(orgID, blockID); err != nil || !fenced {
+		t.Fatalf("dc-na must observe P1 claim before retirement: %v %v", fenced, err)
 	}
-	handoff, err := store.CommitBlockDeleteOrphanHandoff(orgUUID, blockID, authority)
-	if err != nil || (handoff.Outcome != gcpkg.BlockDeleteHandoffCommitted && handoff.Outcome != gcpkg.BlockDeleteHandoffAlreadyCommitted) {
-		t.Fatalf("commit orphan handoff from dc-eu = %s, %v; want committed", handoff.Outcome, err)
+	if probe, err := writer.ProbeBlockReuse(orgID, blockID); err != nil || probe.Decision != dbpkg.BlockReuseBlockedByGC {
+		t.Fatalf("dc-na must reject reuse of deleting P1: %+v %v", probe, err)
 	}
-	committed := gcpkg.CommittedBlockDeleteAuthorityForTest(authority)
-	orphanResult := store.StartBlockDeleteOrphan(orgUUID, blockID, committed, "", time.Now().UTC())
-	if orphanResult.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
-		t.Fatalf("publish orphan fence from dc-eu: outcome=%s cause=%v", orphanResult.Outcome, orphanResult.Cause)
+	if result, err := writer.ValidateBlockRepairAuthority(orgID, blockID, location); result != dbpkg.BlockRepairAuthorityBlocked || !errors.Is(err, dbpkg.ErrBlockRepairBlocked) {
+		t.Fatalf("dc-na must reject repairing deleting P1: %v %v", result, err)
 	}
 	if _, err := store.FinalizeBlockDelete(orgUUID, blockID, committed); err != nil {
 		t.Fatalf("finalize P1 from dc-eu: %v", err)
 	}
 
-	// dc-na now faces the handoff state: canonical row gone, orphan live.
+	// Retirement is not an EACH_QUORUM ordinary DELETE. A lagging local reader
+	// may still see P1/deleting: that must remain safely blocked, then converge.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		probe, err := writer.ProbeBlockReuse(orgID, blockID)
+		if err != nil {
+			t.Fatalf("dc-na retirement probe: %v", err)
+		}
+		if probe.Decision == dbpkg.BlockReuseNeedsPut {
+			break
+		}
+		if probe.Decision != dbpkg.BlockReuseBlockedByGC {
+			t.Fatalf("stale retirement view allowed P1 reuse: %+v", probe)
+		}
+		result, err := writer.ValidateBlockRepairAuthority(orgID, blockID, location)
+		if result != dbpkg.BlockRepairAuthorityBlocked && result != dbpkg.BlockRepairAuthorityChanged {
+			t.Fatalf("stale retirement view allowed P1 repair: %v %v", result, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("dc-na retirement did not converge within 30s")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// P1 is retired. Its exact orphan cannot block a fresh P2 INSTALL.
 	if exists, err := gcpkg.NewCassandraStore(writer).BlockExists(orgUUID, blockID); err != nil || exists {
-		t.Fatalf("dc-na still sees blocks(L) after finalize (exists=%v err=%v); this leg needs the rowless state to be the thing under test", exists, err)
+		t.Fatalf("dc-na must observe retirement: %v %v", exists, err)
 	}
-	fenced, err := writer.BlockDeleteFenceActive(orgID, blockID)
-	if err != nil {
-		t.Fatalf("dc-na fence read after the lifecycle: %v", err)
+	if fenced, err := writer.BlockDeleteFenceActive(orgID, blockID); err != nil || fenced {
+		t.Fatalf("G4 retired orphan must not fence L: %v %v", fenced, err)
 	}
-	if !fenced {
-		t.Fatalf("P3 REGRESSION: dc-na sees no canonical row AND no fence after dc-eu published orphan(P1); a fresh writer there would mint a second physical life while the first is still retiring")
+	if probe, err := writer.ProbeBlockReuse(orgID, blockID); err != nil || probe.Decision != dbpkg.BlockReuseNeedsPut {
+		t.Fatalf("G4 fresh writer must PUT a newly minted P2: %+v %v", probe, err)
 	}
-	probe, err = writer.ProbeBlockReuse(orgID, blockID)
-	if err != nil {
-		t.Fatalf("dc-na probe after the lifecycle: %v", err)
+	if result, err := writer.ValidateBlockRepairAuthority(orgID, blockID, location); result != dbpkg.BlockRepairAuthorityChanged || !errors.Is(err, dbpkg.ErrBlockRepairAuthorityChanged) {
+		t.Fatalf("G4 stale P1 must lose repair authority: %v %v", result, err)
 	}
-	if probe.Decision != dbpkg.BlockReuseBlockedByGC {
-		t.Fatalf("P3 REGRESSION: dc-na probe = %v, want BlockedByGC while dc-eu's orphan fence is live", probe.Decision)
+	if orphan, found, err := store.GetS3OrphanExact(orgUUID, blockID, authority); err != nil || !found || orphan.StorageKey != location.StorageKey {
+		t.Fatalf("G4 writer probes changed exact orphan P1: %+v %v", orphan, err)
 	}
+	t.Logf("P3_MULTIDC_HANDOFF_EVIDENCE org=%s block=%s: dc-na observes deleting claim before retirement; after retirement permits fresh P2 and rejects stale P1 repair", orgID, blockID)
 
-	// The pre-PUT boundary, on the same state. This is the writer that captured P1
-	// before the lifecycle started and arrives late at its revalidation, and the
-	// state it arrives to is the interesting one: the canonical row is GONE. The
-	// authority read therefore has to separate two rowless observations that look
-	// identical until the orphan is consulted --
-	//
-	//	row absent, no orphan  -> Changed  (start over; a new life may be minted)
-	//	row absent, orphan(P1) -> Blocked  (the previous life is still retiring)
-	//
-	// which is exactly the blocks-first/orphan-last ordering, exercised across
-	// datacenters. Asserting the cause and not only the outcome keeps a future
-	// refactor from satisfying this by returning Blocked for the wrong reason.
-	outcome, authErr := writer.ValidateBlockRepairAuthority(orgID, blockID, location)
-	if outcome != dbpkg.BlockRepairAuthorityBlocked {
-		t.Fatalf("P3 REGRESSION: dc-na pre-PUT repair authority = %v, %v; want Blocked while dc-eu's orphan(P1) is live and the canonical row is gone", outcome, authErr)
-	}
-	if !errors.Is(authErr, dbpkg.ErrBlockRepairBlocked) {
-		t.Fatalf("P3 REGRESSION: dc-na repair authority was Blocked but the cause is %v; want ErrBlockRepairBlocked, so the refusal is the fence and not some other rowless condition", authErr)
-	}
-
-	t.Logf("P3_MULTIDC_HANDOFF_EVIDENCE org=%s block=%s dc-eu ran claim->orphan->finalize; dc-na sees rowless + orphan, refuses to mint, and refuses the pre-PUT repair with ErrBlockRepairBlocked", orgID, blockID)
 }
 
 // p3RequireDCsDown refuses to run the fail-closed leg against a healthy cluster.

@@ -1,5 +1,14 @@
 # X1 critical path — reset to the #201 roadmap
 
+## G4/G5 development decision (2026-10-02)
+
+The [G4 implementation plan](./GC-G4-IMPLEMENTATION-PLAN.md) supersedes the
+old all-W2-closed prerequisite for developing G4/G5. W2/R31 rows remain
+recorded with their existing dispositions; evaluate residuals against the
+completed GC in E1 and PRE-GC, and fix demonstrated activation blockers.
+Open residuals alone do not block this development. GC remains disabled.
+Dated evidence below preserves its historical conclusions.
+
 ## Greenfield first-production reconciliation (2026-09-30)
 
 W2-0 is **CLOSED-EVIDENCE for the covered current-version mechanism** under
@@ -11,8 +20,8 @@ ISSUE-W2-INCOMPATIBLE-MIXED-ROLLOUT-01 tracks them as P1 FOLLOW-UP / GENERAL,
 outside v1 first activation. No compatibility gate is inferred or added.
 W2-1, W2-2 and W2-6a remain OPEN through the separately tracked R31 residuals.
 W2-4 now has a focused pre-HEAD fix with RED/GREEN evidence; its post-HEAD
-R31 requirements remain separate. Other W2 rows are unchanged. W2 completion -> G4 -> G5 -> E1 -> X1 CLOSED ->
-PRE-GC -> A1 -> GC ON remains the #201/#236 path; GC stays disabled.
+R31 requirements remain separate. Other W2 dispositions are unchanged.
+The G4/G5 development decision above supersedes the old all-W2 prerequisite; GC stays disabled.
 
 See the [source argument, individual re-audit and drift review](./W2-0-GREENFIELD-RECONCILIATION.md).
 
@@ -85,13 +94,14 @@ Two causes, both process rather than architecture:
 ## 2. Critical path
 
 ```text
-W1 ✅ → W2 (exit checklist §4) → G1 ✅ → G2 ✅ → G3 ✅ → G4 → G5 → E1 → X1 CLOSED
-                                                                    │
-                                              PRE-GC list (§6) → A1 → GC_ENABLED=true
+W1 + W2 core evidence + G1/G2/G3
+  -> G4 -> G5 -> E1 (re-evaluate W2/R31) -> X1 CLOSED
+  -> PRE-GC targeted validation -> A1 -> GC_ENABLED=true
 ```
 
-- **G4** starts only when every W2 exit row (§4) is closed (#201 §25: "Only
-  after W1+W2+G3").
+- **G4/G5 development** proceeds with GC OFF after W1, covered W2 core
+  evidence and G1/G2/G3. Remaining W2/R31 rows are evaluated in E1 against
+  completed GC; unresolved activation requirements still block A1.
 - **E1** is the only step that may declare `X1 CLOSED` (#201 §25).
 - **A1** is a separate PR; X1 CLOSED is not GC enabled.
 - Every PR on the critical path names the #201 step (or the §4 row) it
@@ -205,7 +215,8 @@ Not W2 exit rows (follow-ups, may be reclassified in E1):
 `ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`,
 `ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01`.
 
-Suggested order: W2-0 is closed for the covered shared mechanism. W2-1/2/6a were individually re-audited against that premise and remain OPEN through R31, not mixed rollout. W2-6 retains CLOSED-FIX pre-HEAD. Finish the real remaining funnels:
+Historical suggested W2 order (superseded for G4/G5 development by the
+2026-10-02 decision): W2-0 is closed for the covered shared mechanism. W2-1/2/6a were individually re-audited against that premise and remain OPEN through R31, not mixed rollout. W2-6 retains CLOSED-FIX pre-HEAD. Finish the real remaining funnels:
 W2-7/W2-8 or W2-10, each starting with a
 demonstration of the failure; then the Sync `UNKNOWN` rows, W2-9 and the R31
 rows.
@@ -285,3 +296,20 @@ does not close the non-fencing race.
 Status: the global SERIAL pin landed in PR #234 for the library, user and org
 leases (`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` closed); the generation-fenced
 final batch (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`) remains open.
+
+
+### Confirmed E1 / PRE-GC dependency from G4 cross-audit (2026-10-02)
+
+P1: reachable publication repair can promote permanent fs: references without
+binding them to the current physical life or a non-COMMITTED D. E1 must exercise
+reachable HEAD -> temporary zero -> COMMITTED D1(P1) -> late repair and prove
+that no new P1-dependent durable reference can appear after D1. This blocks
+X1 closure / A1 / GC ON until structurally closed or activation fails closed;
+it does not block GC-OFF G4/G5 development. A last refs==0 recheck in recovery
+does not eliminate the post-check publication race.
+
+P2 follow-up: an already-authorized delayed PUT can recreate retired K1 bytes.
+Characterize physical resurrection/leak at E1/PRE-X1. The separate greenfield
+evaluation of empty-state legacy recovery remains recorded in
+GC-G4-IMPLEMENTATION-PLAN.md. The G4 plan contains the confirmed source chain
+and the current integration/monitoring corrections.

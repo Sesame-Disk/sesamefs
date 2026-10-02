@@ -203,24 +203,15 @@ var (
 		[]string{"path"},
 	)
 
-	// GCDestructiveLastLivenessSuccessTimestamp records the last time this path
-	// completed the global EACH_QUORUM liveness read — the one statement whose success
-	// proves the environment can still authorize a destructive delete.
-	//
-	// It advances whenever that read RETURNS, including when it reports the block is
-	// still referenced. That case is not a delete, but it is proof the read works, and
-	// proof is what this series carries. Waiting for a completed delete instead would
-	// leave a fleet whose candidates all turn out to be live permanently latched as
-	// blocked — the same latch the pair exists to avoid.
-	//
-	// A PASSING TOPOLOGY GATE DOES NOT ADVANCE IT. The gate proves the replication map
-	// still gives EACH_QUORUM its per-datacenter meaning, not that a quorum is
-	// currently reachable in every datacenter: with dc-asia down the gate passes and
-	// the read still fails. Only the read itself is evidence.
+	// GCDestructiveLastLivenessSuccessTimestamp records destructive authorization
+	// evidence: a successful EACH_QUORUM liveness read (whatever it found), or
+	// COMMITTED recovery after exact retirement/lifecycle settlement, fresh
+	// topology and final EACH_QUORUM canonical reload. A topology pass alone,
+	// terminal metadata cleanup or an idle sweep never advances it.
 	GCDestructiveLastLivenessSuccessTimestamp = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "gc_destructive_last_liveness_success_timestamp_seconds",
-			Help: "Unix timestamp of the last successful global (EACH_QUORUM) liveness read on this path, whatever it found. Compare against gc_destructive_last_blocked_timestamp_seconds; 0 means never.",
+			Help: "Unix timestamp of the last successful destructive authorization proof on this path: EACH_QUORUM liveness read or exact COMMITTED recovery settlement with fresh topology and EACH_QUORUM reload. Compare against gc_destructive_last_blocked_timestamp_seconds; 0 means never.",
 		},
 		[]string{"path"},
 	)

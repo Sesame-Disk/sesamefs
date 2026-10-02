@@ -355,7 +355,7 @@ func TestG2RecoveryRetainsRootAcrossLatePreparedProducerAtRealCassandra(t *testi
 		t.Fatalf("claim D2 takeover = %s, %v; want acquired", claim.Outcome, err)
 	}
 
-	worker := gcpkg.NewWorker(store, nil, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+	worker := gcpkg.NewWorker(&w2OwnedRecoveryStore{GCStore: store, org: orgID, block: blockID}, nil, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
 	if recovered, err := worker.RecoverS3Orphans(context.Background(), 100); err != nil || recovered != 0 {
 		t.Fatalf("late-producer root recovery = (%d, %v), want retained root", recovered, err)
 	}
@@ -750,7 +750,7 @@ func TestP4B_RecoverS3OrphansTerminalLifecycleDoesNotDeleteAtRealCassandra(t *te
 	}
 
 	sp := &gcpkg.MockStorageProvider{}
-	w := gcpkg.NewWorker(store, sp, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+	w := gcpkg.NewWorker(&w2OwnedRecoveryStore{GCStore: store, org: orgID, block: blockID}, sp, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
 	w.SetDestructiveTopologyGate(func() error { return nil })
 	if _, err := w.RecoverS3Orphans(context.Background(), 100); err != nil {
 		t.Fatalf("RecoverS3Orphans: %v", err)

@@ -5,13 +5,13 @@ package integration
 import "testing"
 
 type r3CharacterizationEvidenceState struct {
-	writerWins      bool
-	deletingFence   bool
-	orphanOnlyFence bool
+	writerWins           bool
+	deletingFence        bool
+	retiredTupleRejected bool
 }
 
 func (state r3CharacterizationEvidenceState) complete() bool {
-	return state.writerWins && state.deletingFence && state.orphanOnlyFence
+	return state.writerWins && state.deletingFence && state.retiredTupleRejected
 }
 
 func (state r3CharacterizationEvidenceState) missing() []string {
@@ -22,8 +22,8 @@ func (state r3CharacterizationEvidenceState) missing() []string {
 	if !state.deletingFence {
 		missing = append(missing, "deleting_fence")
 	}
-	if !state.orphanOnlyFence {
-		missing = append(missing, "orphan_fence")
+	if !state.retiredTupleRejected {
+		missing = append(missing, "retired_tuple_rejected")
 	}
 	return missing
 }
@@ -38,7 +38,7 @@ func TestR3CharacterizationEvidenceRequiresEveryLeg(t *testing.T) {
 	if partial.complete() {
 		t.Fatal("partial R3 evidence must not satisfy the package gate")
 	}
-	partial.orphanOnlyFence = true
+	partial.retiredTupleRejected = true
 	if !partial.complete() {
 		t.Fatalf("all R3 evidence legs should satisfy the package gate; missing=%v", partial.missing())
 	}
