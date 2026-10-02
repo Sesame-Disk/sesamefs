@@ -187,7 +187,10 @@ func TestG5CassandraMinIOBoundedRecoveryAcrossRestart(t *testing.T) {
 	database := shareProjectionDBForTest(t)
 	store := gcpkg.NewCassandraStore(database)
 	org := uuid.New()
-	class := discoverStorageClass(t)
+	// The suite's live backend also runs GC. Give these roots a fixture-only
+	// class, backed by real MinIO in this worker, so the background collector
+	// cannot consume the retained prefix before the bounded restart assertions.
+	class := "g5-pagination-" + org.String()
 	bs := newVerificationBlockStore(t, org.String())
 	manager := storage.NewManager()
 	manager.RegisterBackend(class, newVerificationS3Store(t), "")
