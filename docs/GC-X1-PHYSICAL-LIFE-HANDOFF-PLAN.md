@@ -1,5 +1,13 @@
 # X1 — Physical-life handoff architecture (D0)
 
+> **G4 implementation status (2026-10-02):** see
+> [G4 plan and evidence](./GC-G4-IMPLEMENTATION-PLAN.md). Writer classification
+> now follows canonical P; COMMITTED recovery continues exact P1/D1 while P2
+> is live. Historical D0/G3 snapshots below preserve their original transition
+> assumptions. Their all-W2 prerequisite is superseded for G4/G5 development
+> by the current X1 critical path. W2/R31, G5, E1 and activation gates are not
+> declared closed; `GC_ENABLED=false` remains required.
+
 **Status:** accepted architecture freeze. Documentation only. X1 remains OPEN.
 **Parent:** `17f487c5d` (`main` containing #200)
 **Branch:** `docs/x1-physical-life-handoff`
@@ -1182,7 +1190,9 @@ exists.
 
 ### G4 — Remove orphan from writer fencing; detach post-D refs
 
-Only after W1+W2+G3.
+Historical D0 prerequisite: Only after W1+W2+G3. The 2026-10-02
+[development decision](./GC-G4-IMPLEMENTATION-PLAN.md) supersedes the
+all-W2 prerequisite for G4/G5 with GC OFF; E1/PRE-GC/A1 still gate activation.
 
 Change `ProbeBlockReuse`, `BlockDeleteFenceActive`, and
 `ValidateBlockRepairAuthority` so mere `orphan(Pold)` does not block the
