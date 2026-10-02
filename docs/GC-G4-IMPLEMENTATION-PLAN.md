@@ -183,3 +183,30 @@ The authoritative G4 runner is scripts/g4-validation.sh, matching the
 repository's Bash test scripts and reusing go-test-stream.sh. Tests execute
 in Docker; the PowerShell launcher has been removed. The default executes
 the full suite with required evidence gates and a clean source snapshot.
+
+
+## Cross-audit validation record (2026-10-02)
+
+- PASS: complete untagged Go package tree in Docker, not only GC packages.
+- PASS: complete integration package tree with all normal required evidence
+  gates plus G4 (main integration package: 540.102s). The specialized outage
+  and certification-window phases remain separately invoked suites.
+- PASS: directed report regressions G1, upload-link, P3, P4B, R3 and W2,
+  plus required real Cassandra/MinIO G4 proof and evidence wiring.
+- PASS: full GC suite; monitoring regression reproduced RED before the fix
+  and GREEN with negative certificate/topology/idle cases after it.
+- PASS: go vet normally and with integration tags; race detector on DB and GC.
+- PASS: API (20 suites) and OIDC (25 tests), run as separate Docker phases.
+- PASS: TestP3_WriterInAnotherDatacenterObservesTheFence on a fresh isolated
+  Cassandra 5.0.9 cluster with dc-na:1, dc-eu:1 and dc-asia:1. No skip.
+  This is the healthy writer/retirement leg, not the multi-DC outage matrix.
+- PASS: Bash runner G4 smoke, and effective Compose test-profile configuration
+  requires SESAMEFS_REQUIRE_G4_EVIDENCE=1 in both Go runners.
+
+Local logs are tmp/g4-29165a58/{unit,integration}.log,
+tmp/g4-review-related-final.log, tmp/g4-review-gc.log,
+tmp/g4-review-vet-race.log, tmp/g4-review-api-oidc.log,
+tmp/g4-review-3dc-v2.log and tmp/g4-35pWC7V0/integration.log.
+The complete Go/integration and API/OIDC phases were executed separately;
+this record does not claim a single go-all-test invocation or independent CI.
+No GitHub checks were reported for the audit commit. GC remains OFF.
