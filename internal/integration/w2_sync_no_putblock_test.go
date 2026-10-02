@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -22,12 +21,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// Characterizes W2-4 on unchanged production code. Bytes come from the real
+// Guards W2-4 publication safety. Bytes come from the real
 // web block-upload endpoint; no Sync PutBlock ever occurs in these fixtures.
 // Removing only TTL-bound refs models a legitimate stalled request, as in
 // the existing W2-0 tests. Neither HEAD nor D is injected by the harness.
-// SESAMEFS_W24_ASSERT_SAFETY=1 changes the counterexample assertion to the
-// desired invariant, making the known defect RED on this baseline.
+// The safety expectations are RED on the PR #244 runtime baseline.
 func TestW2SyncNoPutBlock(t *testing.T) {
 	requireCassandra(t)
 	database := shareProjectionDBForTest(t)
@@ -78,12 +76,12 @@ func TestW2SyncNoPutBlock(t *testing.T) {
 					visited = true
 					w2ExpireTemporaryRefs(t, fx)
 					w24AssertNoSyncPin(t, fx)
+					attempt := x1Attempt(fx.target, "w24-"+boundary)
+					x1ClaimAcquired(t, store, fx.orgUUID, fx.blockID, attempt)
 					live, err := store.BlockPublicationLivenessGlobal(fx.orgUUID, fx.blockID)
 					if err != nil || live != dbpkg.BlockPublicationZero {
 						t.Fatalf("pre-D liveness=%v err=%v", live, err)
 					}
-					attempt := x1Attempt(fx.target, "w24-"+boundary)
-					x1ClaimAcquired(t, store, fx.orgUUID, fx.blockID, attempt)
 					// Follow the current GC worker's G2 path against real Cassandra:
 					// publish PREPARED, then settle the durable handoff COMMITTED.
 					prepared := store.PrepareBlockDeleteOrphan(fx.orgUUID, fx.blockID, attempt, fx.sha1ID, time.Now().UTC())
@@ -131,8 +129,39 @@ func TestW2SyncNoPutBlock(t *testing.T) {
 				rec := w24Promote(fx, handler, fc.commit)
 				unsafe := boundary == "gcBeforeStage" || boundary == "gcBeforeRepair" || boundary == "fullyRetired"
 				head := borrowedFSReadHead(t, database, fx.orgID, fx.repoID)
-				if unsafe && os.Getenv("SESAMEFS_W24_ASSERT_SAFETY") == "1" && head != fx.headBefore {
-					t.Fatalf("W2-4 VIOLATION: D(P) committed AND HEAD advanced depending on P; status=%d", rec.Code)
+				if boundary != "writerFirst" && !visited {
+					t.Fatal("selected boundary never executed")
+				}
+				w24AssertNoSyncPin(t, fx)
+				if unsafe {
+					if head != fx.headBefore {
+						t.Fatalf("W2-4 VIOLATION: D(P) committed AND HEAD advanced depending on P; status=%d", rec.Code)
+					}
+					wantStatus := http.StatusServiceUnavailable
+					if merge {
+						wantStatus = http.StatusInternalServerError
+					}
+					if rec.Code != wantStatus || fx.hasOwnFSReferrer(t) {
+						t.Fatalf("rejected publication: status=%d want=%d fs=%v body=%s", rec.Code, wantStatus, fx.hasOwnFSReferrer(t), rec.Body.String())
+					}
+					fx.assertPubCount(t, 0, "rejection must release this request's pub refs")
+					wantRepairs := 0
+					if !merge && boundary == "gcBeforeRepair" {
+						wantRepairs = 1 // direct rows are shared; never delete on a request-local failure.
+					}
+					if repairs := w2Repairs(t, fx); len(repairs) != wantRepairs {
+						t.Fatalf("repair ownership: rows=%v want=%d", repairs, wantRepairs)
+					}
+					if boundary != "fullyRetired" {
+						fx.assertDUnrevoked(t, authority)
+						if exists, err := newVerificationS3Store(t).Exists(t.Context(), fx.target.StorageKey); err != nil || !exists {
+							t.Fatalf("writer rejection changed condemned bytes: exists=%v err=%v", exists, err)
+						}
+					} else if exists, err := newVerificationS3Store(t).Exists(t.Context(), fx.target.StorageKey); err != nil || exists {
+						t.Fatalf("writer resurrected retired bytes: exists=%v err=%v", exists, err)
+					}
+					t.Log("EVIDENCE: GC won; HEAD unchanged, no permanent fs or Sync upload pin, request pub cleaned")
+					return
 				}
 				if rec.Code != http.StatusOK || head == fx.headBefore {
 					t.Fatalf("current behavior changed: status=%d head=%s body=%s", rec.Code, head, rec.Body.String())
@@ -140,24 +169,44 @@ func TestW2SyncNoPutBlock(t *testing.T) {
 				if !merge && head != fc.commit {
 					t.Fatal("direct HEAD did not publish the target")
 				}
+				if merge {
+					if head == fc.commit {
+						t.Fatal("auto-merge published the remote commit without combining the local change")
+					}
+					w24AssertMergedNames(t, fx, head)
+				}
 				w24AssertHeadReaches(t, fx, head, fc.file)
 				if !fx.hasOwnFSReferrer(t) {
 					t.Fatal("permanent fs: was not promoted")
 				}
-				w24AssertNoSyncPin(t, fx)
-				if boundary != "writerFirst" && !visited {
-					t.Fatal("selected boundary never executed")
+				if repairs := w2Repairs(t, fx); len(repairs) != 0 {
+					t.Fatalf("successful publication left repair rows: %v", repairs)
 				}
-				if unsafe {
-					if boundary != "fullyRetired" {
-						fx.assertDUnrevoked(t, authority)
-					}
-					t.Log("W2-4 COUNTEREXAMPLE: current HEAD reaches P after committed D(P); this is characterization, not closure")
-				} else {
-					t.Log("EVIDENCE: writer succeeded; repair-before-D prevents destructive zero after TTL refs expire")
-				}
+				t.Log("EVIDENCE: writer succeeded; repair-before-D prevents destructive zero after TTL refs expire")
 			})
 		}
+	}
+}
+
+func w24AssertMergedNames(t *testing.T, fx *w2CreateFileFixture, head string) {
+	t.Helper()
+	var root, entriesJSON string
+	if err := fx.database.Session().Query(`SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?`, fx.repoID, head).Scan(&root); err != nil {
+		t.Fatal(err)
+	}
+	if err := fx.database.Session().Query(`SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?`, fx.repoID, root).Scan(&entriesJSON); err != nil {
+		t.Fatal(err)
+	}
+	var entries []apipkg.FSEntry
+	if err := json.Unmarshal([]byte(entriesJSON), &entries); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, entry := range entries {
+		names[entry.Name] = true
+	}
+	if len(entries) != 2 || !names["local.txt"] || !names["remote.txt"] {
+		t.Fatalf("auto-merge did not preserve both changes: %s", entriesJSON)
 	}
 }
 
@@ -267,7 +316,7 @@ func w24Retire(t *testing.T, fx *w2CreateFileFixture, store *gcpkg.CassandraStor
 		t.Fatal(err)
 	}
 	x1AssertCanonicalAbsent(t, store, fx.orgUUID, fx.blockID)
-	if exists, err := bs.BlockExists(t.Context(), fx.blockID); err != nil || exists {
+	if exists, err := newVerificationS3Store(t).Exists(t.Context(), fx.target.StorageKey); err != nil || exists {
 		t.Fatalf("P still exists: %v %v", exists, err)
 	}
 }

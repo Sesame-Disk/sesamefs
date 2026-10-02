@@ -1,10 +1,20 @@
 # W2-4: Sync commit without PutBlock provenance
 
 **Base:** `main@1a8f1e77ced12bb30f6430e0806242cff25c5f39`
-**Finding:** current-runtime W2 violation reproduced.
-**Disposition:** `OPEN`; this investigation records and reproduces the defect. It does not implement the proposed fix.
+**Finding at the characterization base:** current-runtime W2 violation reproduced.
+**Disposition at the characterization base:** `OPEN`; PR #244 recorded and reproduced the defect without a runtime fix.
 
-## Result
+## Current fix
+
+The follow-up based on `main@3f0b787a2` captures exact placements for every canonical block in the added-file delta. PutBlock provenance scopes only `up:sync:` renewal. Both direct HEAD and auto-merge acquire the existing durable per-file repair and then revalidate every captured placement before HEAD. The [implementation plan](W2-4-SYNC-PUBLICATION-FIX-PLAN.md) records the scope and safety argument.
+
+The ten existing legs now assert safety: GC-first must reject with unchanged HEAD, no permanent `fs:` or fabricated Sync `up:`, and request-local `pub:` cleanup. A direct shared repair remains after final validation rejects; a unique auto-merge repair is removed. Writer-first and repair-first succeed, and successful auto-merge preserves both local and remote entries.
+
+`SESAMEFS_REQUIRE_W24_CHARACTERIZATION=1` retains its established name but now requires all ten safety regressions. The standalone Docker script requires GREEN and rejects filtered coverage and unavailable infrastructure. The ordinary integration and all-Go runners enable this gate.
+
+The sections below preserve the **historical RED characterization**, not the current runtime behavior. W2-5 and R31 remain separate; this fix does not close X1 or enable GC.
+
+## Historical result
 
 The sequence in W2's criterion is reachable:
 
@@ -20,7 +30,7 @@ The test covers both a normal Seafile SHA-1 block ID and, after complete physica
 
 This is distinct from W2-3's expired Sync `PutBlock` provenance: these fixtures never call the Sync `PutBlock` endpoint. The bytes are materialized through the supported web block-upload route, and real Sync `CheckBlocks` resolves their SHA-1 alias and canonical SHA-256 ID as present. The reachable caller is client dedup/reuse without a Sync upload.
 
-## Source trace
+## Historical source trace
 
 1. `CheckBlocks` resolves each legacy SHA-1 to canonical SHA-256 and checks canonical storage. Its response does not register Sync publication liveness.
 2. `RecvFS` validates and stores immutable file/tree metadata. It does not register block references.
@@ -31,13 +41,13 @@ This is distinct from W2-3's expired Sync `PutBlock` provenance: these fixtures 
 
 `CheckBlocks` returning present says that bytes exist at that instant. It does not promise those bytes remain alive through later metadata receipt, publication staging, and HEAD. A pre-existing `fs:` can protect a canonical reused object only while that reference remains live; W2-4's reproduced sequence uses the real expiring web-session pin and does not rely on a hypothetical caller.
 
-## Proposed smallest fix
+## Fix selected from the characterization
 
 Keep the existing provenance rule for *renewing* `up:sync:`: never manufacture a Sync upload pin from a commit delta. Independently of that scope, resolve the exact `(block_id, storage_class, storage_key)` placement for every canonical block in the added-file delta, acquire the existing durable per-file repair intent, and revalidate every captured placement after acquisition immediately before HEAD. Apply the same union to direct and auto-merge promotion.
 
-This uses the existing repair guard and exact-placement validator. The ordering closes both interleavings: if D(P) commits first, the final check rejects publication; if repair becomes visible first, GC's EACH_QUORUM probe cannot establish zero. It adds no new pin, table, protocol field, coordinator, or GC behavior. Follow-up implementation must prove the race with a RED test first and retain the repair on uncertain HEAD settlement under the existing ownership rules.
+This uses the existing repair guard and exact-placement validator. The ordering closes both interleavings: if D(P) commits first, the final check rejects publication; if repair becomes visible first, GC's EACH_QUORUM probe cannot establish zero. It adds no new pin, table, protocol field, coordinator, or GC behavior. The implementation must prove the race with a RED test first and retain the repair on uncertain HEAD settlement under the existing ownership rules.
 
-## Evidence
+## Historical evidence
 
 `internal/integration/w2_sync_no_putblock_test.go` contains ten named Cassandra/MinIO legs. The canonical-ID leg is a separate wire identity after physical retirement; it does not depend on GC removing the SHA-1 mapping:
 
@@ -46,6 +56,22 @@ This uses the existing repair guard and exact-placement validator. The ordering 
 | Direct HEAD | succeeds | **D(P)+HEAD** | **D(P)+HEAD** | GC postponed | **D(P)+HEAD** |
 | Auto-merge | succeeds | **D(P)+HEAD** | **D(P)+HEAD** | GC postponed | **D(P)+HEAD** |
 
-`SESAMEFS_W24_ASSERT_SAFETY=1` changes the reproduced violation into an assertion failure, providing RED evidence for the next fix. `SESAMEFS_REQUIRE_W24_CHARACTERIZATION=1` makes unavailable Cassandra, skipped coverage, or a missing named leg fail the command. `scripts/w2-sync-no-putblock-validation.sh` starts a fresh project-scoped Docker stack and runs both commands in containers.
+On PR #244, `SESAMEFS_W24_ASSERT_SAFETY=1` changed the reproduced violation into an assertion failure, providing RED evidence for the fix. Safety is now unconditional in the test; that optional assertion flag is retired. `SESAMEFS_REQUIRE_W24_CHARACTERIZATION=1` makes unavailable Cassandra, skipped coverage, or a missing named leg fail the command. `scripts/w2-sync-no-putblock-validation.sh` starts a fresh project-scoped Docker stack; the current script runs GREEN safety plus negative evidence-gate checks in containers.
 
 Limits: this is single-DC real Cassandra/MinIO evidence for this row's source-order race, not three-DC evidence, a W2-5 conclusion, R31 closure, G4 evidence, or X1 closure. The separate R31 and post-HEAD requirements remain open.
+
+## Post-fix validation
+
+On 2026-10-01, the ten legs passed against the fixed runtime, including a fresh
+Docker stack. The same assertions were RED against the unchanged #244 runtime.
+`scripts/w2-sync-no-putblock-mutation-validation.sh` additionally verified that
+both narrowing resolution back to provenance and discarding captured placements
+produce semantic D(P)+HEAD failures; compilation failure cannot satisfy that
+check. Run the mutation script in a writable container copy at `/build` with
+the isolated backend/Cassandra/MinIO environment, never on a host source mount.
+
+The full Go unit/integration suites, targeted race tests and real Seafile Sync
+tests passed. Broader frontend/mobile/API/OIDC/GC results and fixture limitations
+are recorded in the [validation and final audit](W2-4-SYNC-PUBLICATION-FIX-PLAN.md#executed-evidence-2026-10-01).
+This closes only W2-4's demonstrated pre-HEAD gap; it does not imply every
+repository test is green.
