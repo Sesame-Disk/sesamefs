@@ -192,7 +192,7 @@ docker build -f Dockerfile -t "$BACKEND_IMAGE" .
 step "Start isolated MinIO and integration runner"
 docker run -d --name "$MINIO" --network "$NETWORK" --network-alias minio \
     -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-    minio/minio:latest server /data --console-address :9001 >/dev/null
+    docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z server /data --console-address :9001 >/dev/null
 docker run -d --name "$RUNNER" --network "$NETWORK" "$IMAGE" sleep 3600 >/dev/null
 
 step "Apply the current branch migrations to the isolated keyspace"
