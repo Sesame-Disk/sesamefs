@@ -1328,8 +1328,8 @@ func (db *DB) ProbeBlockReuse(orgID, blockID string) (BlockReuseProbe, error) {
 //
 // It is the write half of the destructive-GC liveness argument
 // (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01). BlockHasReferencesGlobal reads at
-// EACH_QUORUM for the real-reference half of pre-D zero proof and legacy
-// empty-state recovery. Its absence proof is trustworthy because a reference
+// EACH_QUORUM for the real-reference half of pre-D zero proof.
+// Its absence proof is trustworthy because a reference
 // acknowledged at LOCAL_QUORUM in some
 // datacenter necessarily intersects the read's quorum in that same datacenter. Under
 // ONE a single replica can acknowledge a reference that a later per-DC read quorum of
@@ -1422,7 +1422,7 @@ func (db *DB) RemoveBlockReference(orgID, blockID, referrer string) error {
 // answer proves only that the local DC has not seen one. That asymmetry is why this
 // call is safe for discovery and pre-D short-circuit aborts but MUST NOT
 // authorize a new D or physical deletion. Use EACH_QUORUM pre-D publication
-// liveness or legacy recovery proofs; neither local result revokes COMMITTED D
+// liveness proofs; neither local result revokes COMMITTED D
 // (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01).
 func (db *DB) BlockHasReferences(orgID, blockID string) (bool, error) {
 	return scanBlockHasReferences(db.Session().Query(`
@@ -1431,7 +1431,7 @@ func (db *DB) BlockHasReferences(orgID, blockID string) (bool, error) {
 }
 
 // BlockHasReferencesGlobal is the EACH_QUORUM real-reference read used by
-// pre-D zero proof and legacy empty-state physical recovery. It is not a
+// pre-D zero proof. It is not a
 // reauthorization required for exact COMMITTED continuation.
 //
 // It pins EACH_QUORUM per query rather than inheriting the session default, so the

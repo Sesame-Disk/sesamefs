@@ -203,6 +203,7 @@ func TestWorker_RecoverS3Orphans_RefusesStorageKeyFromAnotherOrg(t *testing.T) {
 		t.Fatalf("StartBlockDeleteOrphan: outcome=%s cause=%v", result.Outcome, result.Cause)
 	}
 
+	store.SetS3OrphanRecoveryStateForTest(orgID, blockID, S3OrphanRecoveryStateCommitted)
 	recovered, err := w.RecoverS3Orphans(context.Background(), 100)
 	if err == nil {
 		t.Fatal("RecoverS3Orphans() error = nil, want storage key mismatch error")

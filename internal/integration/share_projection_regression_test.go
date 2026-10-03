@@ -561,15 +561,13 @@ func shareProjectionDBForTest(t *testing.T) *dbpkg.DB {
 	t.Helper()
 
 	shareProjectionDBOnce.Do(func() {
-		cfg := config.DatabaseConfig{
-			Hosts:       splitEnvOrDefault("CASSANDRA_HOSTS", "cassandra:9042"),
-			Keyspace:    envOrDefault("CASSANDRA_KEYSPACE", "sesamefs"),
-			Consistency: envOrDefault("CASSANDRA_CONSISTENCY", "LOCAL_QUORUM"),
-			LocalDC:     envOrDefault("CASSANDRA_LOCAL_DC", "datacenter1"),
-			Username:    os.Getenv("CASSANDRA_USERNAME"),
-			Password:    os.Getenv("CASSANDRA_PASSWORD"),
+		// Use the server's validated topology declaration, including every DC.
+		cfg, err := config.Load()
+		if err != nil {
+			shareProjectionDBErr = err
+			return
 		}
-		shareProjectionDB, shareProjectionDBErr = dbpkg.New(cfg)
+		shareProjectionDB, shareProjectionDBErr = dbpkg.New(cfg.Database)
 	})
 	if shareProjectionDBErr != nil {
 		t.Fatalf("failed to connect to Cassandra for integration share assertions: %v", shareProjectionDBErr)

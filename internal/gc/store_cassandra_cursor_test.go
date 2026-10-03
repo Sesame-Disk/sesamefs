@@ -112,27 +112,3 @@ func TestDeletedUsersStartDayFromCursor_UsesLookbackWhenCursorMissing(t *testing
 		t.Fatalf("deletedUsersStartDayFromCursor() = %s, want %s", got.Format("2006-01-02"), want.Format("2006-01-02"))
 	}
 }
-
-func TestS3OrphansRecoveryScanStartDay_RescansLastProcessedDay(t *testing.T) {
-	cutoffDay := time.Date(2026, 4, 29, 0, 0, 0, 0, time.UTC)
-	lastProcessedDay := cutoffDay
-
-	got := s3OrphansRecoveryScanStartDay(lastProcessedDay, cutoffDay)
-	want := cutoffDay.AddDate(0, 0, -gcScanOverlapDays)
-	if !got.Equal(want) {
-		t.Fatalf("s3OrphansRecoveryScanStartDay() = %s, want %s", got.Format("2006-01-02"), want.Format("2006-01-02"))
-	}
-}
-
-func TestS3OrphansRecoveryStartDayFromCursorUsesRootOnColdStart(t *testing.T) {
-	cutoffDay := time.Date(2026, 4, 29, 0, 0, 0, 0, time.UTC)
-
-	got, err := s3OrphansRecoveryStartDayFromCursor("", gocql.ErrNotFound, cutoffDay)
-	if err != nil {
-		t.Fatalf("s3OrphansRecoveryStartDayFromCursor() error = %v, want nil", err)
-	}
-	want := cutoffDay
-	if !got.Equal(want) {
-		t.Fatalf("s3OrphansRecoveryStartDayFromCursor() = %s, want %s", got.Format("2006-01-02"), want.Format("2006-01-02"))
-	}
-}

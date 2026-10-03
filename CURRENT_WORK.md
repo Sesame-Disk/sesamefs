@@ -1,27 +1,22 @@
 # Current Work - SesameFS
 
-## Active branch: docs/x1-greenfield-w2-reset
+## Active branch: codex/g5-recovery-scheduling-hardening
 
-Docs-only reconciliation after merged #241, based initially on
-main@302d3418e6596774d48eb7ac98b6be170803ab83.
-The existing greenfield first-production contract excludes incompatible
-pre-#239 writer/GC skew. W2-0 is CLOSED-EVIDENCE for the covered current-version
-mechanism; both real mixed-version D(P)+HEAD counterexamples remain P1
-FOLLOW-UP / GENERAL. W2-1/2/6a remain OPEN through R31. Runtime, CQL, schema,
-guards and tests are unchanged; documentation and one source comment are
-reconciled, with no runtime change. GC remains disabled.
+Base main@b57f5ce69c9faa37529c761121b7a0507d1099fc, merged #247.
+G4 is complete for its covered physical-life coexistence contract. G5 is ACTIVE:
+independent root execution, bounded seek checkpoints and restart/failure fairness.
+The pre-PREPARED same-P stale-claim settlement race remains OPEN, P1 FOLLOW-UP /
+PRE-GC; its attempted retention fix is withdrawn to preserve fresh zero-epoch grace.
+Plan: [G5 implementation](./docs/GC-G5-IMPLEMENTATION-PLAN.md).
 
-#240 remains separately in progress. Per the updated work order, this docs-only
-PR proceeds first against current main; it does not depend on #240 or claim
-its hard-delete nonfencing work is merged. The final audit uses origin/main
-at 302d3418e6596774d48eb7ac98b6be170803ab83.
-Audit record: [greenfield reconciliation](./docs/W2-0-GREENFIELD-RECONCILIATION.md).
-Next critical-path work: finish remaining real W2 funnels and R31, then
-G4 -> G5 -> E1 -> X1 CLOSED -> PRE-GC -> A1 -> GC ON.
+First production is greenfield. Recovery accepts the current PREPARED/COMMITTED
+protocol; no empty-state physical fallback or old-data migration is added.
+GC remains OFF. E1 is next and re-evaluates W2/R31, late publication dependent on
+retired P1, late K1 PUT, crash/restart and multi-DC behavior against the full GC.
+The work order remains G5 -> E1 -> X1 CLOSED -> PRE-GC -> A1 -> GC ON.
 
-The dated merged-PR entries below are historical snapshots. Their old W2-0
-OPEN statements are superseded by the current [X1 source of record](./docs/X1-CRITICAL-PATH.md);
-they preserve the evidence and limits recorded at the time.
+The dated merged-PR entries below are historical snapshots, superseded where
+noted by the current [X1 source of record](./docs/X1-CRITICAL-PATH.md).
 
 **Merged PR #234, `fix/library-hard-delete-lease-global-serial` (rebased onto `main@cd591709c`, 2026-09-30; originally 2026-09-26):**
 Every hard-delete lease LWT (library, user and org) now pins global `SERIAL`

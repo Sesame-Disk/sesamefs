@@ -16,10 +16,10 @@ canonical recovery state and the lifecycle certificate remain authoritative.
 
 The existing block-delete lifecycle CAS selects `first_seen_at` once. Root,
 canonical orphan, and discovery projection publication reuse that token. Root
-publication is one ordinary `EACH_QUORUM` write; it performs no additional
-Paxos/SERIAL operation and fails closed before the canonical orphan LWT if the
-write is unavailable. Terminal cleanup settles the lifecycle and exact
-discovery projection before deleting the root.
+publication uses `INSERT ... IF NOT EXISTS` at `EACH_QUORUM` with global
+`SERIAL`, before the canonical orphan LWT. Unavailable or ambiguous publication
+fails closed. Terminal cleanup settles the lifecycle and exact discovery
+projection before deleting the root.
 
 ### Evidence Contract
 
@@ -32,8 +32,8 @@ discovery projection before deleting the root.
 - `scripts/g1-mutation-validation.sh` keeps the frozen semantic M1-M10
   mutations and runs the additional G1 source/identity checks as M11-M17.
 - Each `StartBlockDeleteOrphan` publication attempt adds one `EACH_QUORUM`
-  block/handoff-authority read plus one ordinary `EACH_QUORUM` recovery-root
-  write. G1 adds no new LWT or `SERIAL` operation. During recovery, each root
+  block/handoff-authority read plus an `EACH_QUORUM` recovery-root LWT with
+  global `SERIAL`. During recovery, each root
   performs one exact canonical `EACH_QUORUM` read and every visible canonical
   row receives one idempotent ordinary `EACH_QUORUM` projection upsert; a
   missing canonical row uses the existing lifecycle observation in the SERIAL
@@ -54,7 +54,16 @@ discovery projection before deleting the root.
 
 - `gc_s3_orphan_recovery_roots` has deliberate indefinite growth; a bounded
   archival/reconciliation policy is deferred.
-- `_by_day LIMIT` starvation and broader scheduling hardening remain G5 work.
+- G5 replaces physical `_by_day` enumeration with one bounded seek page per
+  durable-root bucket and seek checkpoints. Eventual finite-cycle wrap assumes
+  advancing, bounded-skew application clocks and finite pre-cutoff claims;
+  `Until` is not an insertion snapshot and supplies no wall-clock revisit
+  deadline. Clock synchronization and verified clock health are PRE-GC:
+  `ISSUE-GC-ROOT-CYCLE-CLOCK-ASSUMPTION-01`. G5 implements no such gate.
+  Prefix pressure, restart and
+  exact post-D authority have unit/race and real one/three-DC Cassandra/MinIO
+  evidence. Full required single-DC integration passed; additional P3 multi-DC
+  CAS timeouts remain an E1 evidence limitation. See [G5 plan](./GC-G5-IMPLEMENTATION-PLAN.md).
 - Per-row orphan mutual exclusion, G2-G5, W2/R31, and X1 remain outside this
   change.
 - `scripts/p4b-authority-mutation-validation.sh`'s `m_worker_releases_after_handoff`

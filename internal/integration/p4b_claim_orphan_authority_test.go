@@ -737,8 +737,8 @@ func TestP4B_RecoverS3OrphansTerminalLifecycleDoesNotDeleteAtRealCassandra(t *te
 	orgID := uuid.New()
 	sum := sha256.Sum256([]byte("p4b-recovery-terminal-" + uuid.NewString()))
 	blockID := hex.EncodeToString(sum[:])
-	firstSeenAt := seedS3Orphan(t, store, orgID, blockID, "hot", "sha1-recover", "prev", time.Now().UTC())
 	committed := testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID))
+	firstSeenAt := seedCurrentS3Orphan(t, store, orgID, blockID, committed.Authority(), "sha1-recover", time.Now().UTC()).FirstSeenAt
 	if _, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, committed); err != nil {
 		t.Fatalf("terminate: %v", err)
 	}

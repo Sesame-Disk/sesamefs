@@ -30,7 +30,7 @@ func TestG2RecoveryFindsPreparedRootBeyondProjectionLookback(t *testing.T) {
 	orgID := uuid.New()
 	blockID := testSHA256BlockID("g2-root-beyond-lookback")
 	store.AddBlock(orgID, blockID, "hot", 0)
-	firstSeenAt := time.Now().UTC().AddDate(0, 0, -gcS3OrphanRecoveryRootScanLookbackDays-30).Truncate(time.Millisecond)
+	firstSeenAt := time.Now().UTC().AddDate(0, 0, -90-30).Truncate(time.Millisecond)
 	authority := store.SeedBlockClaimForTest(orgID, blockID, "g2-old-root", firstSeenAt)
 	prepared := store.PrepareBlockDeleteOrphan(orgID, blockID, authority, "sha1", firstSeenAt)
 	if prepared.Outcome != StartBlockDeleteOrphanCreated {
@@ -53,7 +53,7 @@ func TestG2RecoveryDoesNotStarvePreparedRootBehindCommittedPrefix(t *testing.T) 
 	store := NewMockStore()
 	worker := NewWorker(store, nil, NewQueue(store), 1, 0, false, &Stats{})
 	orgID := uuid.New()
-	old := time.Now().UTC().AddDate(0, 0, -gcS3OrphanRecoveryRootScanLookbackDays-30).Truncate(time.Millisecond)
+	old := time.Now().UTC().AddDate(0, 0, -90-30).Truncate(time.Millisecond)
 
 	committedBlockID := testSHA256BlockID("g2-committed-root-prefix")
 	store.AddBlock(orgID, committedBlockID, "hot", 0)
@@ -93,6 +93,10 @@ func TestG2RecoveryDoesNotStarvePreparedRootBehindCommittedPrefix(t *testing.T) 
 		t.Fatalf("prepare root after committed prefix = %s: %v", prepared.Outcome, prepared.Cause)
 	}
 
+	if n, err := worker.RecoverS3Orphans(context.Background(), 1); err != nil || n != 0 {
+		t.Fatalf("first bounded prefix: %d %v", n, err)
+	}
+	worker = NewWorker(store, nil, NewQueue(store), 1, 0, false, &Stats{})
 	recovered, err := worker.RecoverS3Orphans(context.Background(), 1)
 	if err != nil || recovered != 1 {
 		t.Fatalf("committed-prefix recovery = (%d, %v), want one PREPARED root settled", recovered, err)
@@ -194,18 +198,23 @@ func TestG2DeletePreparedUsesExactRecoveryIdentity(t *testing.T) {
 }
 
 func TestG2RootOnlyRecoveryNeverDeletesAbsentCanonical(t *testing.T) {
-	text := formattedGCFunction(t, parseGCWorkerFile(t), "reconcileS3OrphanRecoveryRoots")
-	start := strings.Index(text, "case StartBlockDeleteOrphanNotPublished:")
+	text := formattedGCFunction(t, parseGCWorkerFile(t), "recoverS3OrphanRoot")
+	start := strings.Index(text, "if !found {")
 	if start < 0 {
 		t.Fatal("root-only recovery branch not found")
 	}
-	end := strings.Index(text[start:], "case StartBlockDeleteOrphanDifferentTarget")
+	end := strings.Index(text[start:], "PublishS3OrphanDiscovery")
 	if end < 0 {
 		t.Fatal("root-only recovery branch not found")
 	}
 	branch := text[start : start+end]
-	if strings.Contains(branch, "ObserveBlockDeleteClaim") || strings.Contains(branch, "DeletePreparedBlockDeleteOrphan") {
-		t.Fatal("root-only recovery must retain a root when the canonical orphan is absent")
+	for _, forbidden := range []string{"ObserveBlockDeleteClaim", "DeletePreparedBlockDeleteOrphan", "recoverCanonicalS3Orphan", "DeleteBlockByStorageKey"} {
+		if strings.Contains(branch, forbidden) {
+			t.Fatalf("root-only branch uses %s", forbidden)
+		}
+	}
+	if !strings.Contains(branch, "StartBlockDeleteOrphanNotPublished") {
+		t.Fatal("missing unpublished-root retention")
 	}
 }
 

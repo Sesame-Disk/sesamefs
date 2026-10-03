@@ -323,12 +323,6 @@ type mockS3OrphanKey struct {
 	Authority BlockDeleteAuthority
 }
 
-type mockS3OrphanRecoveryRootCursor struct {
-	OrgID     uuid.UUID
-	BlockID   string
-	Authority BlockDeleteAuthority
-}
-
 type mockProvisionalBlockRefExpiry struct {
 	OrgID        uuid.UUID
 	BlockID      string
@@ -5342,46 +5336,48 @@ func (m *MockStore) ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limi
 	if limit <= 0 {
 		limit = 100
 	}
-	var out []S3OrphanRecoveryRootInfo
+	var rows []S3OrphanRecoveryRootInfo
 	for key, root := range m.s3OrphanRecoveryRoots {
 		if s3OrphanRecoveryRootBucket(key.Authority) == bucket {
-			out = append(out, root)
+			rows = append(rows, root)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return compareMockS3OrphanRecoveryRoots(out[i], out[j]) < 0
-	})
-	start := 0
+	sort.Slice(rows, func(i, j int) bool { return compareMockS3OrphanRecoveryRoots(rows[i], rows[j]) < 0 })
+	if len(rows) == 0 {
+		return S3OrphanRecoveryRootPage{}, nil
+	}
+	cursor := s3OrphanRootCursor{Bucket: bucket, Until: s3RootKey(rows[len(rows)-1])}
 	if len(pageState) != 0 {
-		var cursor mockS3OrphanRecoveryRootCursor
-		if err := json.Unmarshal(pageState, &cursor); err != nil {
-			return S3OrphanRecoveryRootPage{}, fmt.Errorf("invalid mock recovery-root page state: %w", err)
-		}
-		for start < len(out) && compareMockS3OrphanRecoveryRoots(out[start], S3OrphanRecoveryRootInfo{
-			OrgID:     cursor.OrgID,
-			BlockID:   cursor.BlockID,
-			Authority: cursor.Authority,
-		}) <= 0 {
-			start++
-		}
-	}
-	end := start + limit
-	if end > len(out) {
-		end = len(out)
-	}
-	page := S3OrphanRecoveryRootPage{Roots: out[start:end]}
-	if end < len(out) {
-		cursor, err := json.Marshal(mockS3OrphanRecoveryRootCursor{
-			OrgID:     out[end-1].OrgID,
-			BlockID:   out[end-1].BlockID,
-			Authority: out[end-1].Authority,
-		})
+		var err error
+		cursor, err = decodeS3OrphanRootCursor(pageState, bucket)
 		if err != nil {
-			return S3OrphanRecoveryRootPage{}, fmt.Errorf("encode mock recovery-root page state: %w", err)
+			return S3OrphanRecoveryRootPage{}, err
 		}
-		page.PageState = cursor
 	}
-	return page, nil
+	var out S3OrphanRecoveryRootPage
+	for _, root := range rows {
+		if cursor.After != nil && compareMockS3OrphanRecoveryRoots(root, cursor.After.root()) <= 0 {
+			continue
+		}
+		if compareMockS3OrphanRecoveryRoots(root, cursor.Until.root()) > 0 {
+			break
+		}
+		out.Roots = append(out.Roots, root)
+		if len(out.Roots) > limit {
+			break
+		}
+	}
+	if len(out.Roots) > limit {
+		out.Roots = out.Roots[:limit]
+		last := s3RootKey(out.Roots[len(out.Roots)-1])
+		cursor.After = &last
+		var err error
+		out.PageState, err = json.Marshal(cursor)
+		if err != nil {
+			return S3OrphanRecoveryRootPage{}, err
+		}
+	}
+	return out, nil
 }
 
 func (m *MockStore) GetS3OrphanRecoveryRootExact(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) (S3OrphanRecoveryRootInfo, bool, error) {

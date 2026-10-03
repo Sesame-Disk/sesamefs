@@ -132,6 +132,7 @@ func TestStore_StartBlockDeleteOrphan_SameTargetUsesStoredFirstSeenAndRepairsPro
 	firstSeenAt := time.Now().Add(-48 * time.Hour).UTC().Truncate(time.Millisecond)
 
 	seedS3Orphan(t, store, orgID, "orph-repair", "hot", "sha1-old", "prev", firstSeenAt)
+	store.SetS3OrphanRecoveryStateForTest(orgID, "orph-repair", "")
 	store.DeleteS3OrphanProjectionForTest(orgID, "orph-repair", firstSeenAt)
 
 	proposedFirstSeenAt := firstSeenAt.Add(24 * time.Hour)

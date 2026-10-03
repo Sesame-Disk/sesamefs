@@ -230,7 +230,6 @@ const gcExpiredShareLinksCursorKey = "gc.scan.expired_share_links.last_expiry_da
 const gcExpiredSharesCursorKey = "gc.scan.expired_shares.last_expiry_day"
 const gcBlockCandidatesCursorKey = "gc.scan.block_candidates.last_candidate_day"
 const gcProvisionalBlockRefsCursorKey = "gc.scan.provisional_block_refs.last_expiry_day"
-const gcS3OrphansCursorKey = "gc.scan.s3_orphans.last_first_seen_day"
 const gcFailedItemsExpiryCursorKey = "gc.scan.failed_items.last_expiry_day"
 
 const (
@@ -2014,32 +2013,66 @@ func (s *CassandraStore) ListS3OrphanRecoveryRoots(bucket int, pageState []byte,
 	if limit <= 0 {
 		limit = 100
 	}
-	iter := s.db.Session().Query(`
-		SELECT gc_claimed_at, org_id, block_id, storage_class, storage_key,
-		       gc_claim_id, created_at, first_seen_at
-		FROM gc_s3_orphan_recovery_roots
-		WHERE root_bucket = ?
-	`, bucket).PageSize(limit).PageState(pageState).Iter()
+	var cursor s3OrphanRootCursor
+	if len(pageState) != 0 {
+		var err error
+		cursor, err = decodeS3OrphanRootCursor(pageState, bucket)
+		if err != nil {
+			return S3OrphanRecoveryRootPage{}, err
+		}
+	} else {
+		cursor.Bucket = bucket
+		var orgID string
+		err := s.db.Session().Query(`SELECT gc_claimed_at, org_id, block_id, storage_class, storage_key, gc_claim_id
+   FROM gc_s3_orphan_recovery_roots WHERE root_bucket = ? ORDER BY gc_claimed_at DESC LIMIT 1`, bucket).
+			Consistency(gocql.LocalQuorum).Scan(&cursor.Until.ClaimedAt, &orgID, &cursor.Until.BlockID, &cursor.Until.StorageClass, &cursor.Until.StorageKey, &cursor.Until.ClaimID)
+		if errors.Is(err, gocql.ErrNotFound) {
+			return S3OrphanRecoveryRootPage{}, nil
+		}
+		if err != nil {
+			return S3OrphanRecoveryRootPage{}, err
+		}
+		cursor.Until.OrgID = parseUUID(orgID)
+	}
+	var iter *gocql.Iter
+	if cursor.After != nil {
+		args := []interface{}{bucket}
+		args = append(args, cursor.After.values()...)
+		args = append(args, cursor.Until.values()...)
+		args = append(args, limit+1)
+		iter = s.db.Session().Query(`SELECT gc_claimed_at, org_id, block_id, storage_class, storage_key, gc_claim_id, created_at, first_seen_at
+   FROM gc_s3_orphan_recovery_roots WHERE root_bucket = ?
+   AND (gc_claimed_at, org_id, block_id, storage_class, storage_key, gc_claim_id) > (?, ?, ?, ?, ?, ?)
+   AND (gc_claimed_at, org_id, block_id, storage_class, storage_key, gc_claim_id) <= (?, ?, ?, ?, ?, ?) LIMIT ?`, args...).
+			Consistency(gocql.LocalQuorum).PageSize(limit + 1).Iter()
+	} else {
+		args := []interface{}{bucket}
+		args = append(args, cursor.Until.values()...)
+		args = append(args, limit+1)
+		iter = s.db.Session().Query(`SELECT gc_claimed_at, org_id, block_id, storage_class, storage_key, gc_claim_id, created_at, first_seen_at
+   FROM gc_s3_orphan_recovery_roots WHERE root_bucket = ?
+   AND (gc_claimed_at, org_id, block_id, storage_class, storage_key, gc_claim_id) <= (?, ?, ?, ?, ?, ?) LIMIT ?`, args...).
+			Consistency(gocql.LocalQuorum).PageSize(limit + 1).Iter()
+	}
 	var out S3OrphanRecoveryRootPage
 	var claimedAt, createdAt, firstSeenAt time.Time
 	var orgIDStr, blockID, storageClass, storageKey, claimID string
 	for iter.Scan(&claimedAt, &orgIDStr, &blockID, &storageClass, &storageKey, &claimID, &createdAt, &firstSeenAt) {
-		authority := normalizeBlockDeleteAuthority(BlockDeleteAuthority{
-			Target:    BlockDeleteTarget{StorageClass: storageClass, StorageKey: storageKey},
-			ClaimID:   claimID,
-			ClaimedAt: claimedAt,
-		})
-		out.Roots = append(out.Roots, S3OrphanRecoveryRootInfo{
-			OrgID:       parseUUID(orgIDStr),
-			BlockID:     blockID,
-			Authority:   authority,
-			CreatedAt:   createdAt.UTC(),
-			FirstSeenAt: firstSeenAt.UTC(),
-		})
+		out.Roots = append(out.Roots, S3OrphanRecoveryRootInfo{OrgID: parseUUID(orgIDStr), BlockID: blockID,
+			Authority: normalizeBlockDeleteAuthority(BlockDeleteAuthority{Target: BlockDeleteTarget{StorageClass: storageClass, StorageKey: storageKey}, ClaimID: claimID, ClaimedAt: claimedAt}), CreatedAt: createdAt.UTC(), FirstSeenAt: firstSeenAt.UTC()})
 	}
-	out.PageState = iter.PageState()
 	if err := iter.Close(); err != nil {
-		return S3OrphanRecoveryRootPage{}, fmt.Errorf("failed to list S3 orphan recovery roots bucket=%d: %w", bucket, err)
+		return S3OrphanRecoveryRootPage{}, fmt.Errorf("list recovery roots bucket=%d: %w", bucket, err)
+	}
+	if len(out.Roots) > limit {
+		out.Roots = out.Roots[:limit]
+		last := s3RootKey(out.Roots[len(out.Roots)-1])
+		cursor.After = &last
+		var err error
+		out.PageState, err = json.Marshal(cursor)
+		if err != nil {
+			return S3OrphanRecoveryRootPage{}, err
+		}
 	}
 	return out, nil
 }
@@ -3486,7 +3519,7 @@ func (s *CassandraStore) BlockHasReferences(orgID uuid.UUID, blockID string) (bo
 }
 
 // BlockHasReferencesGlobal reads real references at EACH_QUORUM for the pre-D
-// zero proof and legacy empty-state recovery. It is not a reauthorization of
+// zero proof. It is not a reauthorization of
 // COMMITTED D. Errors, including an unreachable DC, propagate and fail closed.
 func (s *CassandraStore) BlockHasReferencesGlobal(orgID uuid.UUID, blockID string) (bool, error) {
 	return s.db.BlockHasReferencesGlobal(orgID.String(), blockID)
@@ -3523,9 +3556,12 @@ func (s *CassandraStore) BlockPublicationLivenessGlobal(orgID uuid.UUID, blockID
 // local zero authorizes nothing"), and this one does not fit that shape: its zero DOES
 // authorize something. BlockClaimAbsent means the SERIAL observation found a row
 // that is present but does not carry a deleting claim, while BlockClaimMissing means
-// the canonical row itself is absent. The distinction lets processBlock preserve the
-// historical path for an unclaimed row while routing a retired row through the
-// no-touch candidate cleanup path, without issuing a second BlockExists read.
+// the canonical row itself is absent. On the referenced pre-check, processBlock
+// settles the exact candidate for an unclaimed or released current P and routes
+// a missing row through no-touch candidate cleanup, without a second BlockExists
+// read. The SERIAL observation and candidate settlement are not atomic with a
+// later same-P claim; that pre-PREPARED race remains an open PRE-GC follow-up
+// (ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01), outside durable-root recovery.
 //
 // This used to be an ordinary session-consistency read, filed as
 // ISSUE-GC-STALE-CLAIM-READ-CONSISTENCY-01, and it could miss a claim two ways:

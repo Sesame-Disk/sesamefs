@@ -537,7 +537,7 @@ func TestP2PhysicalIdentityAuthorityGuard(t *testing.T) {
 		{file: "upload_reuse.go", symbol: "StoreUploadedBlockForProbeForPhase", receiver: "canonicalStore"}:       1,
 		{file: "canonical_block_reader.go", symbol: "newCanonicalBlockReader", receiver: "store"}:                 1,
 		{file: "worker.go", symbol: "(*Worker).processBlock", receiver: "resolved"}:                               1,
-		{file: "worker.go", symbol: "(*Worker).RecoverS3Orphans", receiver: "blockStore"}:                         1,
+		{file: "worker.go", symbol: "(*Worker).recoverCanonicalS3Orphan", receiver: "blockStore"}:                 1,
 		{file: "library_continuity_certifier.go", symbol: "(*DB).CertifyLibraryBaseline", receiver: "blockStore"}: 1,
 	}
 	wantMintedValidations := map[expectedUse]int{

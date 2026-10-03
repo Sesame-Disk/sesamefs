@@ -1,5 +1,18 @@
 # X1 critical path — reset to the #201 roadmap
 
+## G5 covered development contract validated (2026-10-02)
+
+G4 is merged in #247, main@b57f5ce69. The [G5 implementation plan](./GC-G5-IMPLEMENTATION-PLAN.md)
+replaces the physical day walk with bounded durable-root execution and seek
+checkpoints. The same-P stale-claim settlement race reproduced before PREPARED;
+its attempted candidate-retention fix is withdrawn after a reproduced fresh
+zero-epoch grace regression. The race remains OPEN, P1 FOLLOW-UP / PRE-GC.
+The earlier single-DC full integration passed; expanded three-DC integration
+failed 30 main tests and API failed 8/20 suites at 1a1cb9629. These failures
+remain recorded for E1; neither combined nor full three-DC evidence is a PASS.
+E1 remains next. No W2/R31, X1, PRE-GC or activation gate is closed by this entry.
+GC stays OFF.
+
 ## G4/G5 development decision (2026-10-02)
 
 The [G4 implementation plan](./GC-G4-IMPLEMENTATION-PLAN.md) supersedes the
@@ -263,9 +276,10 @@ added here to count.
 
 | Item | Tracking |
 |---|---|
+| G5 cycle revisit assumes advancing claim clocks with bounded, observed fleet skew and finite pre-cutoff claims. NTP/equivalent plus a verified clock-health activation/suspension procedure is required PRE-GC; G5 provides no enforcement and no fixed wall-clock revisit bound | `ISSUE-GC-ROOT-CYCLE-CLOCK-ASSUMPTION-01` |
 | Phase 5 expired-version cascade keeps fs_objects shared with HEAD (P0 latent) | `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` |
 | Phase 6 execute-time TOCTOU: the keep-set is computed at scan time and fs_object items carry no library guard and no execute-time reachability recheck, so a HEAD that re-references an fs_id between scan and execution loses the fs_object row. Closing W2-10 (block liveness for content resurrection) does **not** close this; the certification-window fence does not either (PC-D1B.4 §15) | recorded under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` (PC-D1B.4 finding F3) |
-| Stale-claim settle race: after `ReleaseStaleBlockClaim` reports `BlockClaimAbsent`, `settleBlockCandidate` deletes the candidate conditioned only on `candidate_at`, so a claim won by another worker in the gap can lose its recovery authority (liveness: block stranded in `deleting`, no data loss). Close here or make it an explicit G5 exit criterion | `ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` |
+| Stale-claim settle race: after `ReleaseStaleBlockClaim` reports `BlockClaimAbsent`, `settleBlockCandidate` deletes the candidate conditioned only on `candidate_at`, so a claim won by another worker in the gap can lose its recovery authority (liveness: block stranded in `deleting`, no data loss). OPEN, P1 FOLLOW-UP / PRE-GC; evaluate in E1. Outside G5 durable-root scope; closure must preserve scheduling independently of fresh zero-ref grace | `ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` |
 | Certification-window fence, **only as far as the GC destroyers D1–D3 need it** (re-scope PC-D1B.4 §18 before implementing; the full CW-M1..M34 list is not automatically required). Includes `ISSUE-PCD1B-STALE-TOMBSTONE-DISPLAY-METADATA-01` if generation-timestamped deletes are adopted | `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01` |
 | HEAD-less ghost `libraries` row counts as canonically absent for GC/restore | `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` |
 | Repair-liveness residual (35-day `pub:` TTL): the fail-closed GC health gate, if W2-11 is closed as `CLOSED-GATED` through it, must exist and be enabled before activation | `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` (W2-11) |

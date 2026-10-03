@@ -3195,7 +3195,42 @@ The invariant now enforced is:
   `ReleaseStaleBlockClaim` in `internal/gc/store_cassandra.go`, which already
   narrates this resolution. This entry was stale documentation, not a live gap;
   found and corrected while re-auditing `#212` (G3) on 2026-09-10.
-- **`ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` (open, pre-existing, PRE-GC).**
+- **`ISSUE-GC-ROOT-CYCLE-CLOCK-ASSUMPTION-01` (OPEN, P2 PRE-GC / OPERABILITY).**
+  Registered 2026-10-03 during G5 contract review. The THIS-PR unconditional
+  finite-cycle wording is corrected; the activation prerequisite remains OPEN.
+  The seek key begins with `gc_claimed_at` from the claiming application's
+  wall clock. Capturing `Until` bounds keys, not insertion membership: a root
+  published after capture with `After < key <= Until` joins the active cycle,
+  while a root inserted behind `After` is not visited until wrap. Clock skew,
+  regression or delayed publication can therefore extend the active cycle;
+  arbitrary indefinitely backdated arrivals have no unconditional revisit
+  guarantee. No permanent starvation counterexample in the supported healthy
+  clock regime or exact-P/data-loss defect is claimed.
+
+  Eventual wrap requires advancing clocks with bounded, observed fleet skew,
+  finite claims minted in finite time, finite outstanding pre-cutoff claims,
+  and successful subsequent discovery/checkpoint ticks. Once newly minted
+  timestamps exceed the captured cutoff, new claims sort outside the cycle.
+  The per-tick page/row bound and exact `(P,D)` destructive authority are
+  unchanged; there is no fixed wall-clock completion/revisit deadline.
+
+  Before GC activation, synchronize every application node that mints claim
+  timestamps with NTP or equivalent, define and observe the acceptable fleet
+  skew/progress bound, and specify what prevents activation or suspends GC
+  when clock health is unknown, regresses or exceeds that bound. Merely
+  enabling NTP is not evidence that the bound holds. G5 adds no clock-health
+  enforcement or monitoring implementation; verification belongs to E1/A1.
+  This is an operational prerequisite, not a scheduler/schema redesign in G5.
+  It does not close the independent pre-PREPARED stale-claim race below.
+- **`ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` (OPEN, P1 FOLLOW-UP / PRE-GC).**
+  The same-P Absent/new-owner interleaving was reproduced during G5. It is a
+  pre-PREPARED scheduling gap, outside durable COMMITTED-root recovery. G5's
+  attempted referenced-candidate retention is withdrawn: keeping candidate_at
+  let a later live-to-zero epoch inherit expired grace. Closing this issue must
+  preserve recovery scheduling without preserving stale zero-ref eligibility;
+  a second non-atomic claim read is insufficient. Neither CLOSED-EVIDENCE nor
+  CLOSED-FIX applies. Historical counterexample follows.
+
   `ReleaseStaleBlockClaim`'s SERIAL observation and the caller's later
   `settleBlockCandidate` are two separate operations, not one CAS: after the
   observation reports `BlockClaimAbsent` (row present for this exact P, no
@@ -3231,7 +3266,11 @@ The invariant now enforced is:
   two separate operations (a fresh read, then a separate delete) are still
   TOCTOU; the two must become one atomic operation. Exposure today is nil:
   destructive GC runs nowhere (`GC_ENABLED=false`).
-- **`ISSUE-GC-REFERENCED-ORPHAN-LIFECYCLE-01` (open, storage leak).** The bullet above
+- **`ISSUE-GC-REFERENCED-ORPHAN-LIFECYCLE-01` (SUPERSEDED / LEGACY-NOT-REACHABLE under greenfield v1).**
+  G4 irrevocable exact-D continuation and G5 current-protocol durable roots
+  supersede the historical empty-state/day-cursor/90-day executor. No deployed
+  old data exists; no quarantine state or compatibility executor is required.
+  The historical storage-leak counterexample is preserved below. The historical bullet above
   used to justify itself with "the condition is permanent by construction — the row
   survives and every sweep rediscovers it". That is false. A sweep ending without a
   phase error advances the day cursor, and the next starts only `gcScanOverlapDays`

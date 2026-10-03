@@ -187,19 +187,19 @@ type GCStore interface {
 	// Block operations (worker)
 	//
 	// BlockExists reports whether the current canonical blocks row exists.
-	// Legacy empty-state orphan recovery uses absence before its global ref proof.
 	// COMMITTED recovery instead retires/settles exact P1,D1 and permits live P2.
 	BlockExists(orgID uuid.UUID, blockID string) (bool, error)
 	// BlockHasReferences is a session-consistency discovery/pre-D hint. TRUE may
 	// postpone a new handoff; FALSE cannot authorize it. Neither result revokes D1.
 	BlockHasReferences(orgID uuid.UUID, blockID string) (bool, error)
 	// BlockHasReferencesGlobal pins reference visibility to EACH_QUORUM.
-	// Legacy recovery requires its FALSE proof before physical deletion.
+	// Its FALSE proof may authorize pre-D handoff, never COMMITTED continuation.
 	// An unavailable DC or read error must never be interpreted as zero.
 	// Current COMMITTED recovery continues exact P,D authority, not a new ref proof.
 	BlockHasReferencesGlobal(orgID uuid.UUID, blockID string) (bool, error)
-	// BlockPublicationLivenessGlobal is pre-D only: real refs may settle work;
-	// repair-only preserves candidate and queue. EACH_QUORUM ZERO permits COMMIT D(P1).
+	// BlockPublicationLivenessGlobal is pre-D only: real refs veto a new handoff
+	// and, after confirmed release of this attempt, settle its candidate.
+	// Repair-only preserves candidate and queue. EACH_QUORUM ZERO permits COMMIT D(P1).
 	// After COMMITTED, exact orphan(P1,D1) and the published lifecycle certificate
 	// continue D1. Valid P2 references do not cancel D1 or authorize touching P2.
 	BlockPublicationLivenessGlobal(orgID uuid.UUID, blockID string) (db.BlockPublicationLiveness, error)
@@ -266,8 +266,12 @@ type GCStore interface {
 	// any possible live attempt.
 	//
 	// The outcome distinguishes missing-row, unclaimed-row, released, too-fresh, and
-	// committed-handoff observations. Missing and unclaimed rows permit settlement,
-	// while a too-fresh or committed handoff emphatically does not, because that fence
+	// committed-handoff observations. On the referenced pre-check, an unclaimed
+	// or released current P settles its exact candidate; a missing row uses
+	// no-touch candidate cleanup. A later live-to-zero transition must create
+	// a fresh candidate and serve its full grace. The same-P claim/settlement
+	// race before PREPARED remains ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01 (PRE-GC).
+	// A too-fresh or committed handoff must not be released, because that fence
 	// still has to come off later and this candidate is what will do it.
 	// Collapsing them into a single false is how a live block ends up fenced
 	// forever — see BlockClaimTooFresh.
@@ -387,7 +391,12 @@ type GCStore interface {
 	// `limit` caps the number of rows returned for a single (day, bucket) pair.
 	ListS3OrphansByDay(day time.Time, bucket int, limit int) ([]S3OrphanDiscoveryInfo, error)
 	// ListS3OrphanRecoveryRoots enumerates the independent fixed-bucket restart
-	// root. It has no age horizon and is the safety path when _by_day is absent.
+	// root. It has no age horizon and directly discovers current-protocol recovery.
+	// pageState is a seek checkpoint with an event-time upper key, not an insertion
+	// snapshot or Cassandra opaque paging state. Eventual wrap assumes advancing,
+	// bounded-skew clocks and finite pre-cutoff claims (see s3OrphanRootCursor).
+	// A completed cycle returns an empty pageState; a restart
+	// may reuse the checkpoint even when its last row was deleted.
 	ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limit int) (S3OrphanRecoveryRootPage, error)
 	// GetS3OrphanRecoveryRootExact reads one exact recovery root. It is used only
 	// to validate the durable first_seen_at token while settling a canonical row
@@ -593,8 +602,7 @@ type BlockInfo struct {
 	StorageKey   string
 	CreatedAt    *time.Time
 	// Sha1 is the block's external Seafile SHA-1 (blocks.sha1), retained for
-	// orphan recovery metadata and legacy diagnostics. Empty for legacy/pre-PR2
-	// rows.
+	// orphan recovery metadata. Empty when the writer has no external SHA-1.
 	Sha1 string
 }
 
@@ -1281,9 +1289,13 @@ type BlockClaimReleaseOutcome int
 
 const (
 	// BlockClaimAbsent: the canonical row is present but carries no deleting claim.
-	// Safe to settle through the historical path.
+	// On the referenced pre-check, the worker settles the exact candidate.
+	// This observation does not atomically exclude a later same-P claim; see
+	// ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01, an open pre-PREPARED follow-up.
 	BlockClaimAbsent BlockClaimReleaseOutcome = iota
-	// BlockClaimReleased: a stale claim was handed back. Safe to settle.
+	// BlockClaimReleased: the exact stale claim was handed back. On the referenced
+	// pre-check, the worker settles the exact candidate so a future zero epoch
+	// gets fresh grace. Release and candidate settlement are not atomic.
 	BlockClaimReleased
 	// BlockClaimTooFresh: a claim exists but was taken too recently to distinguish
 	// from a live in-flight attempt, so it was left alone. Its owner is irrelevant —
