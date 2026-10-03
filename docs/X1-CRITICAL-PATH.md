@@ -228,7 +228,8 @@ Not W2 exit rows (follow-ups, may be reclassified in E1):
 `ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`,
 `ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01`.
 
-E1 evidence update (2026-10-03): a real delayed Sync PutBlock after terminal D
+E1 evidence update (2026-10-03): with Cassandra plus pinned SILO
+`RELEASE.2026-09-16T00-00-00Z` (MinIO-compatible S3), a real delayed Sync PutBlock after terminal D
 left bytes at the retired K1 but rematerialized the canonical block at P2 and
 did not restore a P1 reference. A post-terminal replay of a repair for a
 commit that lost HEAD retained UNKNOWN and `pub:` only. The reachable-HEAD

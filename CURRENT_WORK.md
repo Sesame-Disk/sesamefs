@@ -13,7 +13,8 @@ does not close X1. Scope excludes Phase 5/6, G5 clock-health, stale-claim,
 full PC-D1B.5, A1 and GC activation unless evidence proves the E1 invariant.
 Work order: G5 -> E1 -> X1 CLOSED -> PRE-GC -> A1 -> GC ON.
 
-E1 status (2026-10-03): real-Cassandra/MinIO delayed Sync PutBlock after
+E1 status (2026-10-03): real Cassandra plus pinned SILO
+`RELEASE.2026-09-16T00-00-00Z` (MinIO-compatible S3) delayed Sync PutBlock after
 terminal D left K1 bytes but did not restore P1; the handler materialized the
 same block at a new P2 key. A post-terminal replay for an unreachable repair
 retained UNKNOWN plus `pub:` only and left HEAD/P1 unchanged. Both are narrow
@@ -22,6 +23,15 @@ still OPEN. The Docker `go-all-test` suite passed after the integration test
 changes; the two E1 cases pass under `-race`, and normal/integration `go vet`
 pass in a single sequential Docker runner. No production runtime code changed;
 GC stays OFF and X1 stays OPEN.
+
+E1 cross-audit hardening (2026-10-03): fixed K2 plus exact Sync up:/expiry
+teardown, checked UNKNOWN classification and clean typed retained visitation,
+and corrected backend provenance to pinned SILO. The verifier also covers a
+worker finishing between root discovery and the exact orphan read, with a real
+worker regression. Full Go/API/OIDC, both vet modes, three directed RED
+mutations and ten GREEN race repetitions pass sequentially in Docker. These
+are test/evidence corrections; remaining E1/W2 rows and X1 stay OPEN. See the
+[E1 audit ledger](docs/E1-FULL-GC-PUBLICATION-RECOVERY.md#cross-audit-hardening--2026-10-03).
 
 **Merged PR #234, `fix/library-hard-delete-lease-global-serial` (rebased onto `main@cd591709c`, 2026-09-30; originally 2026-09-26):**
 Every hard-delete lease LWT (library, user and org) now pins global `SERIAL`

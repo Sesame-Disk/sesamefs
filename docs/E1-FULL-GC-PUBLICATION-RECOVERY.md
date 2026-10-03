@@ -1,7 +1,9 @@
 # E1 — Full-GC publication and recovery evaluation
 
 Status: ACTIVE on codex/e1-full-gc-publication-recovery-evaluation.
-Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
+Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
+
+Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
 
 ## Contract and disposition rules
 
@@ -19,7 +21,7 @@ Common real-service harness: install exact P1; create/remove/move its legitimate
 
 | ID | Funnel | Counterexample to attempt | RED only if |
 |---|---|---|---|
-| E1-01 | GC/recovery baseline: candidate→claim→PREPARED→COMMITTED→retire→G5 recovery | Exercise the production worker and MinIO; kill/restart after root, COMMITTED, canonical retirement, S3 delete and mapping/root terminal cleanup. | Recovery creates/reopens P1 liveness or D commits with an authoritative live dependency. Record K1/K2, exact idempotence. G4/G5 legs are controls. |
+| E1-01 | GC/recovery baseline: candidate→claim→PREPARED→COMMITTED→retire→G5 recovery | Exercise the production worker and SILO; kill/restart after root, COMMITTED, canonical retirement, S3 delete and mapping/root terminal cleanup. | Recovery creates/reopens P1 liveness or D commits with an authoritative live dependency. Record K1/K2, exact idempotence. G4/G5 legs are controls. |
 | E1-02 | Master late-publication race | Hold a valid writer/repair; let prior fs:/pub:/up: lapse; run full GC to COMMITTED D1(P1); resume at its real publication step. Repeat once D is TERMINAL. | Durable P1 reference or reachable HEAD/commit/tree after D, including accepted success leaving that state. Priority one. |
 | E1-03 | W2-1/2 CreateFileFromBlocks, SessionUpload, BorrowedFS/dedup | Pause around ensureCommitBlockOwnLiveness, final validateCommitBlockPublicationFences, pub: stage, HEAD CAS and settlement. Cover owned up: and foreign fs:; expire only real TTL. | Post-D P1 dependency. Record 409/unchanged HEAD controls. Separate pre-HEAD proof from R31. |
 | E1-04 | W2-3 Sync PutBlock, auto-merge, retry on another pod | Delay across up: expiry or cross-DC visibility, commit D1, then resume readiness/HEAD/repair from relevant DCs. | Reachable P1 after D. Fail-closed timeout/unchanged HEAD is safe but does not close availability. |
@@ -63,8 +65,8 @@ and orphan, absent canonical row, and deleted K1; the race rerun passes.
 
 | Case | Result | Evidence and limit |
 |---|---|---|
-| E1-PUT-01 delayed physical PUT | PASS for the exercised Sync `PutBlock` path | `TestE1DelayedPutCannotRestoreRetiredPhysicalLife` uses real Cassandra, MinIO, the production handler and G5 worker. It pauses the physical write after authorization of exact P1, drives P1 through terminal recovery and K1 deletion, then releases the actual storage PUT. The request returns 200; K1 bytes reappear, but P1 stays absent, the same logical block is rematerialized at a different P2 key, and references contain the upload `up:` row without a P1 `fs:` row. The no-GC control also passes. This is a K1 orphan/over-retention result, not X1 RED and not closure of W2-3 or the stale-delete ABA issue. |
-| E1-02 losing-target repair replay | PARTIAL; row remains OPEN | `TestW2WorkerRepairLifecycle/lateRepairDoesNotStallCommittedDelete` replays the production repair visitor after terminal D for a commit that lost HEAD. Classification remains UNKNOWN; the row and its repair-owned `pub:` liveness remain, HEAD is unchanged, and neither P1 nor K1 returns. This does not exercise a repair whose commit is already reachable from HEAD after D, so it is not evidence closing the master late-publication race or W2-11/12. |
+| E1-PUT-01 delayed physical PUT | PASS for the exercised Sync `PutBlock` path | `TestE1DelayedPutCannotRestoreRetiredPhysicalLife` uses real Cassandra, SILO, the production handler and G5 worker. It pauses the physical write after authorization of exact P1, drives P1 through terminal recovery and K1 deletion, then releases the actual storage PUT. The request returns 200; K1 bytes reappear, but P1 stays absent, the same logical block is rematerialized at a different P2 key, and references contain the upload `up:` row without a P1 `fs:` row. The no-GC control also passes. This is a K1 orphan/over-retention result (the existing [G4 delayed-PUT follow-up](./X1-CRITICAL-PATH.md#confirmed-e1--pre-gc-dependency-from-g4-cross-audit-2026-10-02)), not X1 RED and not closure of W2-3 or the stale-delete ABA issue. |
+| E1-02 losing-target repair replay | PARTIAL; row remains OPEN | `TestW2WorkerRepairLifecycle/lateRepairDoesNotStallCommittedDelete` replays the production repair visitor after terminal D for a commit that lost HEAD. The production resumable classifier returns `unknown` without error, and the actual visitor returns the typed `retained` outcome (operational/renewal failures are rejected); the row and its repair-owned `pub:` liveness remain, HEAD is unchanged, and neither P1 nor K1 returns. This does not exercise a repair whose commit is already reachable from HEAD after D, so it is not evidence closing the master late-publication race or W2-11/12. |
 | E1-01 and E1-03 | UNRUN in this evaluation | Existing G4/G5 tests are controls only; this branch did not repeat the full crash-point or upload/dedup post-D matrix. |
 | E1-04 | PARTIAL; row remains OPEN | The delayed-PUT case above covers only the held physical-write continuation. Sync HEAD, auto-merge and cross-pod retry after D are not evaluated here. |
 | E1-05 through E1-15 | UNRUN; rows remain OPEN | Source tracing below records the current funnel shape, not a post-D integration result. |
@@ -104,11 +106,51 @@ post-D repair was exercised, the restart matrix is incomplete, W2-11..14 remain
 open, X1 is not closed, and destructive GC remains OFF. These results authorize
 no PRE-GC or startup-gate transition.
 
+## Cross-audit hardening — 2026-10-03
+
+The three test/evidence findings are addressed without production runtime edits:
+
+- Both delayed-PUT and no-GC fixtures clean the current canonical storage key
+  before metadata teardown, including rematerialized K2, and their exact Sync
+  `up:` referrer. Independent teardown reads verify the physical object,
+  canonical expiry tracker and durable by-day expiry projection are absent.
+- E1-02 requires the real resumable classifier to return `unknown` with no
+  operational error, then requires the actual visitor's typed `retained`
+  outcome. Retention alone does not certify UNKNOWN. The test also verifies
+  the durable repair identity and its exact repair-owned `pub:` referrer.
+- The tested backend is pinned SILO, as recorded above. Historical MinIO
+  evidence outside this E1 slice is unchanged.
+
+The additional verifier correction covers a competing G5 worker completing
+between recovery-root discovery and the exact orphan read. A clean missing
+orphan is accepted only after the existing terminal certificate/object/root
+checks pass. `TestW2RecoveryCompletesBetweenRootListAndRead` drives that
+interleaving through the real worker; it is a harness regression control,
+not closure of E1-01's crash/restart matrix.
+
+Audit validation: PASS, all sequential in a single Docker runner built from
+`e0358bd4b` plus this audit-hardening diff. The standard `go-all-test` command
+(Go unit/integration, API and OIDC) and normal/integration `go vet` pass; the
+integration suite completed in 457.946s. Ten `-race -count=10` repetitions of
+`TestE1DelayedPutCannotRestoreRetiredPhysicalLife`,
+`TestW2WorkerRepairLifecycle` and
+`TestW2RecoveryCompletesBetweenRootListAndRead` pass (56.212s).
+
+Three container-only mutations are RED for their own assertion: removing
+cleanup leaves the physical object, canonical expiry tracker and by-day
+projection; substituting
+an arbitrary DB error yields a `failed` visit instead of `retained`; removing
+the new discovery/read fallback loses the committed continuation after the
+competing real worker finishes. Source was restored before the final race run;
+mutation-only teardown also removes its exact artifacts. No host source was
+mutated by these experiments. Optional 3DC/proxy/saturation legs are not claimed
+as passed, and no E1/X1 disposition or production GC activation gate changed.
+
 ## Topology, exclusions and exit
 
-One stack at a time. Start with single-DC Cassandra plus real MinIO for decisive writer/recovery races. Add isolated 3DC only when actors differ by DC or SERIAL/EACH_QUORUM visibility is material; name the assertion it proves. Use healthy Cassandra 5.0.9, RF1/DC and dedicated MinIO. Record exact crash point/DC/read levels. G4/G5 are controls; repeat their shared executor only if modified.
+One stack at a time. Start with single-DC Cassandra plus real SILO for decisive writer/recovery races. Add isolated 3DC only when actors differ by DC or SERIAL/EACH_QUORUM visibility is material; name the assertion it proves. Use healthy Cassandra 5.0.9, RF1/DC and dedicated SILO. Record exact crash point/DC/read levels. G4/G5 are controls; repeat their shared executor only if modified.
 
-No runtime edit before this matrix is frozen in a base-referenced commit. If GREEN, close only rows supported by positive §4 evidence or an extant tested gate; else OPEN and X1 stays open. On RED fix minimum cause and rerun exact leg, regression, real Cassandra/MinIO, crash/restart and required DC leg. Preserve RED/UNKNOWN/incomplete results.
+No runtime edit before this matrix is frozen in a base-referenced commit. If GREEN, close only rows supported by positive §4 evidence or an extant tested gate; else OPEN and X1 stays open. On RED fix minimum cause and rerun exact leg, regression, real Cassandra/SILO, crash/restart and required DC leg. Preserve RED/UNKNOWN/incomplete results.
 
 Out of scope: G5 clock-health/scheduler, stale-claim settlement, Phase 5 shared-fs_object cascade, Phase 6 execute-time TOCTOU, full PC-D1B.5, A1 startup gate, GC activation, future funnels, speculative coordinator/scheduler redesign. Track separately unless evidence proves the exact post-D reachable-P1 violation on supported code.
 

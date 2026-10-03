@@ -2927,7 +2927,8 @@ Historical option comparison and race matrix remain in
 active roadmap.
 
 E1 delayed-PUT evidence (2026-10-03) is recorded in
-[the E1 execution ledger](./E1-FULL-GC-PUBLICATION-RECOVERY.md): after terminal
+[the E1 execution ledger](./E1-FULL-GC-PUBLICATION-RECOVERY.md), using Cassandra
+plus pinned SILO `RELEASE.2026-09-16T00-00-00Z` (MinIO-compatible S3): after terminal
 D, a held real Sync PutBlock left bytes at the retired K1 but installed a new
 canonical P2 and no P1 `fs:` reference. This does not exercise an in-flight S3
 DELETE racing a same-key re-upload, so it does not close or reduce this issue.

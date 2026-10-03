@@ -21,7 +21,7 @@ import (
 )
 
 // Only discovery is narrowed: claim, zero-proof, handoff and finalization
-// use the real store; physical existence is checked against MinIO. Recovery must never act on another fixture's D.
+// use the real store; physical existence is checked against the configured S3 backend. Recovery must never act on another fixture's D.
 // Its global scan cursor is kept local to this test, not written to shared DB.
 type w2OwnedRecoveryStore struct {
 	gcpkg.GCStore
@@ -91,7 +91,7 @@ func w2Candidate(t *testing.T, store *gcpkg.CassandraStore, org uuid.UUID, block
 	}
 	return c
 }
-func w2AssertCommittedContinuation(t *testing.T, store *gcpkg.CassandraStore, org uuid.UUID, block, class, key string, bs *storage.BlockStore) {
+func w2AssertCommittedContinuation(t *testing.T, store *gcpkg.CassandraStore, org uuid.UUID, block, class, key string, bs *storage.BlockStore, afterRootRead ...func()) {
 	t.Helper()
 	if exists, err := store.BlockExists(org, block); err != nil || exists {
 		t.Fatalf("W2 WORKER VIOLATION: committed D stalled by late repair: canonical exists=%v err=%v", exists, err)
@@ -110,7 +110,15 @@ func w2AssertCommittedContinuation(t *testing.T, store *gcpkg.CassandraStore, or
 				if root.OrgID != org || root.BlockID != block {
 					continue
 				}
+				// The optional callback lets a regression drive the real competing
+				// worker after discovery but before the authoritative orphan read.
+				if len(afterRootRead) > 0 {
+					afterRootRead[0]()
+				}
 				orphan, exists, err := store.GetS3OrphanExact(org, block, root.Authority)
+				if err == nil && !exists && w2WaitForTerminalContinuation(t, store, org, block, class, key, bs) {
+					return
+				}
 				if err != nil || !exists || orphan.RecoveryState != gcpkg.S3OrphanRecoveryStateCommitted || orphan.StorageClass != class || orphan.StorageKey != key {
 					t.Fatalf("lost exact committed continuation: %+v exists=%v err=%v", orphan, exists, err)
 				}
@@ -350,8 +358,16 @@ func TestW2WorkerRepairLifecycle(t *testing.T) {
 			t.Fatalf("expected one late repair for the losing commit %s, got %+v", fc.commitID, lateRepairs)
 		}
 		lateRepair := lateRepairs[0]
-		if err := v2pkg.RepairPublishedFSObjectBlockReferenceRepair(database, tenant.orgID, repo, lateRepair.commitID, lateRepair.fsID, lateRepair.blocks); err == nil {
-			t.Fatal("repair visitor must retain UNKNOWN for the commit that never won HEAD")
+		classification, classifyErr := v2pkg.ClassifyPublishedBlockReferenceRepairResumableForIntegration(database, tenant.orgID, repo, lateRepair.commitID, lateRepair.fsID)
+		if classifyErr != nil || classification != "unknown" {
+			t.Fatalf("late repair classification=%q err=%v; want UNKNOWN without an operational error", classification, classifyErr)
+		}
+		visitErr := v2pkg.RepairPublishedFSObjectBlockReferenceRepair(database, tenant.orgID, repo, lateRepair.commitID, lateRepair.fsID, lateRepair.blocks)
+		if outcome := v2pkg.PublishedBlockReferenceRepairVisitOutcomeForIntegration(visitErr); outcome != "retained" {
+			t.Fatalf("late repair visit outcome=%q err=%v; want clean retained outcome", outcome, visitErr)
+		}
+		if remaining := w2Repairs(t, fx); len(remaining) != 1 || remaining[0].commitID != lateRepair.commitID || remaining[0].fsID != lateRepair.fsID {
+			t.Fatalf("late repair did not retain its durable row: %+v", remaining)
 		}
 		fx.assertHeadUnchanged(t)
 		x1AssertCanonicalAbsent(t, store, org, fx.blockID)
@@ -362,15 +378,40 @@ func TestW2WorkerRepairLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pubRef, fsRef := false, false
-		for _, referrer := range refs {
-			pubRef = pubRef || len(referrer) > 4 && referrer[:4] == "pub:"
-			fsRef = fsRef || len(referrer) > 3 && referrer[:3] == "fs:"
-		}
-		if !pubRef || fsRef || len(refs) != 1 || len(refs[0]) < 4 ||
-			refs[0][:4] != "pub:" {
+		wantRef := v2pkg.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repo, lateRepair.commitID, lateRepair.fsID)
+		if len(refs) != 1 || refs[0] != wantRef {
 			t.Fatalf("late UNKNOWN repair must retain only repair-owned pub: liveness, got %v", refs)
 		}
-		t.Logf("E1-02: terminal D1/P1 remained absent; unreachable late repair retained pub: only; HEAD unchanged; refs=%v", refs)
+		t.Logf("E1-02: terminal D1/P1 remained absent; classifier=unknown; visit=retained; durable repair present; exact repair-owned pub: only; HEAD unchanged; refs=%v", refs)
 	})
+}
+
+// Discovery is a snapshot: a competing real G5 visitor can finish its root
+// before the verifier consumes the authoritative orphan row.
+func TestW2RecoveryCompletesBetweenRootListAndRead(t *testing.T) {
+	requireCassandra(t)
+	database := shareProjectionDBForTest(t)
+	store := gcpkg.NewCassandraStore(database)
+	class := x1StorageClass(t)
+	org, block, bs := seedSyntheticBlock(t, class)
+	x1Cleanup(t, database, org, block)
+	key := bs.StorageKeyForHash(block)
+	t.Cleanup(func() { _ = bs.DeleteBlockByStorageKey(context.Background(), key) })
+	w2Candidate(t, store, org, block, class)
+	if n, err := w2Worker(t, store, class).ProcessOrgOnce(t.Context(), org); err != nil || n != 1 {
+		t.Fatalf("prepare committed continuation: processed=%d err=%v", n, err)
+	}
+	visited := false
+	w2AssertCommittedContinuation(t, store, org, block, class, key, bs, func() {
+		visited = true
+		scope := &w2OwnedRecoveryStore{GCStore: store, org: org, block: block}
+		if n, err := w2Worker(t, scope, class).RecoverS3Orphans(t.Context(), 1000); err != nil || n != 1 {
+			if !w2WaitForTerminalContinuation(t, store, org, block, class, key, bs) {
+				t.Fatalf("competing worker: recovered=%d err=%v", n, err)
+			}
+		}
+	})
+	if !visited {
+		t.Fatal("required discovery-to-orphan-read interleaving was not exercised")
+	}
 }

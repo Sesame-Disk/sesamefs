@@ -27,7 +27,7 @@ import (
 )
 
 // TestE1DelayedPutCannotRestoreRetiredPhysicalLife exercises the actual Sync
-// PutBlock handler against Cassandra and MinIO. It pauses after the production
+// PutBlock handler against Cassandra and the SILO MinIO-compatible S3 backend. It pauses after the production
 // repair-authority check has authorized exact P1/K1, lets the real G5 worker
 // commit and fully retire D1, then releases the real object PUT to K1.
 func TestE1DelayedPutCannotRestoreRetiredPhysicalLife(t *testing.T) {
@@ -63,6 +63,7 @@ func TestE1DelayedPutCannotRestoreRetiredPhysicalLife(t *testing.T) {
 		content := []byte("e1 delayed put no-gc control " + uuid.NewString())
 		blockID, key := x1SeedPhysical(t, database, blockStore, orgID, content, class)
 		x1Cleanup(t, database, orgID, blockID)
+		e1CleanupSyncUpload(t, database, blockStore, tenant.orgID, repoID, blockID, sha1hex(content))
 		if err := blockStore.DeleteBlockByStorageKey(t.Context(), key); err != nil {
 			t.Fatalf("remove K1 for repair control: %v", err)
 		}
@@ -83,6 +84,9 @@ func TestE1DelayedPutCannotRestoreRetiredPhysicalLife(t *testing.T) {
 	content := []byte("e1 delayed put after committed D " + uuid.NewString())
 	blockID, key := x1SeedPhysical(t, database, blockStore, orgID, content, class)
 	x1Cleanup(t, database, orgID, blockID)
+	// Register after x1Cleanup: LIFO teardown reads and deletes the current K2
+	// before its canonical row disappears, and removes the exact up:/expiry rows.
+	e1CleanupSyncUpload(t, database, blockStore, tenant.orgID, repoID, blockID, sha1hex(content))
 	sha1ID := sha1.Sum(content)
 	externalID := hex.EncodeToString(sha1ID[:])
 	representationID, err := dbpkg.ResolveBlockRepresentationID(database.Session(), orgID.String(), repoID)
@@ -236,4 +240,41 @@ func TestE1DelayedPutCannotRestoreRetiredPhysicalLife(t *testing.T) {
 		}
 		return fmt.Sprintf("(%s,%s)", current.StorageClass, current.StorageKey)
 	}(), referrers, recorder.Code == http.StatusOK)
+}
+
+// Snapshot -> existing exact-id cleanup -> independent verification, all before
+// x1Cleanup removes the canonical row. This covers both K1 and rematerialized K2.
+func e1CleanupSyncUpload(t *testing.T, database *dbpkg.DB, bs *storage.BlockStore, org, repo, block, externalID string) {
+	t.Helper()
+	referrer := apipkg.SyncBlockUploadReferrerForIntegration(repo, block)
+	var key string
+	var expiresAt time.Time
+	t.Cleanup(func() {
+		if key != "" {
+			if exists, err := bs.ObjectExists(context.Background(), key); err != nil || exists {
+				t.Errorf("E1 teardown left physical object %s: exists=%v err=%v", key, exists, err)
+			}
+		}
+		var remaining time.Time
+		err := database.Session().Query(`SELECT expires_at FROM gc_provisional_block_refs WHERE org_id = ? AND block_id = ? AND referrer = ?`, org, block, referrer).Scan(&remaining)
+		if !errors.Is(err, gocql.ErrNotFound) {
+			t.Errorf("E1 teardown left provisional expiry: expires_at=%v err=%v", remaining, err)
+		}
+		if !expiresAt.IsZero() {
+			var found string
+			err := database.Session().Query(`SELECT referrer FROM gc_provisional_block_refs_by_day WHERE expiry_day = ? AND bucket = ? AND expires_at = ? AND org_id = ? AND block_id = ? AND referrer = ?`, dbpkg.GCProjectionUTCDate(expiresAt), dbpkg.GCDiscoveryBucket(org, block, referrer), expiresAt, org, block, referrer).Scan(&found)
+			if !errors.Is(err, gocql.ErrNotFound) {
+				t.Errorf("E1 teardown left expiry discovery: referrer=%q err=%v", found, err)
+			}
+		}
+	})
+	cleanupUploadedBlockArtifactsForTest(t, org, repo, block, externalID, referrer)
+	t.Cleanup(func() {
+		if err := database.Session().Query(`SELECT storage_key FROM blocks WHERE org_id = ? AND block_id = ?`, org, block).Scan(&key); err != nil && !errors.Is(err, gocql.ErrNotFound) {
+			t.Errorf("snapshot E1 teardown key: %v", err)
+		}
+		if err := database.Session().Query(`SELECT expires_at FROM gc_provisional_block_refs WHERE org_id = ? AND block_id = ? AND referrer = ?`, org, block, referrer).Scan(&expiresAt); err != nil && !errors.Is(err, gocql.ErrNotFound) {
+			t.Errorf("snapshot E1 teardown expiry: %v", err)
+		}
+	})
 }
