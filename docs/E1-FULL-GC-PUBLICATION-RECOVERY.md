@@ -1,6 +1,6 @@
 # E1 — Full-GC publication and recovery evaluation
 
-Status: ACTIVE on codex/e1-full-gc-publication-recovery-evaluation.
+Status: ACTIVE; E1-2 on codex/e1-2-reachable-head-late-repair, following merged #250.
 Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
 
 Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
@@ -145,6 +145,22 @@ competing real worker finishes. Source was restored before the final race run;
 mutation-only teardown also removes its exact artifacts. No host source was
 mutated by these experiments. Optional 3DC/proxy/saturation legs are not claimed
 as passed, and no E1/X1 disposition or production GC activation gate changed.
+
+## E1-2 reachable-HEAD gate evidence — 2026-10-03
+
+On main@c1f31f7ec plus the E1-2 test, a real Office CreateFile publication wins
+HEAD and stops before permanent-reference promotion. The test verifies the
+HEAD/commit/tree/block chain and lets its actual temporary references expire in
+Cassandra using a two-second TTL time control through the reference API.
+The surviving durable repair yields REPAIR_GUARD_ONLY; the real worker
+postpones before destructive handoff. A fresh-session productive visitor then
+classifies REACHABLE and settles to the exact fs: without changing HEAD/P1/K1.
+
+This is positive evidence of the existing pre-D gate for the covered funnel,
+not a post-D reachable-repair execution. No COMMITTED or TERMINAL D is forced.
+E1-02, W2-11/14 and X1 remain OPEN; concurrent renewal/cleanup and other funnels
+need separate disposition. The no-GC control, experiment, source exclusion
+argument and validation are in [the E1-2 ledger](./E1-2-REACHABLE-HEAD-LATE-REPAIR.md).
 
 ## Topology, exclusions and exit
 

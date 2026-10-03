@@ -1,8 +1,21 @@
 # Current Work - SesameFS
 
-## Active branch: codex/e1-full-gc-publication-recovery-evaluation
+## Active branch: codex/e1-2-reachable-head-late-repair
 
-Base main@eabd93bee includes merged G5 PR #248. G5 durable-root execution is
+E1-2 (2026-10-03), base main@c1f31f7ec with merged #250: a real Office
+CreateFile wins HEAD and stops before fs: promotion. After its actual up:/pub:
+rows expire in Cassandra under a shortened-TTL time control, the durable repair
+vetoes a new D at the productive worker's pre-handoff proof. A fresh-session
+repair then classifies REACHABLE, promotes the exact fs:, settles its row and
+preserves HEAD/tree/P1/K1. COMMITTED/TERMINAL cannot be reached in this measured
+leg without bypassing the gate; neither is claimed as exercised. This is narrow
+gate evidence, not closure of E1-02, W2-11/14 or X1. See
+[E1-2 evidence and limits](docs/E1-2-REACHABLE-HEAD-LATE-REPAIR.md).
+The full Docker Go/API/OIDC suite, both vet modes and ten race repetitions pass;
+bypassing the worker's repair veto in a container-only mutation is RED.
+
+Prior E1 slice: base main@eabd93bee includes merged G5 PR #248.
+G5 durable-root execution is
 complete for its covered contract; destructive GC remains OFF.
 E1 is ACTIVE. Its publication/recovery counterexample matrix is frozen before
 runtime edits: [E1 plan](docs/E1-FULL-GC-PUBLICATION-RECOVERY.md).

@@ -237,6 +237,12 @@ late-repair race and other current funnels remain untested; these results do
 not close W2-3, W2-11..14, or X1. See
 [E1 execution ledger](./E1-FULL-GC-PUBLICATION-RECOVERY.md).
 
+E1-2 adds [reachable-HEAD gate evidence](./E1-2-REACHABLE-HEAD-LATE-REPAIR.md):
+after real temporary-reference TTL expiry, the Office writer's durable repair
+vetoes a new D before handoff, then recovers to exact fs: using a fresh session.
+This narrows the covered gate's evidence; it does not close E1-02, W2-11/14 or
+X1 and does not claim COMMITTED/TERMINAL post-D execution.
+
 Historical suggested W2 order (superseded for G4/G5 development by the
 2026-10-02 decision): W2-0 is closed for the covered shared mechanism. W2-1/2/6a were individually re-audited against that premise and remain OPEN through R31, not mixed rollout. W2-6 retains CLOSED-FIX pre-HEAD. Finish the real remaining funnels:
 W2-7/W2-8 or W2-10, each starting with a

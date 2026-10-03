@@ -8,6 +8,19 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-03 - E1-2 reachable-HEAD delayed repair gate evidence
+
+A real Office CreateFile wins HEAD and stops before fs: promotion. After actual
+Cassandra up:/pub: TTL expiry under a shortened time control, the productive
+worker preserves its candidate and P1/K1 because the durable repair vetoes a
+new D. Fresh-session repair classifies REACHABLE, settles to the exact fs: and
+preserves HEAD/tree/P1; retry is a no-op. No runtime fix or gate change is
+needed for this leg. COMMITTED/TERMINAL are excluded by that measured gate,
+not claimed as post-D executions. Full Docker Go/API/OIDC, both vet modes and
+ten race repetitions pass; bypassing the productive worker's repair veto is
+RED at the new assertion. E1 stays partial, W2-11/14 and X1 OPEN.
+[Experiment, validation and limits](./E1-2-REACHABLE-HEAD-LATE-REPAIR.md).
+
 ## 2026-10-03 - E1 cross-audit test and evidence corrections
 
 The delayed-PUT teardown now removes rematerialized K2 and its exact Sync
