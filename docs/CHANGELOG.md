@@ -8,6 +8,18 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-03 - E1-3 late-publication pre-D proof controls
+
+Frozen plan on main@abb558358 (#251), then directed real-service Office/shared
+repair evidence for two interleavings: late acquisition is rejected by final
+exact-P under the held GC claim; reachable settlement installs fs: before
+repair deletion, and the second global refs read vetoes D after a negative
+scan. A no-GC writer control passes. Query observers retain actual Cassandra
+responses. Full Docker Go/API/OIDC, both vet modes and ten race repetitions
+pass; the two container-only omission mutations are RED at their behavior
+assertions. No production runtime change or broad closure of W2-11/14/X1.
+[Plan, evidence and validation](./E1-3-LATE-PUBLICATION-PRE-D-PROOF.md).
+
 ## 2026-10-03 - E1-2 reachable-HEAD delayed repair gate evidence
 
 A real Office CreateFile wins HEAD and stops before fs: promotion. After actual

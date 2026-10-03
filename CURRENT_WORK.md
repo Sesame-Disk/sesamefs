@@ -1,8 +1,19 @@
 # Current Work - SesameFS
 
-## Active branch: codex/e1-2-reachable-head-late-repair
+## Active branch: codex/e1-3-late-publication-pre-d-proof
 
-E1-2 (2026-10-03), base main@c1f31f7ec with merged #250: a real Office
+E1-3 (2026-10-03), base main@abb558358 with merged #251: the plan was frozen
+before implementation. Directed real-Cassandra/SILO Office legs show that a
+late repair acquisition cannot publish HEAD under the held GC claim, and that
+reachable settlement writes fs: before clearing repair so the second global
+refs read vetoes D after the scan becomes negative. The observer sees actual
+EACH_QUORUM results; no liveness responses or D rows are manufactured.
+No runtime change; W2-11/14 and X1 remain OPEN. See
+[E1-3 plan and evidence](docs/E1-3-LATE-PUBLICATION-PRE-D-PROOF.md).
+Full Docker Go/API/OIDC, both vet modes and ten race repetitions pass. Omitting
+final exact-P or the second global refs read is RED at its behavior assertion.
+
+Prior slice: E1-2 (2026-10-03), base main@c1f31f7ec with merged #250: a real Office
 CreateFile wins HEAD and stops before fs: promotion. After its actual up:/pub:
 rows expire in Cassandra under a shortened-TTL time control, the durable repair
 vetoes a new D at the productive worker's pre-handoff proof. A fresh-session
