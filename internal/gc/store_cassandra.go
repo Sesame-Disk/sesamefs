@@ -3556,9 +3556,12 @@ func (s *CassandraStore) BlockPublicationLivenessGlobal(orgID uuid.UUID, blockID
 // local zero authorizes nothing"), and this one does not fit that shape: its zero DOES
 // authorize something. BlockClaimAbsent means the SERIAL observation found a row
 // that is present but does not carry a deleting claim, while BlockClaimMissing means
-// the canonical row itself is absent. The distinction lets processBlock preserve the
-// postponed path for an unclaimed current P while routing a retired row through the
-// no-touch candidate cleanup path, without issuing a second BlockExists read.
+// the canonical row itself is absent. On the referenced pre-check, processBlock
+// settles the exact candidate for an unclaimed or released current P and routes
+// a missing row through no-touch candidate cleanup, without a second BlockExists
+// read. The SERIAL observation and candidate settlement are not atomic with a
+// later same-P claim; that pre-PREPARED race remains an open PRE-GC follow-up
+// (ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01), outside durable-root recovery.
 //
 // This used to be an ordinary session-consistency read, filed as
 // ISSUE-GC-STALE-CLAIM-READ-CONSISTENCY-01, and it could miss a claim two ways:
