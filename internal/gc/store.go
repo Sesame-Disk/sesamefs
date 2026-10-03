@@ -392,8 +392,10 @@ type GCStore interface {
 	ListS3OrphansByDay(day time.Time, bucket int, limit int) ([]S3OrphanDiscoveryInfo, error)
 	// ListS3OrphanRecoveryRoots enumerates the independent fixed-bucket restart
 	// root. It has no age horizon and directly discovers current-protocol recovery.
-	// pageState is a seek checkpoint with a finite cycle upper key, not Cassandra
-	// opaque paging state. A completed cycle returns an empty pageState; a restart
+	// pageState is a seek checkpoint with an event-time upper key, not an insertion
+	// snapshot or Cassandra opaque paging state. Eventual wrap assumes advancing,
+	// bounded-skew clocks and finite pre-cutoff claims (see s3OrphanRootCursor).
+	// A completed cycle returns an empty pageState; a restart
 	// may reuse the checkpoint even when its last row was deleted.
 	ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limit int) (S3OrphanRecoveryRootPage, error)
 	// GetS3OrphanRecoveryRootExact reads one exact recovery root. It is used only

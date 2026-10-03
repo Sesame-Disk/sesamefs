@@ -3195,6 +3195,33 @@ The invariant now enforced is:
   `ReleaseStaleBlockClaim` in `internal/gc/store_cassandra.go`, which already
   narrates this resolution. This entry was stale documentation, not a live gap;
   found and corrected while re-auditing `#212` (G3) on 2026-09-10.
+- **`ISSUE-GC-ROOT-CYCLE-CLOCK-ASSUMPTION-01` (OPEN, P2 PRE-GC / OPERABILITY).**
+  Registered 2026-10-03 during G5 contract review. The THIS-PR unconditional
+  finite-cycle wording is corrected; the activation prerequisite remains OPEN.
+  The seek key begins with `gc_claimed_at` from the claiming application's
+  wall clock. Capturing `Until` bounds keys, not insertion membership: a root
+  published after capture with `After < key <= Until` joins the active cycle,
+  while a root inserted behind `After` is not visited until wrap. Clock skew,
+  regression or delayed publication can therefore extend the active cycle;
+  arbitrary indefinitely backdated arrivals have no unconditional revisit
+  guarantee. No permanent starvation counterexample in the supported healthy
+  clock regime or exact-P/data-loss defect is claimed.
+
+  Eventual wrap requires advancing clocks with bounded, observed fleet skew,
+  finite claims minted in finite time, finite outstanding pre-cutoff claims,
+  and successful subsequent discovery/checkpoint ticks. Once newly minted
+  timestamps exceed the captured cutoff, new claims sort outside the cycle.
+  The per-tick page/row bound and exact `(P,D)` destructive authority are
+  unchanged; there is no fixed wall-clock completion/revisit deadline.
+
+  Before GC activation, synchronize every application node that mints claim
+  timestamps with NTP or equivalent, define and observe the acceptable fleet
+  skew/progress bound, and specify what prevents activation or suspends GC
+  when clock health is unknown, regresses or exceeds that bound. Merely
+  enabling NTP is not evidence that the bound holds. G5 adds no clock-health
+  enforcement or monitoring implementation; verification belongs to E1/A1.
+  This is an operational prerequisite, not a scheduler/schema redesign in G5.
+  It does not close the independent pre-PREPARED stale-claim race below.
 - **`ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` (OPEN, P1 FOLLOW-UP / PRE-GC).**
   The same-P Absent/new-owner interleaving was reproduced during G5. It is a
   pre-PREPARED scheduling gap, outside durable COMMITTED-root recovery. G5's

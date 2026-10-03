@@ -5,6 +5,16 @@ full suite is not a global PASS, and absence of regressions is not established.
 First production is greenfield; no old deployment or mixed-version recovery
 was tested. Destructive production GC remains OFF.
 
+Contract clarification (2026-10-03): finite-cycle/restart results demonstrate
+bounded pages and wrap for the tested arrivals. They do not demonstrate an
+insertion snapshot or unconditional revisits under arbitrary clock skew or
+regression. `Until` bounds claim event-time keys; later-published in-range roots
+may join the active cycle. The G5 plan now states advancing/bounded-skew clock,
+finite pre-cutoff claim and discovery/checkpoint progress assumptions. Clock
+synchronization and clock-health activation controls remain OPEN PRE-GC under
+`ISSUE-GC-ROOT-CYCLE-CLOCK-ASSUMPTION-01`. No historical PASS is upgraded into
+proof of those operational controls, and exact `(P,D)` authority is unchanged.
+
 ## Sources and isolation
 
 - Expanded full suite: G5 runtime fa73da717 with the test-only isolation fix
@@ -142,3 +152,30 @@ scope are recorded here; raw files remain on this machine for characterization.
 No new PS1 driver was added. Runtime/test checks and mutations ran in Docker;
 mutations were restored before the next matrix. Full-suite results on earlier
 sources are preserved explicitly rather than relabeled for the corrected HEAD.
+
+## G5 clock-contract correction verification, 2026-10-03
+
+The correction changes documentation and Go comments only, based on
+`f08cd818929923cf910d538d16199de6b5dbdc4f`. A Go scanner comparison ignoring
+comments found identical executable token streams in `s3_orphan_root_cursor.go`,
+`store.go` and `worker.go`. No scheduler, schema, query or authority change.
+
+A disposable MockStore probe in a rebuilt Go Docker runner captured `Until`,
+then published a root with a timestamp between `After` and `Until`. The next
+page selected that later-published root: PASS, confirming that the upper key
+is not an insertion snapshot. This proves range admission, not infinite
+starvation, and is not presented as a real-Cassandra clock-skew experiment.
+The probe is retained locally in `tmp/g5-clock-contract-probe.go`; it is not
+added to the repository test suite.
+
+The same single runner then executed `go test ./internal/gc -run
+"^(TestG5|TestAuditG5LatePublicationJoinsCapturedRange)" -count=1 -v` and
+`go vet ./internal/gc`: PASS, container exit 0. Log:
+`tmp/g5-clock-contract-check.log` (local, not a published CI artifact).
+`git diff --check` passed. The full final-runtime evidence at f08cd818 remains
+scoped to that runtime; it is not a new full-suite execution for this
+comment/documentation-only correction. No test stacks ran concurrently.
+
+The THIS-PR unconditional wording P2 is corrected. Its operational clock-health
+prerequisite remains OPEN PRE-GC/A1; runtime and exact-P safety findings are
+unchanged. GC remains OFF and no merge/activation is performed by this check.

@@ -276,6 +276,7 @@ added here to count.
 
 | Item | Tracking |
 |---|---|
+| G5 cycle revisit assumes advancing claim clocks with bounded, observed fleet skew and finite pre-cutoff claims. NTP/equivalent plus a verified clock-health activation/suspension procedure is required PRE-GC; G5 provides no enforcement and no fixed wall-clock revisit bound | `ISSUE-GC-ROOT-CYCLE-CLOCK-ASSUMPTION-01` |
 | Phase 5 expired-version cascade keeps fs_objects shared with HEAD (P0 latent) | `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` |
 | Phase 6 execute-time TOCTOU: the keep-set is computed at scan time and fs_object items carry no library guard and no execute-time reachability recheck, so a HEAD that re-references an fs_id between scan and execution loses the fs_object row. Closing W2-10 (block liveness for content resurrection) does **not** close this; the certification-window fence does not either (PC-D1B.4 §15) | recorded under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` (PC-D1B.4 finding F3) |
 | Stale-claim settle race: after `ReleaseStaleBlockClaim` reports `BlockClaimAbsent`, `settleBlockCandidate` deletes the candidate conditioned only on `candidate_at`, so a claim won by another worker in the gap can lose its recovery authority (liveness: block stranded in `deleting`, no data loss). OPEN, P1 FOLLOW-UP / PRE-GC; evaluate in E1. Outside G5 durable-root scope; closure must preserve scheduling independently of fresh zero-ref grace | `ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` |

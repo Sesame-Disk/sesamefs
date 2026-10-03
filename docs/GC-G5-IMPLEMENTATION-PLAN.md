@@ -10,6 +10,20 @@ published lifecycle, fresh topology, EACH_QUORUM reload and org/class/key checks
 No logical-reference reauthorization, old-data migration or empty-state recovery
 fallback is part of G5. PREPARED remains metadata-only; UNKNOWN fails closed.
 
+The per-tick page/row bound is unconditional; eventual cycle completion and
+revisiting retained roots assume advancing application clocks with a bounded,
+observed fleet skew, finite claim production in finite time, and successful
+future discovery/checkpoint ticks. `Until` is an event-time upper key, not an
+insertion snapshot: roots published later with `After < key <= Until` can join
+the active cycle; arrivals at or behind `After` wait for wrap. Once new claim
+timestamps advance beyond `Until.ClaimedAt`, only the finite set of earlier
+claims can still enter its range. This is no fixed wall-clock revisit bound
+and makes no unconditional fairness claim under arbitrary clock regression,
+skew or indefinitely backdated claim production. Synchronized clocks (NTP or
+equivalent), observable skew bounds and a clock-health activation procedure
+are PRE-GC operational prerequisites; G5 implements no clock-health gate.
+See `ISSUE-GC-ROOT-CYCLE-CLOCK-ASSUMPTION-01` in KNOWN_ISSUES.md.
+
 ## Implementation
 
 1. Execute canonical current-protocol recovery directly from the non-expiring
@@ -19,8 +33,10 @@ fallback is part of G5. PREPARED remains metadata-only; UNKNOWN fails closed.
 2. Replace opaque Cassandra paging state with an exact clustering-key seek token.
    Each bucket visits at most one bounded page per tick, checkpoints only after
    the page is attempted, advances past failed rows and wraps after a finite
-   cycle. A cycle captures an upper key so continuous arrivals cannot prevent
-   revisiting earlier roots. Neither a missing/deleted root nor restart invalidates
+   cycle under the clock/progress assumptions above. The captured upper key
+   excludes later claims once their timestamps pass the cutoff, but does not
+   freeze the set of roots inserted in-range. Neither a missing/deleted root nor
+   restart invalidates
    the token. Corrupt/missing checkpoints restart discovery, never supply authority.
 3. Reproduce stale-claim settlement on the same P, with worker B crashing before
    PREPARED/root publication. Determine whether root scheduling closes it. If not,
@@ -52,7 +68,8 @@ fallback is part of G5. PREPARED remains metadata-only; UNKNOWN fails closed.
 
 ## Exit
 
-A PR with an executable bounded convergence guarantee, plan and actual test
+A PR with a bounded per-tick recovery guarantee and eventual revisit under the
+stated clock/progress assumptions, plan and actual test
 records, no greenfield compatibility paths added, clean branch and verified
 remote head. No GC activation, X1 closure or production-readiness claim.
 

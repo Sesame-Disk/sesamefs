@@ -55,7 +55,12 @@ projection before deleting the root.
 - `gc_s3_orphan_recovery_roots` has deliberate indefinite growth; a bounded
   archival/reconciliation policy is deferred.
 - G5 replaces physical `_by_day` enumeration with one bounded seek page per
-  durable-root bucket and finite-cycle checkpoints. Prefix pressure, restart and
+  durable-root bucket and seek checkpoints. Eventual finite-cycle wrap assumes
+  advancing, bounded-skew application clocks and finite pre-cutoff claims;
+  `Until` is not an insertion snapshot and supplies no wall-clock revisit
+  deadline. Clock synchronization and verified clock health are PRE-GC:
+  `ISSUE-GC-ROOT-CYCLE-CLOCK-ASSUMPTION-01`. G5 implements no such gate.
+  Prefix pressure, restart and
   exact post-D authority have unit/race and real one/three-DC Cassandra/MinIO
   evidence. Full required single-DC integration passed; additional P3 multi-DC
   CAS timeouts remain an E1 evidence limitation. See [G5 plan](./GC-G5-IMPLEMENTATION-PLAN.md).

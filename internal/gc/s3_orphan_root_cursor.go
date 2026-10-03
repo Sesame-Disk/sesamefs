@@ -9,8 +9,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// A seek checkpoint is scheduling only. Until closes a finite cycle even while
-// newer roots arrive. Keys stay usable after their rows have been deleted.
+// A seek checkpoint is scheduling only. Until bounds event-time keys, not an
+// insertion snapshot: later-published roots can still enter its range. Eventual
+// wrap assumes advancing, bounded-skew application clocks and finite production
+// of claims before the cutoff; see ISSUE-GC-ROOT-CYCLE-CLOCK-ASSUMPTION-01.
+// The per-tick page bound does not depend on clocks. Keys survive row deletion.
 type s3OrphanRootKey struct {
 	ClaimedAt    time.Time
 	OrgID        uuid.UUID

@@ -2472,7 +2472,8 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, pageSize int) (int, error
 			}
 		}
 		// Advance after all identities were attempted, including failed rows. Retained
-		// roots return in the next finite cycle; one poisoned prefix cannot starve others.
+		// roots return after wrap under the clock/progress assumptions documented for
+		// s3OrphanRootCursor. Failed rows do not block seek progress within this cycle.
 		if err := w.store.SaveGCStats(checkpointKey, string(page.PageState)); err != nil {
 			sweepErr = errors.Join(sweepErr, fmt.Errorf("checkpoint recovery roots bucket=%d: %w", bucket, err))
 		}
