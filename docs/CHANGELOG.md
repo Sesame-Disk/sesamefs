@@ -8,6 +8,33 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-03 - E1 cross-audit test and evidence corrections
+
+The delayed-PUT teardown now removes rematerialized K2 and its exact Sync
+up:/expiry rows, with independent absence checks. The late-repair evidence
+requires a clean UNKNOWN classifier result and a typed retained visit, then
+checks the durable repair and exact pub: owner. E1 records pinned SILO
+`RELEASE.2026-09-16T00-00-00Z` as the tested MinIO-compatible S3 backend.
+The recovery verifier handles a worker finishing between root listing and the
+orphan read; a real-worker regression reproduces that window. Full Docker
+Go/API/OIDC, both vet modes, three directed RED mutations and ten GREEN race
+repetitions pass. No production runtime or GC gate change; E1 remains partial
+and X1 OPEN. [Evidence and limits](./E1-FULL-GC-PUBLICATION-RECOVERY.md#cross-audit-hardening--2026-10-03).
+
+## 2026-10-03 - E1 initial full-GC publication/recovery evidence (partial)
+
+On `codex/e1-full-gc-publication-recovery-evaluation`, froze the E1 matrix
+before runtime edits, then added real Cassandra plus SILO
+`RELEASE.2026-09-16T00-00-00Z` (MinIO-compatible S3) integration evidence for
+a delayed authorized Sync PutBlock and an unreachable post-terminal repair
+replay. The delayed physical write restored orphan K1 bytes but the handler
+materialized a new P2 life and did not restore P1. The losing repair remained
+UNKNOWN with repair-owned `pub:` liveness and did not change HEAD/P1. The full
+Docker `go-all-test` run, directed race tests and both normal/integration vet
+passed sequentially. Reachable post-D publication and most matrix rows remain
+unrun, so E1 is partial, X1 stays OPEN and GC stays OFF. No production runtime
+behavior changed.
+
 ## 2026-09-29 - PR #234 hard-delete lease global SERIAL domain (rebased onto the X1 reset / W2-6a)
 
 Closed `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`. Every hard-delete lease

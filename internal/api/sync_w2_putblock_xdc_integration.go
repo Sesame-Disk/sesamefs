@@ -3,9 +3,11 @@
 package api
 
 import (
+	"context"
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/storage"
 )
 
 // This file exposes the minimum production Sync PutBlock provenance surface
@@ -44,4 +46,15 @@ func SyncSimulatePutBlockProvenanceForIntegration(database *db.DB, orgID, repoID
 func SyncBlockHasOwnLivenessProvenanceForIntegration(database *db.DB, orgID, repoID, blockID string) (bool, error) {
 	h := &SyncHandler{db: database}
 	return syncBlockHasOwnLivenessProvenanceFn(h, orgID, repoID, blockID)
+}
+
+// SetSyncPutBlockAutoDirectForIntegration temporarily replaces the physical
+// PUT callback used by the real Sync PutBlock handler. E1 uses it only to pause
+// after PutBlockMaterializationTarget has authorized an exact existing P1,
+// while a real G5 worker retires that P1. The callback still performs the real
+// BlockStore PUT when the integration test releases it.
+func SetSyncPutBlockAutoDirectForIntegration(fn func(context.Context, *storage.BlockStore, string, []byte) (string, error)) func() {
+	previous := syncPutBlockAutoDirectFn
+	syncPutBlockAutoDirectFn = fn
+	return func() { syncPutBlockAutoDirectFn = previous }
 }

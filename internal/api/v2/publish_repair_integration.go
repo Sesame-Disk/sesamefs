@@ -29,6 +29,13 @@ func SettlePublishedBlockReferenceRepairForIntegration(database *db.DB, orgID, r
 	return settlePublishedBlockReferenceRepair(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs), outcomeValue, injectedErr)
 }
 
+// PublishedBlockReferenceRepairVisitOutcomeForIntegration distinguishes a clean
+// retained visit from operational failures, including failed liveness renewal.
+// Retention alone does not certify an UNKNOWN reachability classification.
+func PublishedBlockReferenceRepairVisitOutcomeForIntegration(err error) string {
+	return publishedBlockReferenceRepairVisitOutcome(err)
+}
+
 // PublishedBlockReferenceRepairCommitOutcomeForIntegration runs the production
 // cold-path classifier without exposing its internal outcome type to integration
 // packages. It is used by the standalone 3-DC evidence leg.

@@ -228,6 +228,15 @@ Not W2 exit rows (follow-ups, may be reclassified in E1):
 `ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`,
 `ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01`.
 
+E1 evidence update (2026-10-03): with Cassandra plus pinned SILO
+`RELEASE.2026-09-16T00-00-00Z` (MinIO-compatible S3), a real delayed Sync PutBlock after terminal D
+left bytes at the retired K1 but rematerialized the canonical block at P2 and
+did not restore a P1 reference. A post-terminal replay of a repair for a
+commit that lost HEAD retained UNKNOWN and `pub:` only. The reachable-HEAD
+late-repair race and other current funnels remain untested; these results do
+not close W2-3, W2-11..14, or X1. See
+[E1 execution ledger](./E1-FULL-GC-PUBLICATION-RECOVERY.md).
+
 Historical suggested W2 order (superseded for G4/G5 development by the
 2026-10-02 decision): W2-0 is closed for the covered shared mechanism. W2-1/2/6a were individually re-audited against that premise and remain OPEN through R31, not mixed rollout. W2-6 retains CLOSED-FIX pre-HEAD. Finish the real remaining funnels:
 W2-7/W2-8 or W2-10, each starting with a

@@ -1,22 +1,37 @@
 # Current Work - SesameFS
 
-## Active branch: codex/g5-recovery-scheduling-hardening
+## Active branch: codex/e1-full-gc-publication-recovery-evaluation
 
-Base main@b57f5ce69c9faa37529c761121b7a0507d1099fc, merged #247.
-G4 is complete for its covered physical-life coexistence contract. G5 is ACTIVE:
-independent root execution, bounded seek checkpoints and restart/failure fairness.
-The pre-PREPARED same-P stale-claim settlement race remains OPEN, P1 FOLLOW-UP /
-PRE-GC; its attempted retention fix is withdrawn to preserve fresh zero-epoch grace.
-Plan: [G5 implementation](./docs/GC-G5-IMPLEMENTATION-PLAN.md).
+Base main@eabd93bee includes merged G5 PR #248. G5 durable-root execution is
+complete for its covered contract; destructive GC remains OFF.
+E1 is ACTIVE. Its publication/recovery counterexample matrix is frozen before
+runtime edits: [E1 plan](docs/E1-FULL-GC-PUBLICATION-RECOVERY.md).
+Highest priority is a real post-D late publication/repair; a delayed authorized
+K1 PUT is separately classified as orphan bytes or a durable P1 dependency.
+Re-evaluate each applicable W2/R31 row against G1→G5. A non-reproduction alone
+does not close X1. Scope excludes Phase 5/6, G5 clock-health, stale-claim,
+full PC-D1B.5, A1 and GC activation unless evidence proves the E1 invariant.
+Work order: G5 -> E1 -> X1 CLOSED -> PRE-GC -> A1 -> GC ON.
 
-First production is greenfield. Recovery accepts the current PREPARED/COMMITTED
-protocol; no empty-state physical fallback or old-data migration is added.
-GC remains OFF. E1 is next and re-evaluates W2/R31, late publication dependent on
-retired P1, late K1 PUT, crash/restart and multi-DC behavior against the full GC.
-The work order remains G5 -> E1 -> X1 CLOSED -> PRE-GC -> A1 -> GC ON.
+E1 status (2026-10-03): real Cassandra plus pinned SILO
+`RELEASE.2026-09-16T00-00-00Z` (MinIO-compatible S3) delayed Sync PutBlock after
+terminal D left K1 bytes but did not restore P1; the handler materialized the
+same block at a new P2 key. A post-terminal replay for an unreachable repair
+retained UNKNOWN plus `pub:` only and left HEAD/P1 unchanged. Both are narrow
+results; the reachable-HEAD late-repair leg and the remaining E1 matrix are
+still OPEN. The Docker `go-all-test` suite passed after the integration test
+changes; the two E1 cases pass under `-race`, and normal/integration `go vet`
+pass in a single sequential Docker runner. No production runtime code changed;
+GC stays OFF and X1 stays OPEN.
 
-The dated merged-PR entries below are historical snapshots, superseded where
-noted by the current [X1 source of record](./docs/X1-CRITICAL-PATH.md).
+E1 cross-audit hardening (2026-10-03): fixed K2 plus exact Sync up:/expiry
+teardown, checked UNKNOWN classification and clean typed retained visitation,
+and corrected backend provenance to pinned SILO. The verifier also covers a
+worker finishing between root discovery and the exact orphan read, with a real
+worker regression. Full Go/API/OIDC, both vet modes, three directed RED
+mutations and ten GREEN race repetitions pass sequentially in Docker. These
+are test/evidence corrections; remaining E1/W2 rows and X1 stay OPEN. See the
+[E1 audit ledger](docs/E1-FULL-GC-PUBLICATION-RECOVERY.md#cross-audit-hardening--2026-10-03).
 
 **Merged PR #234, `fix/library-hard-delete-lease-global-serial` (rebased onto `main@cd591709c`, 2026-09-30; originally 2026-09-26):**
 Every hard-delete lease LWT (library, user and org) now pins global `SERIAL`
