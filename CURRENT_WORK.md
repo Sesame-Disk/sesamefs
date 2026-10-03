@@ -4,8 +4,9 @@
 
 Base main@b57f5ce69c9faa37529c761121b7a0507d1099fc, merged #247.
 G4 is complete for its covered physical-life coexistence contract. G5 is ACTIVE:
-independent root execution, bounded seek checkpoints, restart/failure fairness,
-and retention of current-P scheduling across stale-claim release races.
+independent root execution, bounded seek checkpoints and restart/failure fairness.
+The pre-PREPARED same-P stale-claim settlement race remains OPEN, P1 FOLLOW-UP /
+PRE-GC; its attempted retention fix is withdrawn to preserve fresh zero-epoch grace.
 Plan: [G5 implementation](./docs/GC-G5-IMPLEMENTATION-PLAN.md).
 
 First production is greenfield. Recovery accepts the current PREPARED/COMMITTED

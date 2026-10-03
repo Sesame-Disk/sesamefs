@@ -72,8 +72,8 @@ func TestX2_StaleClaimFromAnotherCandidateIsReleased(t *testing.T) {
 	if blk.GCState != "" {
 		t.Errorf("block left fenced (gc_state=%q) by a claim from an abandoned candidate; every future upload of this content would be refused forever", blk.GCState)
 	}
-	if got := store.AllBlockGCCandidates(); len(got) != 1 {
-		t.Errorf("candidate rows = %d after the fence was lifted, want 1 (current-P scheduling retained)", len(got))
+	if got := store.AllBlockGCCandidates(); len(got) != 0 {
+		t.Errorf("candidate rows = %d after the fence was lifted, want 0", len(got))
 	}
 	if deletes := sp.ScopedBlockDeletes(); len(deletes) != 0 {
 		t.Errorf("deleted a referenced block: %+v", deletes)

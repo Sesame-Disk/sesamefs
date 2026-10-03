@@ -3195,16 +3195,14 @@ The invariant now enforced is:
   `ReleaseStaleBlockClaim` in `internal/gc/store_cassandra.go`, which already
   narrates this resolution. This entry was stale documentation, not a live gap;
   found and corrected while re-auditing `#212` (G3) on 2026-09-10.
-- **`ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` (G5 CLOSED-EVIDENCE for covered same-P interleavings).**
-  The G5 RED probe reproduces a same-P new claim between an Absent observation
-  and settlement, with no PREPARED root yet. Current referenced P candidates and
-  their queue/pending lifecycles now postpone without consuming retries after
-  either pre-check stale release or owner-exact post-claim release. Retirement
-  and target replacement still settle only the exact old candidate. This closes
-  the destructive settlement window by retaining scheduling, rather than adding
-  a second non-atomic claim read. Unit/race and real Cassandra same-P evidence passed in one and three DCs.
-  Broader multi-DC availability/activation remains E1; see the G5 final audit.
-  Historical counterexample follows.
+- **`ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` (OPEN, P1 FOLLOW-UP / PRE-GC).**
+  The same-P Absent/new-owner interleaving was reproduced during G5. It is a
+  pre-PREPARED scheduling gap, outside durable COMMITTED-root recovery. G5's
+  attempted referenced-candidate retention is withdrawn: keeping candidate_at
+  let a later live-to-zero epoch inherit expired grace. Closing this issue must
+  preserve recovery scheduling without preserving stale zero-ref eligibility;
+  a second non-atomic claim read is insufficient. Neither CLOSED-EVIDENCE nor
+  CLOSED-FIX applies. Historical counterexample follows.
 
   `ReleaseStaleBlockClaim`'s SERIAL observation and the caller's later
   `settleBlockCandidate` are two separate operations, not one CAS: after the
@@ -3241,7 +3239,11 @@ The invariant now enforced is:
   two separate operations (a fresh read, then a separate delete) are still
   TOCTOU; the two must become one atomic operation. Exposure today is nil:
   destructive GC runs nowhere (`GC_ENABLED=false`).
-- **`ISSUE-GC-REFERENCED-ORPHAN-LIFECYCLE-01` (open, storage leak).** The bullet above
+- **`ISSUE-GC-REFERENCED-ORPHAN-LIFECYCLE-01` (SUPERSEDED / LEGACY-NOT-REACHABLE under greenfield v1).**
+  G4 irrevocable exact-D continuation and G5 current-protocol durable roots
+  supersede the historical empty-state/day-cursor/90-day executor. No deployed
+  old data exists; no quarantine state or compatibility executor is required.
+  The historical storage-leak counterexample is preserved below. The historical bullet above
   used to justify itself with "the condition is permanent by construction — the row
   survives and every sweep rediscovers it". That is false. A sweep ending without a
   phase error advances the day cursor, and the next starts only `gcScanOverlapDays`

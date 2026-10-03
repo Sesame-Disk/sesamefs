@@ -148,8 +148,8 @@ func TestWorker_ProcessBlock_RefCountPositive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
-	if n != 0 {
-		t.Errorf("expected 0 consumed (skipped), got %d", n)
+	if n != 1 {
+		t.Errorf("expected 1 processed (skipped), got %d", n)
 	}
 
 	// Block should NOT be deleted (ref_count > 0)
@@ -313,8 +313,8 @@ func TestWorker_ProcessBlock_RefCountZeroButLiveFSObjectReferenceSkipsDelete(t *
 	if err != nil {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("expected 0 consumed skip, got %d", n)
+	if n != 1 {
+		t.Fatalf("expected 1 processed skip, got %d", n)
 	}
 	if store.GetBlock(orgID, "partial-zero") == nil {
 		t.Fatal("zero-ref block should remain while a live fs_object references it")
@@ -516,8 +516,8 @@ func TestWorker_ProcessBlock_LiveFSObjectReferenceViaMappedIDSkipsDelete(t *test
 	if err != nil {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("expected 0 consumed skip, got %d", n)
+	if n != 1 {
+		t.Fatalf("expected 1 processed skip, got %d", n)
 	}
 	if store.GetBlock(orgID, "internal-block") == nil {
 		t.Fatal("mapped zero-ref block should remain while a live fs_object references it")
@@ -1124,8 +1124,8 @@ func TestWorker_ProcessBlock_ReReferencedClaimReleaseIsOwnedByCandidate(t *testi
 	if err != nil {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("expected 0 consumed item, got %d", n)
+	if n != 1 {
+		t.Fatalf("expected 1 processed item, got %d", n)
 	}
 	block := store.GetBlock(orgID, "blk-rereferenced")
 	if block == nil {
@@ -1134,8 +1134,8 @@ func TestWorker_ProcessBlock_ReReferencedClaimReleaseIsOwnedByCandidate(t *testi
 	if block.GCState != "" || block.GCClaimID != "" {
 		t.Fatalf("claim should be released after re-reference, got state=%q claim=%q", block.GCState, block.GCClaimID)
 	}
-	if got := len(store.AllBlockGCCandidates()); got != 1 {
-		t.Fatalf("expected current-P candidate retained after re-reference, got %d", got)
+	if got := len(store.AllBlockGCCandidates()); got != 0 {
+		t.Fatalf("expected candidate cleanup after re-reference, got %d", got)
 	}
 	if blockHasRefsCalls != 2 {
 		t.Fatalf("expected 2 block reference checks, got %d", blockHasRefsCalls)

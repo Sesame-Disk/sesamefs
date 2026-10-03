@@ -132,8 +132,8 @@ func TestMain(m *testing.M) {
 	}()
 
 	code := m.Run()
-	if os.Getenv("SESAMEFS_REQUIRE_G5_EVIDENCE") == "1" && (!g5CoexistenceObserved || !g5PaginationObserved || !g5ClaimRaceObserved) {
-		fmt.Println("required G5 Cassandra/MinIO old-life, bounded seek and same-P claim evidence was not observed")
+	if os.Getenv("SESAMEFS_REQUIRE_G5_EVIDENCE") == "1" && (!g5CoexistenceObserved || !g5PaginationObserved || !g5GraceObserved) {
+		fmt.Println("required G5 Cassandra/MinIO old-life, bounded seek and fresh zero-epoch grace evidence was not observed")
 		code = 1
 	}
 	if os.Getenv("SESAMEFS_REQUIRE_G4_EVIDENCE") == "1" && !g4CoexistenceObserved {

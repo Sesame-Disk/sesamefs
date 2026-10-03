@@ -136,15 +136,6 @@ func (e blockClaimNotYetStaleError) FailureCode() string {
 	return GCFailureCodeBlockClaimNotYetStale
 }
 
-// Keep the candidate until its exact P is retired or replaced. Claim absence is
-// not permanent: another worker can win the same P immediately after a release.
-type blockStillReferencedError struct{ ItemID string }
-
-func (e blockStillReferencedError) Error() string {
-	return fmt.Sprintf("block %s still referenced; retain same-P recovery candidate", e.ItemID)
-}
-func (e blockStillReferencedError) FailureCode() string { return GCFailureCodeBlockStillReferenced }
-
 // Pending publication is a veto before D, not evidence of a real reference.
 // Release the exact claim and postpone without consuming candidate or retries.
 type blockPublicationPendingError struct{ ItemID string }
@@ -162,9 +153,9 @@ func (e blockPublicationPendingError) FailureCode() string {
 //
 // IT EXISTS TO STOP A LATE LOSER FROM CONSUMING THE CANDIDATE, AND THEN FROM CONSUMING
 // THE WORK ITEM THAT CARRIES IT. The walk has branches
-// that legitimately release their own claim — "re-referenced
-// after claim" is the important one. A release must belong to THIS attempt
-// before it can choose a retry policy. If it came back not-owner, this
+// that legitimately release the claim and then settle the candidate — "re-referenced
+// after claim" is the important one — and settling is only sound when the release
+// actually released THIS attempt's fence. If the release came back not-owner, this
 // attempt has no authority to settle the candidate. Preserving it is the only safe choice
 // because it can be needed to recover a fence if another lifecycle left one standing.
 //
@@ -514,7 +505,7 @@ func (w *Worker) failClosedIfUnavailable(reason, itemID string, err error) error
 // the branches that "only need the fence gone" are the ones that go on to postpone, and
 // postponing is RequeueItem. Every caller now either hands the outcome to
 // refuseRetryForForeignClaimOwner or compares it against BlockReleaseReleased itself, as
-// the owner-exact re-reference release does — and
+// the re-referenced settlement does — and
 // TestP4ANoPostClaimUnwindDiscardsTheReleaseOutcome fails the build if a new one does
 // neither.
 //
@@ -775,7 +766,6 @@ func shouldPostponeWithoutRetry(err error) bool {
 		GCFailureCodeDestructiveFailClosed,
 		GCFailureCodeBlockClaimNotYetStale,
 		GCFailureCodeBlockPublicationPending,
-		GCFailureCodeBlockStillReferenced,
 		GCFailureCodeBlockClaimReleaseUnconfirmed,
 		// GCFailureCodeBlockAuthorityInvalid was documented as postponing from the day it
 		// was introduced and was never listed here, so it retried into the DLQ instead —
@@ -1553,12 +1543,15 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			metrics.GCItemsSkippedTotal.Inc()
 			return nil
 		case BlockClaimAbsent:
-			// The exact current P has no claim yet; keep it indexed for a new owner.
+			// BlockClaimAbsent is the historical present-row-without-claim result;
+			// it falls through to the ordinary candidate settlement below.
 		}
 		if outcome != BlockClaimCommittedHandoff {
-			// A concurrent owner can claim the same P after Absent or Released.
-			// Preserve its recovery candidate rather than trying a second racy read.
-			return blockStillReferencedError{ItemID: item.ItemID}
+			if err := w.settleBlockCandidate(item, candidate); err != nil {
+				return err
+			}
+			metrics.GCItemsSkippedTotal.Inc()
+			return nil
 		}
 	}
 
@@ -1741,8 +1734,9 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	// (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01). Everything this attempt goes on to
 	// do — the exact orphan handoff — takes its authority from this single call, so
 	// downgrading it to the local form silently reopens X2 for the whole path. G2
-	// stops at COMMITTED; the later physical executor does not inherit authority
-	// through the orphan row and must re-establish the global zero itself.
+	// stops at COMMITTED D. G4/G5 physical continuation uses the exact stored
+	// authority and lifecycle, fresh topology and canonical reload; later refs(L)
+	// do not revoke D and no post-COMMITTED global-zero reauthorization is required.
 	//
 	// An unreachable DC makes this read fail rather than return zero, and the error
 	// aborts the G2 handoff: fail closed, never advance state on an uncertain read. The claim is
@@ -1881,13 +1875,25 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			if relErr != nil {
 				return relErr
 			}
+			// SETTLING IS ONLY SOUND IF THE RELEASE RELEASED *THIS* ATTEMPT'S FENCE.
+			//
+			// Not-owner here means this attempt no longer owns the fence — the late-loser shape the
+			// staleness window makes ordinary, not exotic. The candidate is unchanged, so its CAS would
+			// happily apply; that is precisely the trap. Consuming it drops the only work item
+			// that could take the new owner's claim over if that owner dies, which is the same
+			// standing-fence-with-no-recovery state BlockClaimFreshOwner refuses to create at
+			// the claim. Reached from the other side, it needs the same answer.
 			if released != BlockReleaseReleased {
 				metrics.GCBlockDeleteClaimTotal.WithLabelValues("settle_refused_foreign_owner").Inc()
+				log.Printf("[GC Worker] Block %s: re-referenced after claim, but this attempt no longer owns the delete claim; preserving the candidate for the authoritative lifecycle or a later recovery pass", item.ItemID)
 				return blockClaimForeignOwnerError{ItemID: item.ItemID}
 			}
-			// Even our confirmed release can be followed by a new owner on this P.
-			// Keep the same-P candidate and postpone without consuming retries.
-			return blockStillReferencedError{ItemID: item.ItemID}
+			if err := w.store.DeleteBlockGCCandidate(item.OrgID, item.ItemID, candidate.Identity()); err != nil {
+				return w.failClosedIfUnavailable("failed to clear block GC candidate after re-reference", item.ItemID, err)
+			}
+			log.Printf("[GC Worker] Block %s re-referenced after claim, skipping the G2 handoff", item.ItemID)
+			metrics.GCItemsSkippedTotal.Inc()
+			return nil
 		}
 	}
 

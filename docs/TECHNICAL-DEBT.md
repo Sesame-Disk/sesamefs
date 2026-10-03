@@ -16,9 +16,9 @@ canonical recovery state and the lifecycle certificate remain authoritative.
 
 The existing block-delete lifecycle CAS selects `first_seen_at` once. Root,
 canonical orphan, and discovery projection publication reuse that token. Root
-publication is one ordinary `EACH_QUORUM` write; it performs no additional
-Paxos/SERIAL operation and fails closed before the canonical orphan LWT if the
-write is unavailable. Terminal cleanup settles the lifecycle and exact
+publication uses `INSERT ... IF NOT EXISTS` at `EACH_QUORUM` with global
+`SERIAL`, selecting or confirming the durable token before the canonical orphan
+LWT. Unavailable or ambiguous publication fails closed. Terminal cleanup settles the lifecycle and exact
 discovery projection before deleting the root.
 
 ### Evidence Contract
@@ -32,8 +32,8 @@ discovery projection before deleting the root.
 - `scripts/g1-mutation-validation.sh` keeps the frozen semantic M1-M10
   mutations and runs the additional G1 source/identity checks as M11-M17.
 - Each `StartBlockDeleteOrphan` publication attempt adds one `EACH_QUORUM`
-  block/handoff-authority read plus one ordinary `EACH_QUORUM` recovery-root
-  write. G1 adds no new LWT or `SERIAL` operation. During recovery, each root
+  block/handoff-authority read plus an `EACH_QUORUM` recovery-root LWT with
+  global `SERIAL`. During recovery, each root
   performs one exact canonical `EACH_QUORUM` read and every visible canonical
   row receives one idempotent ordinary `EACH_QUORUM` projection upsert; a
   missing canonical row uses the existing lifecycle observation in the SERIAL

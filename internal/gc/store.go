@@ -24,8 +24,6 @@ const (
 	GCFailureCodeBlockClaimNotYetStale = "block_claim_not_yet_stale"
 	// Pending publication guards postpone pre-D work while preserving the candidate.
 	GCFailureCodeBlockPublicationPending = "block_publication_pending"
-	// A current physical life stays indexed while references can precede a new claim.
-	GCFailureCodeBlockStillReferenced = "block_still_referenced"
 	// GCFailureCodeBlockAuthorityInvalid marks a candidate whose physical identity is
 	// unusable as destructive authority. Postponed, never retried and never consumed.
 	GCFailureCodeBlockAuthorityInvalid = "block_authority_invalid"

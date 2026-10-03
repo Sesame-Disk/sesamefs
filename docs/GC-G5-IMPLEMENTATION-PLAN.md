@@ -58,20 +58,18 @@ remote head. No GC activation, X1 closure or production-readiness claim.
 
 ## Evidence-driven scope decision
 
-The same-P stale-claim probe is RED on the starting runtime: A observes Absent,
-B wins a new claim and crashes before PREPARED, then A deletes B's candidate.
-COMMITTED roots cannot recover this pre-root gap. G5 therefore preserves a
-candidate while its current physical life is still claimable, both after
-owner-agnostic pre-check release and after owner-exact post-claim re-reference
-release. Such work postpones without retry exhaustion; retirement/replacement
-still settles exact stale candidates. A second claim-state read cannot close
-the race. This deliberately retains scheduling for a life that was previously
-eligible and became live again; it is not a historical-data compatibility path.
+The same-P stale-claim probe reproduced an Absent/new-owner gap before PREPARED.
+COMMITTED roots cannot recover it. The attempted retention fix is withdrawn:
+retaining candidate_at for a referenced P let a later zero epoch inherit expired
+grace. G5 therefore preserves main's referenced settlement behavior; the race
+remains OPEN, P1 FOLLOW-UP / PRE-GC. Closure must separate recovery scheduling
+from fresh zero-ref eligibility and cannot use a second non-atomic claim read.
+G5 closes bounded durable-root recovery, not the pre-root claim lifecycle.
 
-## Final validation (2026-10-02)
+## Historical validation before cross-audit (2026-10-02)
 
 - RED before implementation: four 120-day day-cursor cases and same-P claim
-  scheduling loss before PREPARED. The corresponding new tests pass after G5.
+  scheduling loss before PREPARED. The durable-root tests pass; same-P claim retention was later withdrawn (see audit below).
 - PASS in Docker: complete Go tree; DB/GC race; normal and integration vet;
   final GC race including auxiliary faults, cancellation and post-claim release.
 - PASS: full required integration tree, 625.046s, all evidence gates enabled.
@@ -82,7 +80,7 @@ eligible and became live again; it is not a historical-data compatibility path.
   sync 11 tests. Full integration and omission/API/sync phases ran separately.
 - PASS twice on isolated Cassandra 5.0.9, RF1 in dc-na/dc-eu/dc-asia and MinIO:
   G4 coexistence and all three G5 evidence tests (old-life scheduling loss,
-  bounded poison-prefix/restart convergence, same-P claim scheduling retention).
+  bounded poison-prefix/restart convergence, same-P retention at the historical HEAD, subsequently withdrawn).
 - FAIL: the additional P3 cross-DC fence test in those combined runs. First,
   INSTALL setup timed out; then claim confirmation at EACH_QUORUM timed out.
   Both were before physical GC. An earlier isolated run passed P3. This is an
@@ -128,3 +126,38 @@ Progress assumes service and checkpoint writes eventually recover. Persistent
 checkpoint failure is reported and retains roots; it can delay a poisoned
 bucket's tail until checkpoint persistence is restored. No failed scheduling
 operation supplies physical-delete authority or consumes an unattempted root.
+
+## Cross-audit correction and expanded 3DC evidence (2026-10-02)
+
+- Confirmed P1: a later zero epoch inherited expired candidate_at after referenced
+  retention. Focused unit RED reached COMMITTED one second after zero, in both
+  pre-check and post-claim re-reference branches. With G5 retention withdrawn,
+  both branches reject before a new claim until the fresh candidate grace elapses.
+- Stale-claim settlement race is OPEN, P1 FOLLOW-UP / PRE-GC. G5 makes no closure
+  claim for the pre-PREPARED gap. Mandatory integration evidence now covers fresh
+  same-P zero-epoch grace instead of the withdrawn retention behavior.
+- Scanner source contract aligned with direct COMMITTED durable-root recovery.
+  Referenced-orphan legacy issue is SUPERSEDED / LEGACY-NOT-REACHABLE under
+  greenfield v1; historical counterexample retained. Root SERIAL wording corrected.
+- Expanded full three-DC suite on 1a1cb9629: unit/cov PASS; integration FAIL (30
+  main tests, 885.888s); API 12/20 PASS, 8 FAIL; OIDC 25/25 PASS; real Seafile
+  Docker sync 11/11 PASS. G4/all then-current G5 legs PASS. This is not a global
+  PASS and does not establish absence of regressions. Two fixture-only fixes
+  are committed: isolate bounded G5 from background GC; seed physical recovery
+  through current claim/PREPARED/COMMITTED authority (targeted G3 all PASS).
+- PC-D1B.1 complete PASS; PC-D1B.3 healthy SERIAL phases FAIL, outage/recovery
+  phases PASS; PC-D1B.4 complete retry PASS, including semantic RED controls.
+  R12/M34 remain characterized residuals. H1 seed failed twice before Sync/V2
+  windows; those windows remain without complete evidence.
+- W2 post-HEAD full 3DC PASS: local blindness, remote HEAD, ancestor advancement,
+  unavailable-DC UNKNOWN/retention and durable cursor resume from NA/EU.
+  Sync PutBlock provenance full 3DC PASS: blind-NA global fallback, all-cross-DC
+  hit cost at N=1/10/100/1000, unavailable Asia fails closed within timeout.
+- Revalidation after the correction: full Go tree PASS; DB/GC race PASS; normal
+  and integration vet PASS. Required real Cassandra/MinIO G4/G5 PASS (9.758s),
+  including fresh same-P grace. Its first attempt failed an EACH_QUORUM timeout
+  during bounded mapping cleanup; that failure is retained. Earlier full-suite
+  results retain their exact source scope and are not relabeled PASS.
+
+Detailed local record: tmp/full-3dc-validation-report.md. GC remains OFF; E1,
+X1/PRE-GC/A1 and the pre-root scheduling follow-up remain open.

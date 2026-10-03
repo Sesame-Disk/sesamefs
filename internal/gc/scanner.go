@@ -1443,12 +1443,11 @@ func (s *Scanner) scanOnlyOfficePendingBlocks(ctx context.Context) (int, error) 
 	return reconciled, firstErr
 }
 
-// scanS3OrphanRecovery runs durable S3-orphan reconciliation. PREPARED state is
-// settled metadata-only. A COMMITTED handoff's canonical `blocks(L)` row is
-// retired by the worker's own G3 pass (processBlock), not by this scanner:
-// RecoverS3Orphans still does not act on a COMMITTED row directly, and may
-// continue only already-authorized physical-recovery states after its own
-// checks.
+// scanS3OrphanRecovery executes bounded recovery directly from durable roots.
+// PREPARED remains metadata-only. Current-protocol COMMITTED recovery may retire
+// exact P1 and continue DeleteExact(K1) using its stored D1, published lifecycle,
+// fresh topology and exact canonical reload. Roots supply scheduling, never
+// physical authority; later references to L do not revoke COMMITTED D1.
 func (s *Scanner) scanS3OrphanRecovery(ctx context.Context) (int, error) {
 	log.Println("[GC Scanner] Phase 16: Recovering S3 orphans...")
 	if s.orphanRecoverer == nil {

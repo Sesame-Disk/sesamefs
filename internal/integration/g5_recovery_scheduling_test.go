@@ -14,10 +14,11 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	gcpkg "github.com/Sesame-Disk/sesamefs/internal/gc"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
 )
 
-var g5CoexistenceObserved, g5PaginationObserved, g5ClaimRaceObserved bool
+var g5CoexistenceObserved, g5PaginationObserved, g5GraceObserved bool
 
 // Real Cassandra INSTALL, exact handoff and fresh-worker MinIO continuation.
 // Both physical objects coexist until recovery, including P2's live reference.
@@ -300,27 +301,11 @@ func TestG5CassandraMinIOBoundedRecoveryAcrossRestart(t *testing.T) {
 	g5PaginationObserved = true
 }
 
-type g5ClaimRaceStore struct {
-	gcpkg.GCStore
-	winner gcpkg.BlockDeleteAuthority
-	raced  bool
-}
-
-func (s *g5ClaimRaceStore) ReleaseStaleBlockClaim(org uuid.UUID, block string, target gcpkg.BlockDeleteTarget, staleBefore time.Time) (gcpkg.BlockClaimReleaseOutcome, error) {
-	outcome, err := s.GCStore.ReleaseStaleBlockClaim(org, block, target, staleBefore)
-	if err == nil && outcome == gcpkg.BlockClaimAbsent && !s.raced {
-		s.raced = true
-		result, claimErr := s.GCStore.ClaimBlockDelete(org, block, s.winner)
-		if claimErr != nil || result.Outcome != gcpkg.BlockClaimAcquired {
-			return outcome, fmt.Errorf("racing worker claim: %+v %v", result, claimErr)
-		}
-	}
-	return outcome, err
-}
-func TestG5CassandraSamePClaimRaceKeepsScheduling(t *testing.T) {
+// Referenced settlement must not donate an expired age to a later zero epoch.
+func TestG5CassandraNewZeroEpochUsesFreshGrace(t *testing.T) {
 	requireCassandra(t)
 	database := shareProjectionDBForTest(t)
-	base := gcpkg.NewCassandraStore(database)
+	store := gcpkg.NewCassandraStore(database)
 	org := uuid.New()
 	block := sha256hex([]byte(uuid.NewString()))
 	bs := newVerificationBlockStore(t, org.String())
@@ -337,37 +322,46 @@ func TestG5CassandraSamePClaimRaceKeepsScheduling(t *testing.T) {
 		_ = database.Session().Query(`DELETE FROM blocks WHERE org_id = ? AND block_id = ?`, org.String(), block).Exec()
 		_ = database.Session().Query(`DELETE FROM block_references WHERE org_id = ? AND block_id = ?`, org.String(), block).Exec()
 	})
-	if err := database.AddBlockReference(org.String(), block, "up:g5-race", uuid.Nil.String(), 0); err != nil {
+	if err := database.AddBlockReference(org.String(), block, "up:g5-grace", uuid.Nil.String(), 0); err != nil {
 		t.Fatal(err)
 	}
-	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
-	candidate, err := base.EnsureBlockGCCandidateExact(org, block, class, at)
+	oldAt := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Millisecond)
+	old, err := store.EnsureBlockGCCandidateExact(org, block, class, oldAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := enqueueExactBlockCandidateForTest(base, candidate, at); err != nil {
+	if err := enqueueExactBlockCandidateForTest(store, old, oldAt); err != nil {
 		t.Fatal(err)
 	}
-	store := &g5ClaimRaceStore{GCStore: base, winner: gcpkg.BlockDeleteAuthority{Target: candidate.Target, ClaimID: uuid.NewString(), ClaimedAt: time.Now().UTC().Truncate(time.Millisecond)}}
 	worker := gcpkg.NewWorker(store, nil, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+	if n, err := worker.ProcessOrgOnce(context.Background(), org); err != nil || n != 1 {
+		t.Fatalf("referenced settlement: %d %v", n, err)
+	}
+	if _, found, err := store.GetBlockGCCandidateExact(org, block, old.Identity()); err != nil || found {
+		t.Fatalf("referenced age retained: %v %v", found, err)
+	}
+	if err := database.Session().Query(`DELETE FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?`, org.String(), block, "up:g5-grace").Consistency(gocql.EachQuorum).Exec(); err != nil {
+		t.Fatal(err)
+	}
+	zeroAt := time.Now().UTC().Truncate(time.Millisecond)
+	fresh, err := store.EnsureBlockGCCandidateExact(org, block, class, zeroAt)
+	if err != nil || fresh.Target != old.Target || !fresh.CandidateAt.Equal(zeroAt) {
+		t.Fatalf("fresh same-P zero epoch: %+v %v", fresh, err)
+	}
+	// An old queue timestamp deliberately bypasses queue grace; candidate grace must veto.
+	if err := enqueueExactBlockCandidateForTest(store, fresh, oldAt); err != nil {
+		t.Fatal(err)
+	}
+	worker = gcpkg.NewWorker(store, nil, gcpkg.NewQueue(store), 100, time.Hour, false, &gcpkg.Stats{})
 	if n, err := worker.ProcessOrgOnce(context.Background(), org); err != nil || n != 0 {
-		t.Fatalf("racing pass: %d %v", n, err)
+		t.Fatalf("fresh grace: %d %v", n, err)
 	}
-	if !store.raced {
-		t.Fatal("same-P interleaving not exercised")
+	var state, claim string
+	if err := database.Session().Query(`SELECT gc_state, gc_claim_id FROM blocks WHERE org_id = ? AND block_id = ?`, org.String(), block).Consistency(gocql.EachQuorum).Scan(&state, &claim); err != nil || state != "" || claim != "" {
+		t.Fatalf("claim before fresh grace: state=%q claim=%q err=%v", state, claim, err)
 	}
-	if _, found, err := base.GetBlockGCCandidateExact(org, block, candidate.Identity()); err != nil || !found {
-		t.Fatalf("new owner's candidate lost: %v %v", found, err)
+	if _, found, err := store.GetBlockGCCandidateExact(org, block, fresh.Identity()); err != nil || !found {
+		t.Fatalf("fresh candidate lost: %v %v", found, err)
 	}
-	if _, found, err := base.GetS3OrphanRecoveryRootExact(org, block, store.winner); err != nil || found {
-		t.Fatalf("must exercise gap before PREPARED: %v %v", found, err)
-	}
-	var storedClaim string
-	if err := database.Session().Query(`SELECT gc_claim_id FROM blocks WHERE org_id = ? AND block_id = ?`, org.String(), block).Scan(&storedClaim); err != nil || storedClaim != store.winner.ClaimID {
-		t.Fatalf("new claim changed: %s %v", storedClaim, err)
-	}
-	if pending, err := base.PendingItemExists(org, uuid.Nil, gcpkg.ItemBlock, block, candidate.ItemIdentity()); err != nil || !pending {
-		t.Fatalf("pending authority lost: %v %v", pending, err)
-	}
-	g5ClaimRaceObserved = true
+	g5GraceObserved = true
 }

@@ -63,43 +63,6 @@ func TestG5CommittedRecoveryIgnoresDayScheduling(t *testing.T) {
 	}
 }
 
-// A claims nothing while observing refs. B claims the same P in the gap and
-// crashes before PREPARED; there is deliberately no committed recovery root.
-type g5SamePClaimRaceStore struct {
-	*MockStore
-	raced bool
-}
-
-func (s *g5SamePClaimRaceStore) ReleaseStaleBlockClaim(org uuid.UUID, block string, target BlockDeleteTarget, staleBefore time.Time) (BlockClaimReleaseOutcome, error) {
-	outcome, err := s.MockStore.ReleaseStaleBlockClaim(org, block, target, staleBefore)
-	if err == nil && outcome == BlockClaimAbsent && !s.raced {
-		s.raced = true
-		s.SeedBlockClaimForTest(org, block, "g5-worker-b", time.Now().UTC())
-	}
-	return outcome, err
-}
-func TestG5StaleClaimSettlementPreservesSamePRecoveryCandidate(t *testing.T) {
-	base := NewMockStore()
-	org := uuid.New()
-	block := testSHA256BlockID("g5-stale-settle-same-p")
-	base.AddBlock(org, block, "hot", 1)
-	base.EnqueueBlockForTest(org, time.Now().Add(-time.Hour), block, "hot", 1)
-	store := &g5SamePClaimRaceStore{MockStore: base}
-	worker := NewWorker(store, &MockStorageProvider{}, NewQueue(store), 100, 0, false, &Stats{})
-	if _, err := worker.ProcessOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if !store.raced {
-		t.Fatal("same-P interleaving did not run")
-	}
-	if g1RootCount(t, base) != 0 {
-		t.Fatal("probe must exercise the pre-PREPARED gap")
-	}
-	if _, found := base.GetBlockGCCandidateForTest(org, block); !found {
-		t.Fatal("worker A erased recovery authority for B's live same-P claim")
-	}
-}
-
 // Every fixture crosses the real PREPARED -> COMMITTED -> retirement protocol.
 func g5SeedRoot(t *testing.T, store *MockStore, bucket int, at time.Time) S3OrphanInfo {
 	t.Helper()
@@ -338,46 +301,54 @@ func TestG5CancellationDoesNotCheckpointAnUnattemptedRoot(t *testing.T) {
 	}
 }
 
-type g5PostClaimRaceStore struct {
-	*MockStore
-	raced bool
-}
-
-func (s *g5PostClaimRaceStore) ReleaseBlockClaim(org uuid.UUID, block string, authority BlockDeleteAuthority) (BlockReleaseOutcome, error) {
-	outcome, err := s.MockStore.ReleaseBlockClaim(org, block, authority)
-	if err == nil && outcome == BlockReleaseReleased && !s.raced {
-		s.raced = true
-		s.SeedBlockClaimForTest(org, block, "g5-worker-b-after-owner-release", time.Now().UTC().Truncate(time.Millisecond))
-	}
-	return outcome, err
-}
-func TestG5PostClaimReleasePreservesSamePNewOwnerScheduling(t *testing.T) {
-	base := NewMockStore()
-	org := uuid.New()
-	block := testSHA256BlockID("post-claim-race")
-	base.AddBlock(org, block, "hot", 1)
-	base.EnqueueBlockForTest(org, time.Now().Add(-time.Hour), block, "hot", 0)
-	checks := 0
-	base.SetBlockHasReferencesHookForTest(func(_ uuid.UUID, _ string, _ bool) (bool, error) { checks++; return checks > 1, nil })
-	store := &g5PostClaimRaceStore{MockStore: base}
-	sp := &MockStorageProvider{}
-	if n, err := NewWorker(store, sp, NewQueue(store), 100, 0, false, &Stats{}).ProcessOnce(context.Background()); err != nil || n != 0 {
-		t.Fatalf("racing release: %d %v", n, err)
-	}
-	if !store.raced || checks != 2 {
-		t.Fatalf("global re-reference branch not exercised: raced=%v checks=%d", store.raced, checks)
-	}
-	if _, found := base.GetBlockGCCandidateForTest(org, block); !found {
-		t.Fatal("new owner's current-P candidate consumed")
-	}
-	if row := base.GetBlock(org, block); row == nil || row.GCClaimID != "g5-worker-b-after-owner-release" {
-		t.Fatalf("new owner changed: %+v", row)
-	}
-	items := base.QueueItems(org)
-	if len(items) != 1 || items[0].RetryCount != 0 {
-		t.Fatalf("queue/pending retry authority consumed: %+v", items)
-	}
-	if g1RootCount(t, base) != 0 || len(sp.ScopedBlockDeletes()) != 0 {
-		t.Fatal("pre-PREPARED race must have no orphan root or S3 deletion")
+// A new zero-ref transition on the same physical life must serve a fresh grace.
+// Observing liveness before that transition cannot donate an expired candidate age.
+func TestG5NewZeroEpochDoesNotInheritReferencedCandidateGrace(t *testing.T) {
+	for _, postClaim := range []bool{false, true} {
+		t.Run(fmt.Sprintf("post_claim_%v", postClaim), func(t *testing.T) {
+			store := NewMockStore()
+			org := uuid.New()
+			block := testSHA256BlockID("g5-zero-epoch")
+			grace := time.Hour
+			liveAt := time.Now().UTC().Add(-2 * grace).Truncate(time.Millisecond)
+			oldAt := liveAt.Add(-24 * grace)
+			store.AddBlock(org, block, "hot", 0)
+			if err := store.EnqueueBlockForTest(org, oldAt, block, "hot", 0); err != nil {
+				t.Fatal(err)
+			}
+			item := store.QueueItems(org)[0]
+			reads := 0
+			zero := false
+			store.SetBlockHasReferencesHookForTest(func(_ uuid.UUID, _ string, _ bool) (bool, error) {
+				reads++
+				return !zero && (!postClaim || reads > 1), nil
+			})
+			storage := &MockStorageProvider{}
+			worker := NewWorker(store, storage, NewQueue(store), 100, grace, false, &Stats{})
+			worker.clock = func() time.Time { return liveAt }
+			_ = worker.processBlock(context.Background(), item)
+			zeroAt := liveAt.Add(grace - time.Second)
+			zero = true
+			candidate, err := store.EnsureBlockGCCandidateExact(org, block, "hot", zeroAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			item.BlockGCCandidateIdentity = candidate.Identity()
+			item.IdentityAt = candidate.CandidateAt
+			item.QueuedAt = liveAt // Even an already-eligible queue row cannot bypass candidate grace.
+			claimsBefore := len(store.ClaimAttemptsForTest())
+			worker.clock = func() time.Time { return liveAt.Add(grace) }
+			err = worker.processBlock(context.Background(), item)
+			if failureCodeForError(err) != GCFailureCodeBlockCandidateWithinGrace || len(store.ClaimAttemptsForTest()) != claimsBefore || store.S3OrphanCount() != 0 {
+				t.Fatalf("new zero epoch bypassed grace: candidate_at=%v zero_at=%v err=%v claims=%d", candidate.CandidateAt, zeroAt, err, len(store.ClaimAttemptsForTest())-claimsBefore)
+			}
+			worker.clock = func() time.Time { return zeroAt.Add(grace + time.Second) }
+			if err := worker.processBlock(context.Background(), item); err != nil {
+				t.Fatalf("eligible zero epoch: %v", err)
+			}
+			if store.S3OrphanCount() != 1 {
+				t.Fatal("full fresh grace must permit the current handoff")
+			}
+		})
 	}
 }

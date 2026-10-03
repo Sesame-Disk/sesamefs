@@ -264,8 +264,8 @@ func TestX2_ReferencedBlockLeavesAFreshClaimAlone(t *testing.T) {
 	} else if blk.GCState != "" {
 		t.Errorf("block still fenced (gc_state=%q) after its claim went stale; uploads of this content would stay blocked forever", blk.GCState)
 	}
-	if got := store.AllBlockGCCandidates(); len(got) != 1 {
-		t.Errorf("candidate rows = %d after the fence was lifted, want 1 (current-P scheduling retained)", len(got))
+	if got := store.AllBlockGCCandidates(); len(got) != 0 {
+		t.Errorf("candidate rows = %d after the fence was lifted, want 0", len(got))
 	}
 	if deletes := sp.ScopedBlockDeletes(); len(deletes) != 0 {
 		t.Errorf("deleted a referenced block: %+v", deletes)
@@ -360,8 +360,8 @@ func TestX2_StaleClaimReleaseFailureSurvivesTheRetryBudget(t *testing.T) {
 	} else if blk.GCState != "" {
 		t.Errorf("fence still up (gc_state=%q) after the release recovered", blk.GCState)
 	}
-	if got := store.AllBlockGCCandidates(); len(got) != 1 {
-		t.Errorf("candidate rows = %d after recovery, want the current-P candidate retained", len(got))
+	if got := store.AllBlockGCCandidates(); len(got) != 0 {
+		t.Errorf("candidate rows = %d after recovery, want the item settled", len(got))
 	}
 }
 
@@ -464,8 +464,8 @@ func TestX2_ReReferencedBlockSurvivesAFailedClaimRelease(t *testing.T) {
 	} else if blk.GCState != "" {
 		t.Errorf("fence still up (gc_state=%q) after the abandoned claim aged out; a referenced block would stay fenced forever", blk.GCState)
 	}
-	if got := store.AllBlockGCCandidates(); len(got) != 1 {
-		t.Errorf("candidate rows = %d after recovery, want the current-P candidate retained", len(got))
+	if got := store.AllBlockGCCandidates(); len(got) != 0 {
+		t.Errorf("candidate rows = %d after recovery, want the item settled", len(got))
 	}
 	if deletes := sp.ScopedBlockDeletes(); len(deletes) != 0 {
 		t.Fatalf("recovery deleted a block the global verify reported as referenced: %+v", deletes)
@@ -603,8 +603,8 @@ func TestX2_StaleClaimReleaseFailureKeepsTheCandidate(t *testing.T) {
 	} else if blk.GCState != "" {
 		t.Errorf("fence still up (gc_state=%q) after the release succeeded", blk.GCState)
 	}
-	if got := store.AllBlockGCCandidates(); len(got) != 1 {
-		t.Errorf("candidate rows = %d after recovery, want the current-P candidate retained", len(got))
+	if got := store.AllBlockGCCandidates(); len(got) != 0 {
+		t.Errorf("candidate rows = %d after recovery, want the item settled", len(got))
 	}
 }
 

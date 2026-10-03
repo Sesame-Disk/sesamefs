@@ -5,9 +5,11 @@
 G4 is merged in #247, main@b57f5ce69. The [G5 implementation plan](./GC-G5-IMPLEMENTATION-PLAN.md)
 replaces the physical day walk with bounded durable-root execution and seek
 checkpoints. The same-P stale-claim settlement race reproduced before PREPARED;
-its candidate-retention fix has unit/race and real one/three-DC evidence.
-Full required integration passed. Additional P3 multi-DC CAS timeouts remain
-an E1 evidence limitation; the combined three-DC command is not a full PASS.
+its attempted candidate-retention fix is withdrawn after a reproduced fresh
+zero-epoch grace regression. The race remains OPEN, P1 FOLLOW-UP / PRE-GC.
+The earlier single-DC full integration passed; expanded three-DC integration
+failed 30 main tests and API failed 8/20 suites at 1a1cb9629. These failures
+remain recorded for E1; neither combined nor full three-DC evidence is a PASS.
 E1 remains next. No W2/R31, X1, PRE-GC or activation gate is closed by this entry.
 GC stays OFF.
 
