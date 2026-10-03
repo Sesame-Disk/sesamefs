@@ -123,7 +123,7 @@ services:
   # MinIO — one independent instance PER REGION
   # ==========================================================================
   minio-usa:
-    image: minio/minio:latest
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z
     ports:
       - "${MINIO_USA_API_HOST_PORT:-9100}:9000"
       - "${MINIO_USA_CONSOLE_HOST_PORT:-9101}:9001"
@@ -141,7 +141,7 @@ services:
     restart: unless-stopped
 
   minio-eu:
-    image: minio/minio:latest
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z
     ports:
       - "${MINIO_EU_API_HOST_PORT:-9102}:9000"
       - "${MINIO_EU_CONSOLE_HOST_PORT:-9103}:9001"
@@ -161,7 +161,7 @@ services:
   # Create the regional buckets on BOTH instances and enable versioning
   # (versioning is mandatory for bucket replication).
   minio-init:
-    image: minio/mc:latest
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z
     depends_on:
       minio-usa:
         condition: service_healthy
@@ -189,7 +189,7 @@ services:
 
   # Configure ACTIVE-ACTIVE bucket replication between the two MinIO instances.
   minio-replication:
-    image: minio/mc:latest
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z
     depends_on:
       minio-init:
         condition: service_completed_successfully

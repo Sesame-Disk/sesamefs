@@ -117,7 +117,7 @@ services:
   # STORAGE - MinIO (S3-compatible)
   # ==========================================================================
   minio:
-    image: minio/minio:latest
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z
     ports:
       - "${MINIO_API_HOST_PORT:-9000}:9000"      # S3 API
       - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"   # Console
@@ -136,7 +136,7 @@ services:
 
   # Initialize MinIO buckets for each region
   minio-init:
-    image: minio/mc:latest
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z
     depends_on:
       minio:
         condition: service_healthy
