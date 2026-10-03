@@ -139,7 +139,7 @@ operation supplies physical-delete authority or consumes an unattempted root.
 - Scanner source contract aligned with direct COMMITTED durable-root recovery.
   Referenced-orphan legacy issue is SUPERSEDED / LEGACY-NOT-REACHABLE under
   greenfield v1; historical counterexample retained. Root SERIAL wording corrected.
-- Expanded full three-DC suite on 1a1cb9629: unit/cov PASS; integration FAIL (30
+- Expanded full three-DC suite with 77de4490a source (before orphan fixture correction): unit/cov PASS; integration FAIL (30
   main tests, 885.888s); API 12/20 PASS, 8 FAIL; OIDC 25/25 PASS; real Seafile
   Docker sync 11/11 PASS. G4/all then-current G5 legs PASS. This is not a global
   PASS and does not establish absence of regressions. Two fixture-only fixes
@@ -147,8 +147,9 @@ operation supplies physical-delete authority or consumes an unattempted root.
   through current claim/PREPARED/COMMITTED authority (targeted G3 all PASS).
 - PC-D1B.1 complete PASS; PC-D1B.3 healthy SERIAL phases FAIL, outage/recovery
   phases PASS; PC-D1B.4 complete retry PASS, including semantic RED controls.
-  R12/M34 remain characterized residuals. H1 seed failed twice before Sync/V2
-  windows; those windows remain without complete evidence.
+  R12/M34 remain characterized residuals. H1 seed failed before Sync/V2
+  windows; final independent attempts after three-coordinator readiness also
+  failed in seeding (Sync recv1, V2 recv2), leaving both windows without evidence.
 - W2 post-HEAD full 3DC PASS: local blindness, remote HEAD, ancestor advancement,
   unavailable-DC UNKNOWN/retention and durable cursor resume from NA/EU.
   Sync PutBlock provenance full 3DC PASS: blind-NA global fallback, all-cross-DC
@@ -161,3 +162,10 @@ operation supplies physical-delete authority or consumes an unattempted root.
 
 Detailed local record: tmp/full-3dc-validation-report.md. GC remains OFF; E1,
 X1/PRE-GC/A1 and the pre-root scheduling follow-up remain open.
+
+Final expanded matrix: [three-DC validation record](./GC-G5-3DC-VALIDATION.md).
+W2 RepairGuard, X2/P3 and all four consistency mutation controls completed with
+real expected results on corrected runtime. The connected G5 omission control
+rejected missing evidence correctly. H1 Sync/V2 seed failures remain unresolved;
+no global three-DC PASS or regression-free claim is made. Further availability
+and pre-GC characterization remains E1 work.

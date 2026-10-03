@@ -17,9 +17,9 @@ canonical recovery state and the lifecycle certificate remain authoritative.
 The existing block-delete lifecycle CAS selects `first_seen_at` once. Root,
 canonical orphan, and discovery projection publication reuse that token. Root
 publication uses `INSERT ... IF NOT EXISTS` at `EACH_QUORUM` with global
-`SERIAL`, selecting or confirming the durable token before the canonical orphan
-LWT. Unavailable or ambiguous publication fails closed. Terminal cleanup settles the lifecycle and exact
-discovery projection before deleting the root.
+`SERIAL`, before the canonical orphan LWT. Unavailable or ambiguous publication
+fails closed. Terminal cleanup settles the lifecycle and exact discovery
+projection before deleting the root.
 
 ### Evidence Contract
 
