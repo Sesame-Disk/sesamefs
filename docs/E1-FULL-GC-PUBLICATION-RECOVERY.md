@@ -45,6 +45,65 @@ E1-PUT-01: obtain a real pre-D authorized upload/session for P1/K1; run GC throu
 
 Use real authorization/upload/install/mapping; a test-only writer is not a product counterexample.
 
+## Execution ledger — 2026-10-03 (partial; X1 remains OPEN)
+
+The E1 integration additions are test-only and build-tagged `integration`; no
+production runtime behavior changed. The final Docker command
+`docker compose --profile test run --rm --build go-all-test` exited 0 after
+these additions, including Go unit/integration, API and OIDC suites. The normal
+runner reports isolated 3DC legs as skipped when they are not enabled; no E1
+cross-DC leg is claimed as passed. The full-suite result does not substitute
+for the post-D counterexample legs below. The directed E1 cases also pass under
+`go test -race`; `go vet ./...` and `go vet -tags integration ./...` pass in the
+same sequential Docker runner. An initial race repeat exposed a fixture
+assumption: the application G5 recovery worker can finish the same durable root
+before the test-scoped visitor. Its verifier now accepts that interleaving only
+after confirming the exact terminal class/key certificate, absent exact root
+and orphan, absent canonical row, and deleted K1; the race rerun passes.
+
+| Case | Result | Evidence and limit |
+|---|---|---|
+| E1-PUT-01 delayed physical PUT | PASS for the exercised Sync `PutBlock` path | `TestE1DelayedPutCannotRestoreRetiredPhysicalLife` uses real Cassandra, MinIO, the production handler and G5 worker. It pauses the physical write after authorization of exact P1, drives P1 through terminal recovery and K1 deletion, then releases the actual storage PUT. The request returns 200; K1 bytes reappear, but P1 stays absent, the same logical block is rematerialized at a different P2 key, and references contain the upload `up:` row without a P1 `fs:` row. The no-GC control also passes. This is a K1 orphan/over-retention result, not X1 RED and not closure of W2-3 or the stale-delete ABA issue. |
+| E1-02 losing-target repair replay | PARTIAL; row remains OPEN | `TestW2WorkerRepairLifecycle/lateRepairDoesNotStallCommittedDelete` replays the production repair visitor after terminal D for a commit that lost HEAD. Classification remains UNKNOWN; the row and its repair-owned `pub:` liveness remain, HEAD is unchanged, and neither P1 nor K1 returns. This does not exercise a repair whose commit is already reachable from HEAD after D, so it is not evidence closing the master late-publication race or W2-11/12. |
+| E1-01 and E1-03 | UNRUN in this evaluation | Existing G4/G5 tests are controls only; this branch did not repeat the full crash-point or upload/dedup post-D matrix. |
+| E1-04 | PARTIAL; row remains OPEN | The delayed-PUT case above covers only the held physical-write continuation. Sync HEAD, auto-merge and cross-pod retry after D are not evaluated here. |
+| E1-05 through E1-15 | UNRUN; rows remain OPEN | Source tracing below records the current funnel shape, not a post-D integration result. |
+
+Source trace for the unrun funnels:
+
+- SeafHTTP normal and streaming uploads stage `pub:` references and durable
+  repair before HEAD, then promote to `fs:` after HEAD. This is not an E1
+  post-D result; W2-7 stays OPEN.
+- Sync `RecvFS` stores the authorized fs-object projection but does not itself
+  publish HEAD or create block liveness. HEAD publication is a separate Sync
+  step; the existing no-GC `RecvFS-before-PutBlock` integration case is not a
+  post-D interleaving. W2-5 stays OPEN.
+- `CreateFileFromBlocks`, v2 `UploadFile` and Office-template `CreateFile` use
+  staged `pub:`/repair state and exact-placement checks before HEAD in their
+  covered paths. Existing pre-HEAD controls are not post-D E1 results, and
+  their applicable R31 rows stay OPEN.
+- OnlyOffice template publication stages and queues the pending file before
+  HEAD, then promotes after HEAD. Its callback/replay race is not run here;
+  W2-8 stays OPEN.
+- Cross-repository copy/move in `BatchOperationHandler.processSingleItem`
+  copies source fs objects, stages destination `pub:` references and durable
+  repair before HEAD, then promotes after HEAD. The source trace does not prove
+  safety if stale source metadata is presented after D; W2-9 stays OPEN.
+- `RevertFile`, `RevertDirectory`, `RestoreTrashItem` and `RevertDirents`
+  rebuild a tree from historical fs objects and update HEAD directly, without
+  the pending-publish `pub:`/repair sequence or an exact-placement check. No
+  race was run, and source inspection alone does not establish whether the
+  required historical object can coexist with retired P1; W2-10 stays OPEN.
+- The Sync idempotent-repair path can enqueue a repair for an already-current
+  HEAD and intentionally has no retroactive exact-P rejection. This branch did
+  not construct that state through a supported current flow after D; W2-3 and
+  the applicable R31 rows stay OPEN.
+
+No E1 row is marked CLOSED by non-reproduction. In particular, no reachable
+post-D repair was exercised, the restart matrix is incomplete, W2-11..14 remain
+open, X1 is not closed, and destructive GC remains OFF. These results authorize
+no PRE-GC or startup-gate transition.
+
 ## Topology, exclusions and exit
 
 One stack at a time. Start with single-DC Cassandra plus real MinIO for decisive writer/recovery races. Add isolated 3DC only when actors differ by DC or SERIAL/EACH_QUORUM visibility is material; name the assertion it proves. Use healthy Cassandra 5.0.9, RF1/DC and dedicated MinIO. Record exact crash point/DC/read levels. G4/G5 are controls; repeat their shared executor only if modified.

@@ -124,11 +124,17 @@ func w2AssertCommittedContinuation(t *testing.T, store *gcpkg.CassandraStore, or
 		}
 	}
 	if !found {
+		if w2WaitForTerminalContinuation(t, store, org, block, class, key, bs) {
+			return
+		}
 		t.Fatal("committed physical continuation lost its recovery root")
 	}
 
 	scope := &w2OwnedRecoveryStore{GCStore: store, org: org, block: block}
 	if n, err := w2Worker(t, scope, class).RecoverS3Orphans(t.Context(), 1000); err != nil || n != 1 {
+		if w2WaitForTerminalContinuation(t, store, org, block, class, key, bs) {
+			return
+		}
 		t.Fatalf("physical continuation recovered=%d err=%v", n, err)
 	}
 	if exists, err := bs.ObjectExists(t.Context(), key); err != nil || exists {
@@ -147,6 +153,49 @@ func w2AssertCommittedContinuation(t *testing.T, store *gcpkg.CassandraStore, or
 	if err := shareProjectionDBForTest(t).Session().Query(`SELECT phase FROM gc_block_delete_lifecycles WHERE org_id = ? AND block_id = ? AND claim_id = ?`, org.String(), block, exactAuthority.ClaimID).Scan(&phase); err != nil || phase != gcpkg.BlockDeleteLifecyclePhaseTerminal {
 		t.Fatalf("expected terminal D phase=%s err=%v", phase, err)
 	}
+}
+
+// A server recovery worker may finish the same durable root while this test's
+// scoped worker is visiting it. Accept only the durable terminal certificate,
+// exact P1 identity, absent root/orphan, missing canonical row and deleted K1.
+func w2WaitForTerminalContinuation(t *testing.T, store *gcpkg.CassandraStore, org uuid.UUID, block, class, key string, bs *storage.BlockStore) bool {
+	t.Helper()
+	database := shareProjectionDBForTest(t)
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		iter := database.Session().Query(`
+			SELECT claim_id, claimed_at, storage_class, storage_key, phase
+			FROM gc_block_delete_lifecycles WHERE org_id = ? AND block_id = ?
+		`, org.String(), block).Iter()
+		var claimID string
+		var claimedAt time.Time
+		var storageClass, storageKey, phase string
+		finished := false
+		for iter.Scan(&claimID, &claimedAt, &storageClass, &storageKey, &phase) {
+			if phase != gcpkg.BlockDeleteLifecyclePhaseTerminal || storageClass != class || storageKey != key {
+				continue
+			}
+			authority := gcpkg.BlockDeleteAuthority{
+				Target:  gcpkg.BlockDeleteTarget{StorageClass: storageClass, StorageKey: storageKey},
+				ClaimID: claimID, ClaimedAt: claimedAt,
+			}
+			_, orphanFound, orphanErr := store.GetS3OrphanExact(org, block, authority)
+			_, rootFound, rootErr := store.GetS3OrphanRecoveryRootExact(org, block, authority)
+			canonicalExists, canonicalErr := store.BlockExists(org, block)
+			objectExists, objectErr := bs.ObjectExists(t.Context(), key)
+			if orphanErr == nil && rootErr == nil && canonicalErr == nil && objectErr == nil &&
+				!orphanFound && !rootFound && !canonicalExists && !objectExists {
+				finished = true
+				break
+			}
+		}
+		iterErr := iter.Close()
+		if iterErr == nil && finished {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
 }
 
 func TestW2WorkerRepairLifecycle(t *testing.T) {
@@ -291,5 +340,37 @@ func TestW2WorkerRepairLifecycle(t *testing.T) {
 		if len(w2Repairs(t, fx)) == 0 {
 			t.Fatal("GC must finish without inventing repair cleanup authority")
 		}
+
+		// E1-02: replay the actual post-HEAD repair visitor after D1 is terminal.
+		// This commit never won HEAD, so UNKNOWN may retain its repair-owned pub:
+		// pin, but it must not create an fs: reference or make the old commit
+		// reachable. The P1 row and K1 object remain retired.
+		lateRepairs := w2Repairs(t, fx)
+		if len(lateRepairs) != 1 || lateRepairs[0].commitID != fc.commitID {
+			t.Fatalf("expected one late repair for the losing commit %s, got %+v", fc.commitID, lateRepairs)
+		}
+		lateRepair := lateRepairs[0]
+		if err := v2pkg.RepairPublishedFSObjectBlockReferenceRepair(database, tenant.orgID, repo, lateRepair.commitID, lateRepair.fsID, lateRepair.blocks); err == nil {
+			t.Fatal("repair visitor must retain UNKNOWN for the commit that never won HEAD")
+		}
+		fx.assertHeadUnchanged(t)
+		x1AssertCanonicalAbsent(t, store, org, fx.blockID)
+		if exists, err := bs.ObjectExists(t.Context(), fx.target.StorageKey); err != nil || exists {
+			t.Fatalf("late repair replay changed retired P1/K1: exists=%v err=%v", exists, err)
+		}
+		refs, err := database.ListBlockReferrers(tenant.orgID, fx.blockID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pubRef, fsRef := false, false
+		for _, referrer := range refs {
+			pubRef = pubRef || len(referrer) > 4 && referrer[:4] == "pub:"
+			fsRef = fsRef || len(referrer) > 3 && referrer[:3] == "fs:"
+		}
+		if !pubRef || fsRef || len(refs) != 1 || len(refs[0]) < 4 ||
+			refs[0][:4] != "pub:" {
+			t.Fatalf("late UNKNOWN repair must retain only repair-owned pub: liveness, got %v", refs)
+		}
+		t.Logf("E1-02: terminal D1/P1 remained absent; unreachable late repair retained pub: only; HEAD unchanged; refs=%v", refs)
 	})
 }

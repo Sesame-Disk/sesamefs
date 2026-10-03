@@ -8,6 +8,19 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-03 - E1 initial full-GC publication/recovery evidence (partial)
+
+On `codex/e1-full-gc-publication-recovery-evaluation`, froze the E1 matrix
+before runtime edits, then added real-Cassandra/MinIO integration evidence for
+a delayed authorized Sync PutBlock and an unreachable post-terminal repair
+replay. The delayed physical write restored orphan K1 bytes but the handler
+materialized a new P2 life and did not restore P1. The losing repair remained
+UNKNOWN with repair-owned `pub:` liveness and did not change HEAD/P1. The full
+Docker `go-all-test` run, directed race tests and both normal/integration vet
+passed sequentially. Reachable post-D publication and most matrix rows remain
+unrun, so E1 is partial, X1 stays OPEN and GC stays OFF. No production runtime
+behavior changed.
+
 ## 2026-09-29 - PR #234 hard-delete lease global SERIAL domain (rebased onto the X1 reset / W2-6a)
 
 Closed `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`. Every hard-delete lease
