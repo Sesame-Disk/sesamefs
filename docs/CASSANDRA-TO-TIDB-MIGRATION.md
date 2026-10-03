@@ -1291,7 +1291,7 @@ docker run -d \
   -p 9000:9000 -p 9001:9001 \
   -e MINIO_ROOT_USER=minioadmin \
   -e MINIO_ROOT_PASSWORD=minioadmin \
-  minio/minio server /data --console-address ":9001"
+  docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z server /data --console-address ":9001"
 
 log_success "MinIO ready"
 
@@ -1345,7 +1345,7 @@ services:
     restart: unless-stopped
 
   minio:
-    image: minio/minio:latest
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z
     ports:
       - "9000:9000"
       - "9001:9001"

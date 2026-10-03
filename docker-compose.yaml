@@ -451,7 +451,7 @@ services:
 
   # MinIO for local S3-compatible storage (development)
   minio:
-    image: minio/minio:latest
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z
     ports:
       - "${MINIO_API_HOST_PORT:-9000}:9000"      # S3 API
       - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"   # Console
@@ -470,7 +470,9 @@ services:
 
   # Create buckets for multi-region simulation
   minio-init:
-    image: minio/mc:latest
+    # This init job runs a shell script; the SILO server image bundles both
+    # /bin/sh and the compatible mc client.
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z
     depends_on:
       minio:
         condition: service_healthy

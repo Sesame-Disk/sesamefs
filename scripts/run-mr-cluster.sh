@@ -130,7 +130,7 @@ cmd_replication_test() {
   fi
 
   echo; log_info "[2/2] MinIO: an object written to minio-usa must mirror to minio-eu"
-  if docker run --rm --network "$NET" --entrypoint sh minio/mc:latest -ec '
+  if docker run --rm --network "$NET" --entrypoint sh docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z -ec '
       mc alias set usa http://minio-usa:9000 minioadmin minioadmin >/dev/null
       mc alias set eu  http://minio-eu:9000  minioadmin minioadmin >/dev/null
       obj="repltest-$(date +%s)-$$.txt"
