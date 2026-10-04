@@ -74,7 +74,7 @@ three real-service legs without production runtime edits:
 | Leg | Directed result | Exact observation |
 |---|---|---|
 | noGCWriterControl | PASS | Productive Office CreateFile wins HEAD, installs permanent fs:, settles repair and retains exact bytes. |
-| claimWinsBeforeLateRepair | PASS | G5 holds exact P1 claim; first refs=0 and all 32 repair buckets empty. The writer then acknowledges a real repair INSERT, but final exact-P returns 409, HEAD stays unchanged and cleanup removes its repair/pins. The second refs read returns zero, G5 commits D1 and terminal recovery retires P1/K1. |
+| claimWinsBeforeLateRepair | PASS | G5 holds exact P1 claim; first refs=0 and all 32 repair buckets empty. The writer then acknowledges a real repair INSERT, but final exact-P returns 409, HEAD stays unchanged and cleanup removes the late durable repair. The temporary up:/pub: pins were already removed by the explicit expiry-state control and remain absent. The second refs read returns zero, G5 commits D1 and terminal recovery retires P1/K1. |
 | reachableSettlementWinsDuringProof | PASS | G5 holds exact P1 claim after its first refs=0 response. Productive REACHABLE repair acknowledges fs: INSERT before repair DELETE. GC then reads 32 empty repair buckets and its second refs read returns one. The claim is released, no delete lifecycle/root exists, and HEAD/tree/P1/K1 remain intact. |
 
 The driver observer scopes by exact org/block and EACH_QUORUM statements on a
