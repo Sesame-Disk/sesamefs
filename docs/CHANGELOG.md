@@ -8,6 +8,21 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-04 - E1-5a SeafHTTP single-shot exact-P publication fix
+
+Productive HandleUpload reproduced successful HEAD/fs:P1 publication after
+COMMITTED and TERMINAL retirement. Preserve materialized SHA-256/class/key through
+metadata retries and validate that exact placement after durable repair,
+immediately before HEAD. Rejection returns the existing 409 deletion response
+and cleans owned commit/pub:/repair/pending owner; terminal replay creates P2.
+A real competing CreateFile forces HEAD conflict and verifies repeated authority
+reads against original P. OnlyOffice's existing COMMITTED test now accepts real
+retirement progress while retaining its exact D certificate and original claim
+check whenever P1 still exists; OnlyOffice runtime is unchanged.
+Docker Go/API/OIDC, final complete integration, ten race repetitions (70 cases),
+omission/filter controls and normal/integration vet pass. Closure is measured
+single-shot pre-HEAD only; streaming/post-HEAD/R31, E1-07 and X1 remain OPEN.
+[Plan, evidence and limits](./E1-5A-SEAFHTTP-SINGLE-PUBLICATION-SAFETY.md).
 ## 2026-10-03 - E1-4 OnlyOffice callback exact-P publication fix
 
 Signed real callbacks reproduced successful HEAD/fs: publication after P1

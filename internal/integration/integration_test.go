@@ -59,6 +59,7 @@ func TestMain(m *testing.M) {
 		os.Getenv("SESAMEFS_REQUIRE_W2_PUBLICATION_CONTINUITY_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W2_CREATEFILE_EXACT_P_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E14_ONLYOFFICE_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_E15A_SEAFHTTP_SINGLE_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P2_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P3_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P4A_EVIDENCE") == "1" ||
@@ -166,6 +167,12 @@ func TestMain(m *testing.M) {
 	if os.Getenv(w2PublicationContinuityEnv) == "1" {
 		if missing := w2PublicationContinuityMissing(w2PublicationContinuityObserved); len(missing) > 0 {
 			fmt.Printf("%s=1 requires all named W2-0 legs; missing=%s (check -run filters)\n", w2PublicationContinuityEnv, strings.Join(missing, ","))
+			code = 1
+		}
+	}
+	if os.Getenv(e15aEvidenceEnv) == "1" {
+		if missing := e15aMissing(e15aEvidence); len(missing) > 0 {
+			fmt.Printf("%s=1 requires all named SeafHTTP single-shot legs; missing=%s (check -run filters)\n", e15aEvidenceEnv, strings.Join(missing, ","))
 			code = 1
 		}
 	}

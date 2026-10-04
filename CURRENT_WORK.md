@@ -1,6 +1,19 @@
 # Current Work - SesameFS
 
-## Active branch: codex/e1-4-onlyoffice-publication-safety
+## Active branch: codex/e1-5a-seafhttp-single-publication-safety
+
+E1-5a / W2-7a (2026-10-04), base main@8319d077 with merged #253: plan frozen
+in 13e7e6e69 before characterization. Productive single-shot SeafHTTP uploads
+reproduced HEAD/fs:P1 after COMMITTED and TERMINAL retirement. Retain original
+materialized SHA-256/class/key through every metadata retry; validate after
+durable repair immediately before HEAD. Fixed rejection returns 409 and cleans
+owned commit/pub:/repair/pending owner. Real HEAD-conflict control validates the
+same P again; terminal replay creates P2. Omission restores both baseline REDs.
+Measured single-shot pre-HEAD is CLOSED-FIX; streaming and post-HEAD/R31, broader
+W2-7/E1-07 and X1 remain OPEN. Docker Go/API/OIDC, final full integration, 70 race cases, omission/filter controls and both vet modes PASS.
+[Plan and evidence](docs/E1-5A-SEAFHTTP-SINGLE-PUBLICATION-SAFETY.md).
+
+## Previous merged slice: E1-4 / PR #253
 
 E1-4 / W2-8 (2026-10-03), base main@d2cb034dd with merged #252: plan frozen
 in ad151bdf4 before characterization. Real signed OnlyOffice callbacks reproduced

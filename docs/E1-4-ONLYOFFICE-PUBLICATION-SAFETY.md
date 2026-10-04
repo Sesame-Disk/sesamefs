@@ -136,3 +136,16 @@ No multi-DC failure, live editor UI, OS restart, concurrent owner cleanup,
 post-HEAD delayed repair, W2-11..14 or natural candidate-discovery closure is
 claimed. CLOSED-FIX applies only to the measured pre-HEAD contract. The broader
 W2-8/E1-08 row, common R31 and X1 remain OPEN; production GC remains OFF.
+
+### E1-5a full-suite harness follow-up (2026-10-04)
+
+The post-rejection COMMITTED observation now checks old D1's exact durable
+class/key/claim/timestamp certificate, allowing background canonical retirement
+and terminal progress. Requiring P1 still present there failed `not found` during
+a full E1-5a suite despite correct callback rejection. Initial COMMITTED proof,
+unchanged HEAD/no fs:P1 and strict terminal P2 replay assertions remain.
+OnlyOffice production runtime is unchanged. See [E1-5a audit](./E1-5A-SEAFHTTP-SINGLE-PUBLICATION-SAFETY.md).
+
+The post-rejection certificate check also requires the original deleting claim
+and committed handoff when a single global read still observes canonical P1.
+Canonical absence or a distinct P2 is allowed as legitimate recovery progress.
