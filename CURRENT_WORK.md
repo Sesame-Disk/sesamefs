@@ -1,6 +1,21 @@
 # Current Work - SesameFS
 
-## Active branch: codex/e1-3-late-publication-pre-d-proof
+## Active branch: codex/e1-4-onlyoffice-publication-safety
+
+E1-4 / W2-8 (2026-10-03), base main@d2cb034dd with merged #252: plan frozen
+in ad151bdf4 before characterization. Real signed OnlyOffice callbacks reproduced
+HEAD plus fs: publication after exact P1 COMMITTED and TERMINAL retirement.
+The fix retains the original materialized placement and validates it through
+the existing exact-P authority primitive after durable repair and before HEAD.
+Rejected attempts clean their owned publication state; terminal replay creates
+P2 without reviving K1. Only the measured pre-HEAD contract is CLOSED-FIX;
+post-HEAD W2-8/E1-08, R31 and X1 remain OPEN. Production GC remains OFF.
+[Plan and evidence](docs/E1-4-ONLYOFFICE-PUBLICATION-SAFETY.md).
+Final Docker Go/API/OIDC, both vet modes and ten race repetitions pass. The
+final exact-P omission is RED in both retirement legs; the named-leg gate
+rejects partial evidence. Replay success requires exact TERMINAL D1 plus new P2.
+
+Prior slice:
 
 E1-3 (2026-10-03), base main@abb558358 with merged #251: the plan was frozen
 before implementation. Directed real-Cassandra/SILO Office legs show that a

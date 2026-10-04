@@ -1259,7 +1259,9 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 	}
 	log.Printf("OnlyOffice: Created block mapping: %s → %s", externalBlockID[:16], internalBlockID[:16])
 
-	storageDeltaBytes, storageDeltaFiles, newCommitID, err := h.publishEditedDocumentMetadata(fsHelper, orgID, repoID, filePath, filename, userID, originalFileSize, externalBlockID, rollbackID)
+	onlyOfficeAfterMaterializedBarrier(repoID)
+
+	storageDeltaBytes, storageDeltaFiles, newCommitID, err := h.publishEditedDocumentMetadata(fsHelper, orgID, repoID, filePath, filename, userID, originalFileSize, externalBlockID, rollbackID, commitBlockPlacement{blockID: internalBlockID, storageClass: materializationTarget.StorageClass, storageKey: materializationTarget.StorageKey})
 	if err != nil {
 		if shouldRollbackOnlyOfficeMaterializedBlock(blockMetadataRegistered, err) {
 			if deleteErr := h.deleteOnlyOfficePendingBlock(orgID, rollbackID); deleteErr != nil {
@@ -1286,7 +1288,7 @@ func (h *OnlyOfficeHandler) finalizeSuccessfulOnlyOfficeEdit(orgID, repoID, user
 	log.Printf("OnlyOffice: saved document %s with block %s (internal: %s), new commit %s", filePath, externalBlockID[:16], internalBlockID[:16], newCommitID)
 }
 
-func (h *OnlyOfficeHandler) publishEditedDocumentMetadata(fsHelper *FSHelper, orgID, repoID, filePath, filename, userID string, originalFileSize int64, externalBlockID, pendingOperationID string) (int64, int64, string, error) {
+func (h *OnlyOfficeHandler) publishEditedDocumentMetadata(fsHelper *FSHelper, orgID, repoID, filePath, filename, userID string, originalFileSize int64, externalBlockID, pendingOperationID string, materializedBlock commitBlockPlacement) (int64, int64, string, error) {
 	var storageDeltaBytes int64
 	var storageDeltaFiles int64
 	var newCommitID string
@@ -1398,6 +1400,13 @@ func (h *OnlyOfficeHandler) publishEditedDocumentMetadata(fsHelper *FSHelper, or
 			return fmt.Errorf("failed to persist OnlyOffice pending commit id: %w", err)
 		}
 
+		// Retain the confirmed materialized P across staging and HEAD retries.
+		// The operation's up: may have expired before repair acquisition;
+		// repair now protects continuity, but cannot authorize a retired P.
+		if err := (&FileHandler{db: h.db}).validateCommitBlockPublicationFences(orgID, []commitBlockPlacement{materializedBlock}); err != nil {
+			cleanupErr := cleanupOnlyOfficeFailedPublishAttempt(h.db, orgID, repoID, commitID, []*pendingPublishedFile{pendingFile})
+			return errors.Join(err, cleanupErr)
+		}
 		if err := fsHelper.UpdateLibraryHeadFromSnapshot(snapshot, repoID, commitID, snapshot.HeadCommitID); err != nil {
 			if errors.Is(err, ErrLibraryHeadConflict) {
 				if cleanupErr := cleanupOnlyOfficeFailedPublishAttempt(h.db, orgID, repoID, commitID, []*pendingPublishedFile{pendingFile}); cleanupErr != nil {
