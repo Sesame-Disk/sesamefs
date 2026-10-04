@@ -76,8 +76,9 @@ Source trace with subsequent scoped dispositions:
 - SeafHTTP single-shot E1-5a reproduces HEAD/fs:P1 after COMMITTED/TERMINAL
   retirement and fixes the measured pre-HEAD contract by carrying original P
   through retries to exact-P validation after repair. Real HEAD-conflict and
-  P2 replay controls are included. E1-07 is PARTIAL: streaming, post-HEAD/R31
-  and broader W2-7 remain OPEN. See [evidence](./E1-5A-SEAFHTTP-SINGLE-PUBLICATION-SAFETY.md).
+  P2 replay controls are included. E1-5b also fixes measured streaming pre-HEAD
+  with original placements and selective same-tracker recovery. E1-07 is PARTIAL:
+  post-HEAD/R31 and broader W2-7 remain OPEN. See [evidence](./E1-5A-SEAFHTTP-SINGLE-PUBLICATION-SAFETY.md).
 - Sync `RecvFS` stores the authorized fs-object projection but does not itself
   publish HEAD or create block liveness. HEAD publication is a separate Sync
   step; the existing no-GC `RecvFS-before-PutBlock` integration case is not a
@@ -205,3 +206,17 @@ through durable repair and validates it immediately before HEAD. Normal save,
 rejection/cleanup and terminal replay at P2 are covered; expiry is an explicit
 state control. Only this pre-HEAD contract is CLOSED-FIX. E1-08 post-HEAD repair,
 concurrent cleanup/recovery and the shared R31 matrix remain OPEN.
+
+## E1-5b SeafHTTP streaming pre-HEAD — 2026-10-04
+
+The [E1-5b frozen plan and evidence](./E1-5B-SEAFHTTP-STREAMING-PUBLICATION-SAFETY.md)
+reproduces COMMITTED/TERMINAL victim HEAD/fs: violations through productive
+chunked HandleUpload before the fix. The fix retains each original exact P
+through tracker and metadata retries, validates after durable repair before
+HEAD, and selectively invalidates rejected digests for productive
+same-tracker rematerialization. Real HEAD conflict proves repeated reads for
+all original blocks; omission restores RED. Unit controls cover state/authority
+failures and coherent/contradictory duplicates. Only measured streaming pre-HEAD
+and selective same-process retry are CLOSED-FIX. This supersedes the streaming
+OPEN snapshot in the earlier E1-5a section, not its scope. E1-07 remains PARTIAL;
+post-HEAD/R31, W2-11..14 and X1 remain OPEN. Production GC stays OFF.

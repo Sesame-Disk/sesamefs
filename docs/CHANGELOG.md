@@ -8,6 +8,18 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-04 - E1-5b SeafHTTP streaming exact-P and selective retry
+
+Real chunked HandleUpload reproduced successful HEAD/fs: publication after one
+block's COMMITTED/TERMINAL retirement. Retain per-position confirmed physical
+placements across tracker and metadata retries; validate all distinct P after
+durable repair before each HEAD CAS with bounded concurrency. Rejection cleans
+owned state and selectively invalidates retired digests, allowing the same
+tracker to productively rematerialize only its victim while preserving valid
+blocks. Real HEAD conflict, omission and required-evidence controls are included.
+Measured streaming pre-HEAD is CLOSED-FIX; E1-07 PARTIAL, post-HEAD/R31 and X1
+remain OPEN. Production GC remains OFF. [Evidence](./E1-5B-SEAFHTTP-STREAMING-PUBLICATION-SAFETY.md).
+
 ## 2026-10-04 - E1-5a SeafHTTP single-shot exact-P publication fix
 
 Productive HandleUpload reproduced successful HEAD/fs:P1 publication after
