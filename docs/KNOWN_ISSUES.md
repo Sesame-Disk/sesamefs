@@ -6888,6 +6888,14 @@ owner) and from the global SERIAL pin of the lease itself, which #234 closed.
 **Affected**: `RevertFile`, `RevertDirectory` (`internal/api/v2/files.go`), `RestoreTrashItem`, `RevertDirents` (`internal/api/v2/trash.go`)
 **Registered**: 2026-09-10, PC-0 publication-protocol characterization audit
 
+**E1-6 update (2026-10-04)**: [retained-history RevertFile characterization](./E1-6-REVERTFILE-PUBLICATION-SAFETY.md)
+shows that productive deletion from HEAD keeps the historical permanent fs:
+pin. With its own upload up: lapsed, the real worker skips the candidate before
+claim/global proof on a positive local reference. One/two-block and real CAS
+retry controls retain original P/K. This does not prove continuity if retention
+removes metadata/refs concurrently; no extant-history COMMITTED/TERMINAL RED
+was reproduced and no runtime migration/fix or W2-10 closure is claimed.
+
 #### Problem
 
 PC-0 originally listed these four handlers among the tree mutations that

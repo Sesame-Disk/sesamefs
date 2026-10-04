@@ -4479,6 +4479,7 @@ func (h *FileHandler) RevertFile(c *gin.Context) {
 	}
 
 	oldEntry := *oldResult.TargetEntry
+	revertFileAfterHistoricalEntryBarrier(repoID, oldEntry.ID)
 
 	fileName := path.Base(filePath)
 	parentDir := path.Dir(filePath)
@@ -4574,6 +4575,7 @@ func (h *FileHandler) RevertFile(c *gin.Context) {
 			return fmt.Errorf("failed to create commit: %w", err)
 		}
 
+		revertFileBeforeHeadBarrier(repoID)
 		if err := fsHelper.UpdateLibraryHeadFromSnapshot(snapshot, repoID, newCommitID, snapshot.HeadCommitID); err != nil {
 			return err
 		}

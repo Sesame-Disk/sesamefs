@@ -1,6 +1,26 @@
 # Current Work - SesameFS
 
-## Active branch: codex/e1-5b-seafhttp-streaming-publication-safety
+## Active branch: codex/e1-6-revertfile-publication-safety
+
+E1-6 / W2-10a (2026-10-04), base main@f2837397 with merged #255.
+Plan frozen in cef35d669 before instrumentation. Productive historical upload,
+DeleteFile and RevertFile with real Cassandra/SILO show that leaving current
+HEAD retains the historical fs: reference. With temporary up: explicitly lapsed,
+the real block worker observes a positive LOCAL_QUORUM reference, settles its
+candidate and skips before claim/global proof. Independent global observation
+also reports a real reference. One/two-block, real HEAD conflict, same-content
+and skip controls are included. Original layout/P/K survive; current RevertFile
+still installs no new pin/pub:/repair/exact-P protocol. No runtime fix or
+CLOSED-FIX claim: COMMITTED/TERMINAL with extant historical dependencies has
+not been reproduced. W2-10/E1-10 and X1 remain OPEN; Phase 5/6 and GC activation
+are outside this slice. Production GC remains OFF.
+Full Docker Go/integration/API/OIDC and both vet modes PASS. Ten -race
+repetitions (60 named legs) PASS; partial/unavailable and scheduling-omission
+controls reject false evidence. Host/image/runner Go hashes agree. Final scoped
+audit found no unresolved introduced P0/P1/P2; existing W2-10 P1 remains OPEN.
+[Plan and evidence](docs/E1-6-REVERTFILE-PUBLICATION-SAFETY.md).
+
+## Previous merged slice: E1-5b / PR #255
 
 E1-5b / W2-7b (2026-10-04), base main@8ce5fd8c with merged #254.
 Plan frozen in 818e0084b before runtime changes. Real chunked HandleUpload,

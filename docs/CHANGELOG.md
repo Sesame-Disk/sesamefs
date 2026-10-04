@@ -8,6 +8,17 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-04 - E1-6 RevertFile retained-history characterization
+
+Productive upload/delete/revert evidence distinguishes leaving HEAD from losing
+historical fs: liveness. Actual GC settles the controlled candidate on a positive
+local reference before claim/global proof; one/two-block history, a real CAS
+retry and same-content/skip no-ops retain original metadata/P/K. The mandatory
+six-leg gate rejects partial or unavailable evidence. No retirement RED was
+manufactured and no runtime fix or closure is claimed. W2-10/E1-10 and X1 remain
+OPEN; Phase 5/6, R31 and GC activation remain separate.
+[Evidence](./E1-6-REVERTFILE-PUBLICATION-SAFETY.md).
+
 ## 2026-10-04 - E1-5b SeafHTTP streaming exact-P and selective retry
 
 Real chunked HandleUpload reproduced successful HEAD/fs: publication after one
