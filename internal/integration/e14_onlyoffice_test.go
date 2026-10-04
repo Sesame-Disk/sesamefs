@@ -271,7 +271,7 @@ func TestE14OnlyOfficeCallbackPublicationSafety(t *testing.T) {
 				}
 				assertPendingAbsent()
 				if leg == "committed" {
-					fx.assertDUnrevoked(t, attempt)
+					e14AssertDNotRevoked(t, fx, attempt)
 					replayError := callback(6)
 					switch replayError {
 					case 1:
@@ -346,4 +346,27 @@ func e14AssertTerminalP1AndNewP2(t *testing.T, fx *w2CreateFileFixture, attempt 
 		t.Fatalf("P2 replay revived K1: %v %v", exists, err)
 	}
 	t.Logf("exact terminal D1=%s P1=%+v P2=%+v", attempt.ClaimID, fx.target, p2)
+}
+
+func e14AssertDNotRevoked(t *testing.T, fx *w2CreateFileFixture, attempt gcpkg.BlockDeleteAuthority) {
+	t.Helper()
+	var phase, class, key string
+	var claimedAt time.Time
+	err := fx.database.Session().Query(`SELECT phase, storage_class, storage_key, claimed_at FROM gc_block_delete_lifecycles WHERE org_id = ? AND block_id = ? AND claim_id = ?`, fx.orgID, fx.blockID, attempt.ClaimID).Consistency(gocql.EachQuorum).Scan(&phase, &class, &key, &claimedAt)
+	if err != nil || (phase != gcpkg.BlockDeleteLifecyclePhasePublished && phase != gcpkg.BlockDeleteLifecyclePhaseTerminal) || class != fx.target.StorageClass || key != fx.target.StorageKey || !claimedAt.Equal(attempt.ClaimedAt) {
+		t.Fatalf("original D certificate changed: phase=%s class=%s key=%s claimedAt=%s err=%v", phase, class, key, claimedAt, err)
+	}
+	// Preserve the original assertion whenever canonical P1 still exists, but a
+	// single read may also observe legitimate retirement or a different new P2.
+	var currentClass, currentKey, state, claim string
+	var handoff *bool
+	err = fx.database.Session().Query(`SELECT gc_state, gc_claim_id, gc_orphan_handoff, storage_class, storage_key FROM blocks WHERE org_id = ? AND block_id = ?`, fx.orgID, fx.blockID).Consistency(gocql.EachQuorum).Scan(&state, &claim, &handoff, &currentClass, &currentKey)
+	if err != nil && err != gocql.ErrNotFound {
+		t.Fatalf("observe canonical life after rejection: %v", err)
+	}
+	if err == nil && currentClass == fx.target.StorageClass && currentKey == fx.target.StorageKey && (state != dbpkg.BlockGCStateDeleting || claim != attempt.ClaimID || handoff == nil || !*handoff) {
+		t.Fatalf("original P1 handoff revoked: state=%s claim=%s handoff=%v", state, claim, handoff)
+	}
+	// The original COMMITTED handoff was checked at the materialization barrier.
+	// Background recovery may retire the canonical row before marking TERMINAL.
 }

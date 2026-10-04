@@ -2562,6 +2562,8 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 		return
 	}
 
+	seafHTTPSingleAfterMaterializedBarrier(token.RepoID, sha256ID, db.BlockPhysicalLocation{StorageClass: materializationTarget.StorageClass, StorageKey: materializationTarget.StorageKey}, uploadOperationID)
+
 	// Update filesystem metadata
 	finalizeCtx, cancelFinalize := newSeafHTTPUploadMetadataFinalizeContext()
 	defer cancelFinalize()
@@ -2572,7 +2574,7 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	}
 	defer releaseFinalizePermit()
 
-	commitID, actualFilename, storageDeltaBytes, storageDeltaFiles, err := h.commitUploadedFile(leaseCtx, token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, chunkData, finalSize, replaceFile)
+	commitID, actualFilename, storageDeltaBytes, storageDeltaFiles, err := h.commitUploadedFile(leaseCtx, token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, chunkData, finalSize, replaceFile, seafHTTPBlockPlacement{blockID: sha256ID, storageClass: materializationTarget.StorageClass, storageKey: materializationTarget.StorageKey})
 	if err != nil {
 		log.Printf("[HandleUpload] Failed to update filesystem: %v", err)
 		writeSeafHTTPUploadError(c, err, "file stored but metadata update failed")
@@ -3416,11 +3418,32 @@ func (h *SeafHTTPHandler) commitUploadedFileMultiBlockOnce(ctx context.Context, 
 	return newCommitID, actualFilename, storageDeltaBytes, storageDeltaFiles, nil
 }
 
+// seafHTTPBlockPlacement preserves the physical life confirmed by HandleUpload.
+// Metadata retries must validate this original tuple, never recapture canonical P.
+type seafHTTPBlockPlacement struct {
+	blockID      string
+	storageClass string
+	storageKey   string
+}
+
+func validateSeafHTTPSinglePublicationPlacement(database *db.DB, orgID string, placement seafHTTPBlockPlacement) error {
+	outcome, err := database.ValidateBorrowedFSPublicationAuthority(orgID, placement.blockID, db.BlockPhysicalLocation{
+		StorageClass: placement.storageClass, StorageKey: placement.storageKey,
+	})
+	if err == nil && outcome == db.BlockRepairAuthorityAuthorized {
+		return nil
+	}
+	if outcome == db.BlockRepairAuthorityBlocked || outcome == db.BlockRepairAuthorityChanged {
+		return fmt.Errorf("%w: block %s publication placement rejected (outcome=%v): %w", v2.ErrBlockDeleteInProgress, placement.blockID, outcome, err)
+	}
+	return fmt.Errorf("block %s publication placement rejected (outcome=%v): %w", placement.blockID, outcome, err)
+}
+
 // commitUploadedFile updates the filesystem metadata after a file upload.
 // When replace is false and a file with the same name exists, it auto-renames to "name (1).ext".
 // Returns the commit ID, the actual filename used (may differ if auto-renamed),
 // and the storage delta from the winning publish attempt.
-func (h *SeafHTTPHandler) commitUploadedFile(ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, content []byte, fileSize int64, replace bool) (string, string, int64, int64, error) {
+func (h *SeafHTTPHandler) commitUploadedFile(ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, content []byte, fileSize int64, replace bool, materializedBlock seafHTTPBlockPlacement) (string, string, int64, int64, error) {
 	startedAt := time.Now()
 	attemptsUsed := 0
 	result := "error"
@@ -3435,7 +3458,7 @@ func (h *SeafHTTPHandler) commitUploadedFile(ctx context.Context, orgID, repoID,
 			return "", "", 0, 0, err
 		}
 		attemptsUsed = attempt
-		commitID, actualFilename, storageDeltaBytes, storageDeltaFiles, err := h.commitUploadedFileOnce(ctx, orgID, repoID, userID, parentDir, filename, fileID, content, fileSize, replace)
+		commitID, actualFilename, storageDeltaBytes, storageDeltaFiles, err := h.commitUploadedFileOnce(ctx, orgID, repoID, userID, parentDir, filename, fileID, content, fileSize, replace, materializedBlock)
 		if err == nil {
 			result = "success"
 			return commitID, actualFilename, storageDeltaBytes, storageDeltaFiles, nil
@@ -3462,7 +3485,7 @@ func (h *SeafHTTPHandler) commitUploadedFile(ctx context.Context, orgID, repoID,
 	return "", "", 0, 0, fmt.Errorf("%w: failed to finalize upload metadata after %d attempts", v2.ErrLibraryHeadConflict, uploadMetadataRetryAttempts)
 }
 
-func (h *SeafHTTPHandler) commitUploadedFileOnce(ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, content []byte, fileSize int64, replace bool) (string, string, int64, int64, error) {
+func (h *SeafHTTPHandler) commitUploadedFileOnce(ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, content []byte, fileSize int64, replace bool, materializedBlock seafHTTPBlockPlacement) (string, string, int64, int64, error) {
 	if err := checkSeafHTTPUploadFinalizeContext(ctx, repoID, "metadata finalize attempt"); err != nil {
 		return "", "", 0, 0, err
 	}
@@ -3574,6 +3597,14 @@ func (h *SeafHTTPHandler) commitUploadedFileOnce(ctx context.Context, orgID, rep
 		}
 		return "", "", 0, 0, err
 	}
+
+	// Durable repair must precede this final read so GC cannot win in the gap
+	// between validation and HEAD. Validate the exact life this request stored.
+	if err := validateSeafHTTPSinglePublicationPlacement(h.db, orgID, materializedBlock); err != nil {
+		cleanupErr := cleanupSeafHTTPFailedPublishAttempt(h.db, orgID, repoID, newCommitID, fileFSID, stagedBlockIDs)
+		return "", "", 0, 0, errors.Join(err, cleanupErr)
+	}
+	seafHTTPSingleBeforeHeadBarrier(repoID, materializedBlock.blockID, db.BlockPhysicalLocation{StorageClass: materializedBlock.storageClass, StorageKey: materializedBlock.storageKey})
 
 	if err := fsHelper.UpdateLibraryHeadFromSnapshot(snapshot, repoID, newCommitID, snapshot.HeadCommitID); err != nil {
 		if errors.Is(err, v2.ErrLibraryHeadConflict) {

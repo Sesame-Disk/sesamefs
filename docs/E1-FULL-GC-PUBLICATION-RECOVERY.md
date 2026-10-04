@@ -71,11 +71,13 @@ and orphan, absent canonical row, and deleted K1; the race rerun passes.
 | E1-04 | PARTIAL; row remains OPEN | The delayed-PUT case above covers only the held physical-write continuation. Sync HEAD, auto-merge and cross-pod retry after D are not evaluated here. |
 | E1-05 through E1-15 | UNRUN; rows remain OPEN | Source tracing below records the current funnel shape, not a post-D integration result. |
 
-Source trace for the unrun funnels:
+Source trace with subsequent scoped dispositions:
 
-- SeafHTTP normal and streaming uploads stage `pub:` references and durable
-  repair before HEAD, then promote to `fs:` after HEAD. This is not an E1
-  post-D result; W2-7 stays OPEN.
+- SeafHTTP single-shot E1-5a reproduces HEAD/fs:P1 after COMMITTED/TERMINAL
+  retirement and fixes the measured pre-HEAD contract by carrying original P
+  through retries to exact-P validation after repair. Real HEAD-conflict and
+  P2 replay controls are included. E1-07 is PARTIAL: streaming, post-HEAD/R31
+  and broader W2-7 remain OPEN. See [evidence](./E1-5A-SEAFHTTP-SINGLE-PUBLICATION-SAFETY.md).
 - Sync `RecvFS` stores the authorized fs-object projection but does not itself
   publish HEAD or create block liveness. HEAD publication is a separate Sync
   step; the existing no-GC `RecvFS-before-PutBlock` integration case is not a
@@ -175,6 +177,15 @@ A no-GC writer control succeeds. Driver observation leaves actual query
 responses unchanged. This is not closure of every pre-D schedule, W2-11/14,
 other funnels or X1, and grants no activation transition.
 
+## E1-5a SeafHTTP single-shot pre-HEAD — 2026-10-04
+
+The [E1-5a frozen plan and evidence](./E1-5A-SEAFHTTP-SINGLE-PUBLICATION-SAFETY.md)
+records productive HandleUpload baseline RED after exact COMMITTED/TERMINAL P1,
+fixed 409 rejection with unchanged HEAD and owned cleanup, normal success/P2
+replay, and a real HEAD-conflict retry validating the same original P again.
+Mandatory evidence requires all four named legs. This closes only measured
+single-shot pre-HEAD safety: E1-07 remains PARTIAL, streaming and post-HEAD/R31
+W2-7 remain OPEN, as do W2-11..14 and X1. No activation transition is granted.
 ## Topology, exclusions and exit
 
 One stack at a time. Start with single-DC Cassandra plus real SILO for decisive writer/recovery races. Add isolated 3DC only when actors differ by DC or SERIAL/EACH_QUORUM visibility is material; name the assertion it proves. Use healthy Cassandra 5.0.9, RF1/DC and dedicated SILO. Record exact crash point/DC/read levels. G4/G5 are controls; repeat their shared executor only if modified.
