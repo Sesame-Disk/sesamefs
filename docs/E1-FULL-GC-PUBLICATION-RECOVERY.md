@@ -1,6 +1,6 @@
 # E1 — Full-GC publication and recovery evaluation
 
-Status: ACTIVE; E1-2 on codex/e1-2-reachable-head-late-repair, following merged #250.
+Status: ACTIVE; E1-3 on codex/e1-3-late-publication-pre-d-proof, following merged #251.
 Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
 
 Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
@@ -161,6 +161,18 @@ not a post-D reachable-repair execution. No COMMITTED or TERMINAL D is forced.
 E1-02, W2-11/14 and X1 remain OPEN; concurrent renewal/cleanup and other funnels
 need separate disposition. The no-GC control, experiment, source exclusion
 argument and validation are in [the E1-2 ledger](./E1-2-REACHABLE-HEAD-LATE-REPAIR.md).
+
+## E1-3 late publication / negative repair scan — 2026-10-03
+
+The [E1-3 plan and evidence](./E1-3-LATE-PUBLICATION-PRE-D-PROOF.md) records
+two directed PASS orderings for real Office CreateFile/shared repair:
+late repair acquisition under an already-held claim is rejected at final
+exact-P, leaving HEAD unchanged; reachable settlement during the proof writes
+fs: before deleting repair, so a subsequent negative scan is protected by the
+second EACH_QUORUM refs read. Its original HEAD/tree/P1/K1 survive without D.
+A no-GC writer control succeeds. Driver observation leaves actual query
+responses unchanged. This is not closure of every pre-D schedule, W2-11/14,
+other funnels or X1, and grants no activation transition.
 
 ## Topology, exclusions and exit
 

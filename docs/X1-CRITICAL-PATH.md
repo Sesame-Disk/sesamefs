@@ -243,6 +243,11 @@ vetoes a new D before handoff, then recovers to exact fs: using a fresh session.
 This narrows the covered gate's evidence; it does not close E1-02, W2-11/14 or
 X1 and does not claim COMMITTED/TERMINAL post-D execution.
 
+E1-3 adds [two pre-D ordering controls](./E1-3-LATE-PUBLICATION-PRE-D-PROOF.md)
+for Office/shared repair: final exact-P rejects a late writer under the held
+claim; reachable settlement before a negative repair scan is caught by the
+second global refs read. Evidence is narrow; W2-11/14 and X1 remain OPEN.
+
 Historical suggested W2 order (superseded for G4/G5 development by the
 2026-10-02 decision): W2-0 is closed for the covered shared mechanism. W2-1/2/6a were individually re-audited against that premise and remain OPEN through R31, not mixed rollout. W2-6 retains CLOSED-FIX pre-HEAD. Finish the real remaining funnels:
 W2-7/W2-8 or W2-10, each starting with a
