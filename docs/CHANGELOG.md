@@ -8,6 +8,20 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-03 - E1-4 OnlyOffice callback exact-P publication fix
+
+Signed real callbacks reproduced successful HEAD/fs: publication after P1
+COMMITTED and TERMINAL retirement. Carry the originally materialized placement
+into metadata publication and use the existing final exact-P validator after
+repair acquisition, before HEAD. Definite rejection cleans owned pub:/repair
+and pending operation; terminal retry rematerializes P2. The normal force-save,
+close-save and closed-key replay controls retain current behavior. Closure is
+limited to this measured pre-HEAD contract; post-HEAD/R31 and X1 remain OPEN.
+Final Docker Go/API/OIDC, normal/integration vet and ten race repetitions pass;
+omitting the exact-P call reproduces both RED legs. Replay assertions accept
+concurrent D1 completion only with exact TERMINAL authority and live new P2.
+[Plan and evidence](./E1-4-ONLYOFFICE-PUBLICATION-SAFETY.md).
+
 ## 2026-10-03 - E1-3 late-publication pre-D proof controls
 
 Frozen plan on main@abb558358 (#251), then directed real-service Office/shared

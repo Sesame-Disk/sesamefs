@@ -84,9 +84,10 @@ Source trace for the unrun funnels:
   staged `pub:`/repair state and exact-placement checks before HEAD in their
   covered paths. Existing pre-HEAD controls are not post-D E1 results, and
   their applicable R31 rows stay OPEN.
-- OnlyOffice template publication stages and queues the pending file before
-  HEAD, then promotes after HEAD. Its callback/replay race is not run here;
-  W2-8 stays OPEN.
+- OnlyOffice callback originally had no final exact-P check. E1-4 reproduces
+  HEAD/fs: after COMMITTED and TERMINAL P1 retirement and adds the minimal
+  exact-P validation after repair, before HEAD. Measured pre-HEAD safety and
+  terminal P2 replay are CLOSED-FIX; post-HEAD/R31 W2-8 remains OPEN.
 - Cross-repository copy/move in `BatchOperationHandler.processSingleItem`
   copies source fs objects, stages destination `pub:` references and durable
   repair before HEAD, then promotes after HEAD. The source trace does not prove
@@ -183,3 +184,13 @@ No runtime edit before this matrix is frozen in a base-referenced commit. If GRE
 Out of scope: G5 clock-health/scheduler, stale-claim settlement, Phase 5 shared-fs_object cascade, Phase 6 execute-time TOCTOU, full PC-D1B.5, A1 startup gate, GC activation, future funnels, speculative coordinator/scheduler redesign. Track separately unless evidence proves the exact post-D reachable-P1 violation on supported code.
 
 Final audit: full Go, E1-required integration, race for changed packages, normal/integration vet, decisive single-DC legs and required 3DC, all sequential in Docker. Re-audit complete diff. Update this matrix, X1/KNOWN_ISSUES, CURRENT_WORK and evidence docs. E1 may recommend X1 CLOSED only if every applicable §4 row has valid disposition and no current supported funnel publishes P1 after D. GC stays OFF; PRE-GC/A1 remains distinct.
+
+## E1-4 / W2-8 OnlyOffice callback
+
+[E1-4 plan and evidence](./E1-4-ONLYOFFICE-PUBLICATION-SAFETY.md) records
+current-behavior RED for a real callback resuming after exact P1 COMMITTED and
+TERMINAL retirement. The fix retains the original materialized placement
+through durable repair and validates it immediately before HEAD. Normal save,
+rejection/cleanup and terminal replay at P2 are covered; expiry is an explicit
+state control. Only this pre-HEAD contract is CLOSED-FIX. E1-08 post-HEAD repair,
+concurrent cleanup/recovery and the shared R31 matrix remain OPEN.

@@ -6195,9 +6195,9 @@ Deployment contract: [X1 source of record](./X1-CRITICAL-PATH.md#first-productio
 
 ### ISSUE-PC0-EXACT-P-FUNNEL-GAP-01: Publication-authority/continuity before HEAD is not uniform by provenance
 
-**Status**: 🟡 Open — partially fixed. `UploadFile` fixed by W2-6 (PR #237, 2026-09-29): it passes its materialized exact placement to the shared finalizer, which re-validates it after `pub:` and immediately before HEAD (evidence `TestW2UploadFileExactPlacementBeforeHead`, RED on the previous code). W2-6a adds the missing exact-P check for `CreateFile` Office templates by carrying the actual SHA-256/class/key into the same final check after durable `pub:` (nine real Cassandra/MinIO legs plus reuse and empty-file controls). OnlyOffice, SeafHTTP and cross-repo remain open; covered current-version W2-0 is CLOSED-EVIDENCE under the first-production contract and R31 remains OPEN.
+**Status**: 🟡 Open — partially fixed. `UploadFile` fixed by W2-6 (PR #237, 2026-09-29): it passes its materialized exact placement to the shared finalizer, which re-validates it after `pub:` and immediately before HEAD (evidence `TestW2UploadFileExactPlacementBeforeHead`, RED on the previous code). W2-6a adds the missing exact-P check for `CreateFile` Office templates by carrying the actual SHA-256/class/key into the same final check after durable `pub:` (nine real Cassandra/MinIO legs plus reuse and empty-file controls). E1-4 / W2-8 fixes OnlyOffice pre-HEAD exact-P (real callback RED after COMMITTED/TERMINAL P1; fixed rejection and P2 replay). OnlyOffice post-HEAD/R31, SeafHTTP and cross-repo remain open; covered current-version W2-0 is CLOSED-EVIDENCE under the first-production contract and R31 remains OPEN.
 **Severity**: High (P1) — W2 writer protocol completeness
-**Affected**: ~~`UploadFile` → `finalizeStoredUploadMetadataOnce` with `commitBlocks=nil`~~ (fixed, W2-6); `CreateFile` Office-template publication (partial exact-P fix, W2-6a OPEN through R31; covered pre-HEAD pin-expiry continuity proved); OnlyOffice `publishEditedDocumentMetadata`; SeafHTTP commit once-paths; cross-repo `processSingleItem`
+**Affected**: ~~`UploadFile` → `finalizeStoredUploadMetadataOnce` with `commitBlocks=nil`~~ (fixed, W2-6); `CreateFile` Office-template publication (partial exact-P fix, W2-6a OPEN through R31; covered pre-HEAD pin-expiry continuity proved); OnlyOffice `publishEditedDocumentMetadata` (E1-4 pre-HEAD CLOSED-FIX; post-HEAD/R31 OPEN); SeafHTTP commit once-paths; cross-repo `processSingleItem`
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization
 
 #### Problem
@@ -6207,6 +6207,7 @@ W1/W2 proved that publishing against a retired or changed exact physical placeme
 - `CreateFileFromBlocks` passes `commitBlocks` into the shared finalizer.
 - `CreateFile` Office templates pass their actual materialized placement to the same validator after durable `pub:` (W2-6a); empty CreateFile has no block.
 - Sync readiness now captures and fences every added canonical block; only upload-pin renewal remains scoped to PutBlock provenance (W2-4).
+- OnlyOffice callbacks carry their original materialized SHA-256/class/key through durable repair to final exact-P before HEAD (E1-4 / W2-8); COMMITTED/TERMINAL rejection and terminal P2 replay are covered, while post-HEAD/R31 stays OPEN.
 
 `UploadFile` called `finalizeStoredUploadMetadata(..., nil)`, so
 `validateCommitBlockPublicationFences` was a no-op (fixed by W2-6, PR #237). `CreateFile` Office templates now call it too (W2-6a). OnlyOffice,
