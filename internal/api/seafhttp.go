@@ -369,11 +369,12 @@ type ChunkUpload struct {
 	Ranges      []byteRange
 	Finalizing  bool
 
-	finalizationStarted    bool
-	accountedBlockPosition map[int]string
-	quotaPrecheck          chunkQuotaPrecheck
-	updatedAt              time.Time
-	mu                     sync.Mutex
+	finalizationStarted     bool
+	accountedBlockPosition  map[int]string
+	accountedBlockPlacement map[int]seafHTTPBlockPlacement
+	quotaPrecheck           chunkQuotaPrecheck
+	updatedAt               time.Time
+	mu                      sync.Mutex
 
 	// Finalization fan-in: the single request that wins ClaimFinalization runs
 	// the actual finalize and publishes its outcome here; any other request that
@@ -1102,35 +1103,86 @@ func (cu *ChunkUpload) hasRangeLocked(start, end int64) bool {
 	return false
 }
 
-func (cu *ChunkUpload) AccountBlockOnce(index int, blockID string, account func() error) error {
+// AccountBlockOnce retains accounting and the confirmed exact placement atomically.
+// A retry may reuse only that original tuple, never a fresh canonical observation.
+func (cu *ChunkUpload) AccountBlockOnce(index int, blockID string, account func() (seafHTTPBlockPlacement, error)) error {
 	cu.mu.Lock()
-	if existingBlockID, ok := cu.accountedBlockPosition[index]; ok {
+	if existing, ok := cu.accountedBlockPosition[index]; ok {
+		placement, found := cu.accountedBlockPlacement[index]
 		cu.mu.Unlock()
-		if existingBlockID != blockID {
+		if existing != blockID || !found || placement.blockID != blockID {
+			return fmt.Errorf("block at position %d has inconsistent accounted placement", index)
+		}
+		return validateSeafHTTPPlacementShape(placement)
+	}
+	cu.mu.Unlock()
+	placement, err := account()
+	if err != nil {
+		return err
+	}
+	if placement.blockID != blockID {
+		return fmt.Errorf("materialized block at position %d changed identity", index)
+	}
+	if err := validateSeafHTTPPlacementShape(placement); err != nil {
+		return err
+	}
+	cu.mu.Lock()
+	defer cu.mu.Unlock()
+	if existing, ok := cu.accountedBlockPosition[index]; ok {
+		if existing != blockID || cu.accountedBlockPlacement[index] != placement {
 			return fmt.Errorf("block at position %d changed after accounting", index)
 		}
 		return nil
 	}
-	cu.mu.Unlock()
-
-	if err := account(); err != nil {
-		return err
-	}
-
-	cu.mu.Lock()
-	defer cu.mu.Unlock()
 	if cu.accountedBlockPosition == nil {
 		cu.accountedBlockPosition = make(map[int]string)
 	}
-	if existingBlockID, ok := cu.accountedBlockPosition[index]; ok {
-		if existingBlockID != blockID {
-			return fmt.Errorf("block at position %d changed after accounting", index)
-		}
-		return nil
+	if cu.accountedBlockPlacement == nil {
+		cu.accountedBlockPlacement = make(map[int]seafHTTPBlockPlacement)
 	}
-	cu.accountedBlockPosition[index] = blockID
+	cu.accountedBlockPosition[index], cu.accountedBlockPlacement[index] = blockID, placement
 	cu.updatedAt = time.Now()
 	return nil
+}
+
+// Snapshot preserves file position order and rejects partial tracker state.
+func (cu *ChunkUpload) AccountedBlockPlacements(count int) ([]seafHTTPBlockPlacement, error) {
+	cu.mu.Lock()
+	defer cu.mu.Unlock()
+	if len(cu.accountedBlockPosition) != count || len(cu.accountedBlockPlacement) != count {
+		return nil, fmt.Errorf("incomplete streaming placement snapshot")
+	}
+	placements := make([]seafHTTPBlockPlacement, count)
+	for i := range placements {
+		block, ok := cu.accountedBlockPosition[i]
+		placement, found := cu.accountedBlockPlacement[i]
+		if !ok || !found || placement.blockID != block {
+			return nil, fmt.Errorf("missing streaming placement at position %d", i)
+		}
+		if err := validateSeafHTTPPlacementShape(placement); err != nil {
+			return nil, err
+		}
+		placements[i] = placement
+	}
+	return placements, nil
+}
+
+// All duplicate positions of a rejected digest must materialize again. Other
+// accounted positions retain their original P and the same upload operation.
+func (cu *ChunkUpload) invalidateBlockPlacements(blockIDs []string) {
+	rejected := make(map[string]bool, len(blockIDs))
+	for _, block := range blockIDs {
+		rejected[block] = true
+	}
+	cu.mu.Lock()
+	defer cu.mu.Unlock()
+	for index, block := range cu.accountedBlockPosition {
+		if rejected[block] {
+			delete(cu.accountedBlockPosition, index)
+			delete(cu.accountedBlockPlacement, index)
+		}
+	}
+	cu.updatedAt = time.Now()
 }
 
 func (cu *ChunkUpload) BlockAlreadyAccounted(index int, blockID string) (bool, error) {
@@ -1142,6 +1194,13 @@ func (cu *ChunkUpload) BlockAlreadyAccounted(index int, blockID string) (bool, e
 	}
 	if existingBlockID != blockID {
 		return false, fmt.Errorf("block at position %d changed after accounting", index)
+	}
+	placement, found := cu.accountedBlockPlacement[index]
+	if !found || placement.blockID != blockID {
+		return false, fmt.Errorf("missing accounted placement at position %d", index)
+	}
+	if err := validateSeafHTTPPlacementShape(placement); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -1875,8 +1934,8 @@ var lookupLibraryEncryptedForUploadFn = func(h *SeafHTTPHandler, orgID, repoID s
 	`, orgID, repoID).Scan(&encrypted)
 	return encrypted, err
 }
-var commitSeafHTTPUploadedFileMultiBlockFn = func(h *SeafHTTPHandler, ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool) (string, string, int64, int64, error) {
-	return h.commitUploadedFileMultiBlock(ctx, orgID, repoID, userID, parentDir, filename, fileID, blockIDs, fileSize, replace)
+var commitSeafHTTPUploadedFileMultiBlockFn = func(h *SeafHTTPHandler, ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool, placements []seafHTTPBlockPlacement) (string, string, int64, int64, error) {
+	return h.commitUploadedFileMultiBlock(ctx, orgID, repoID, userID, parentDir, filename, fileID, blockIDs, fileSize, replace, placements)
 }
 
 func newSeafHTTPUploadOperationID(token string) string {
@@ -3041,9 +3100,9 @@ readLoop:
 			}
 
 			uploadOperationID := upload.UploadOperationID()
-			if blkErr := upload.AccountBlockOnce(blockIndexLocal, sha256ID, func() error {
+			if blkErr := upload.AccountBlockOnce(blockIndexLocal, sha256ID, func() (seafHTTPBlockPlacement, error) {
 				var materializationTarget v2.BlockMaterializationTarget
-				return retrySeafHTTPBlockMaterializationContextPhased(egCtx, "finalizeUploadStreaming", sha256ID, func(phase v2.BlockMaterializationPhase) error {
+				err := retrySeafHTTPBlockMaterializationContextPhased(egCtx, "finalizeUploadStreaming", sha256ID, func(phase v2.BlockMaterializationPhase) error {
 					materializationTarget = v2.BlockMaterializationTarget{}
 					probe, probeErr := probeUploadedBlockReuseForUploadFn(h.db, token.OrgID, sha256ID)
 					if probeErr != nil {
@@ -3086,6 +3145,12 @@ readLoop:
 				}, func() (bool, error) {
 					return clearSeafHTTPS3OrphanFenceFn(egCtx, h.db, h.storageManager, "finalizeUploadStreaming", token.OrgID, sha256ID)
 				})
+				if err != nil {
+					return seafHTTPBlockPlacement{}, err
+				}
+				placement := seafHTTPBlockPlacement{blockID: sha256ID, storageClass: materializationTarget.StorageClass, storageKey: materializationTarget.StorageKey}
+				seafHTTPStreamingBlockMaterializedBarrier(token.RepoID, blockIndexLocal, sha256ID, db.BlockPhysicalLocation{StorageClass: placement.storageClass, StorageKey: placement.storageKey}, uploadOperationID)
+				return placement, nil
 			}); blkErr != nil {
 				if errors.Is(blkErr, v2.ErrBlockMappingWriteFailed) {
 					log.Printf("[finalizeUploadStreaming] CRITICAL: Failed to write block_id_mapping org=%s ext=%s int=%s: %v", token.OrgID, blockSHA1IDLocal[:16], sha256ID[:16], blkErr)
@@ -3108,6 +3173,12 @@ readLoop:
 		return "", "", 0, 0, err
 	}
 
+	seafHTTPStreamingAfterMaterializedBarrier(token.RepoID, upload)
+	placements, placementErr := upload.AccountedBlockPlacements(len(blockSHA1IDs))
+	if placementErr != nil {
+		return "", "", 0, 0, placementErr
+	}
+
 	// File ID = SHA-1 of the complete plaintext
 	fileID := hex.EncodeToString(sha1Hasher.Sum(nil))
 
@@ -3120,8 +3191,12 @@ readLoop:
 	}
 	defer releaseFinalizePermit()
 
-	commitID, actualFilename, storageDeltaBytes, storageDeltaFiles, err := commitSeafHTTPUploadedFileMultiBlockFn(h, leaseCtx, token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, blockSHA1IDs, totalSize, replace)
+	commitID, actualFilename, storageDeltaBytes, storageDeltaFiles, err := commitSeafHTTPUploadedFileMultiBlockFn(h, leaseCtx, token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, blockSHA1IDs, totalSize, replace, placements)
 	if err != nil {
+		var rejected *seafHTTPPublicationPlacementError
+		if errors.As(err, &rejected) {
+			upload.invalidateBlockPlacements(rejected.rejectedBlockIDs)
+		}
 		return "", "", 0, 0, fmt.Errorf("failed to update filesystem metadata: %w", err)
 	}
 	log.Printf("[finalizeUploadStreaming] Filesystem updated, commit=%s", commitID)
@@ -3133,7 +3208,7 @@ readLoop:
 // Used for large files that are split into multiple blocks during upload.
 // Returns the commit ID, the actual filename used (may differ if auto-renamed),
 // and the storage delta from the winning publish attempt.
-func (h *SeafHTTPHandler) commitUploadedFileMultiBlock(ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool) (string, string, int64, int64, error) {
+func (h *SeafHTTPHandler) commitUploadedFileMultiBlock(ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool, placements []seafHTTPBlockPlacement) (string, string, int64, int64, error) {
 	startedAt := time.Now()
 	attemptsUsed := 0
 	result := "error"
@@ -3148,7 +3223,7 @@ func (h *SeafHTTPHandler) commitUploadedFileMultiBlock(ctx context.Context, orgI
 			return "", "", 0, 0, err
 		}
 		attemptsUsed = attempt
-		commitID, actualFilename, storageDeltaBytes, storageDeltaFiles, err := h.commitUploadedFileMultiBlockOnce(ctx, orgID, repoID, userID, parentDir, filename, fileID, blockIDs, fileSize, replace)
+		commitID, actualFilename, storageDeltaBytes, storageDeltaFiles, err := h.commitUploadedFileMultiBlockOnce(ctx, orgID, repoID, userID, parentDir, filename, fileID, blockIDs, fileSize, replace, placements)
 		if err == nil {
 			result = "success"
 			return commitID, actualFilename, storageDeltaBytes, storageDeltaFiles, nil
@@ -3289,10 +3364,14 @@ func (h *SeafHTTPHandler) createPendingSeafHTTPFileFSObject(orgID, repoID, attem
 	return nil
 }
 
-func (h *SeafHTTPHandler) commitUploadedFileMultiBlockOnce(ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool) (string, string, int64, int64, error) {
+func (h *SeafHTTPHandler) commitUploadedFileMultiBlockOnce(ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool, placements []seafHTTPBlockPlacement) (string, string, int64, int64, error) {
 	if err := checkSeafHTTPUploadFinalizeContext(ctx, repoID, "metadata finalize attempt"); err != nil {
 		return "", "", 0, 0, err
 	}
+	if len(placements) != len(blockIDs) {
+		return "", "", 0, 0, fmt.Errorf("streaming placement count does not match file blocks")
+	}
+
 	// Single consistent snapshot: head_commit_id + root_fs_id read together so
 	// the quota delta, tree traversal, and CAS compare all use the same HEAD.
 	fsHelper := v2.NewFSHelper(h.db)
@@ -3400,6 +3479,15 @@ func (h *SeafHTTPHandler) commitUploadedFileMultiBlockOnce(ctx context.Context, 
 		}
 		return "", "", 0, 0, err
 	}
+
+	if err := validateSeafHTTPStreamingPublicationPlacements(ctx, h.db, orgID, placements); err != nil {
+		cleanupErr := cleanupSeafHTTPFailedPublishAttempt(h.db, orgID, repoID, newCommitID, fileFSID, stagedBlockIDs)
+		return "", "", 0, 0, errors.Join(err, cleanupErr)
+	}
+	if err := checkSeafHTTPUploadFinalizeContext(ctx, repoID, "validated streaming head publish"); err != nil {
+		return "", "", 0, 0, errors.Join(err, cleanupSeafHTTPFailedPublishAttempt(h.db, orgID, repoID, newCommitID, fileFSID, stagedBlockIDs))
+	}
+	seafHTTPStreamingBeforeHeadBarrier(repoID)
 
 	if err := fsHelper.UpdateLibraryHeadFromSnapshot(snapshot, repoID, newCommitID, snapshot.HeadCommitID); err != nil {
 		if errors.Is(err, v2.ErrLibraryHeadConflict) {

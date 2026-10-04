@@ -215,7 +215,7 @@ methods in one source file cannot silently overwrite one another.
 | F4 | `v2.processSingleItem` cross-repo copy/move | `copyFSObjectToLibraryForPublish` | source-repo `fs:` borrowed; **no destination own pin proven** | `stagePendingPublishedFiles` when `pendingCopiedFiles > 0` | **none** | `queuePendingPublishedFileRepairs` | dest `UpdateLibraryHeadFromSnapshot` | promote dest refs; source HEAD (move) is a separate tree mutation |
 | F5 | `v2.publishEditedDocumentMetadata` (OnlyOffice) | callback download + `saveOnlyOfficePendingBlock` | callback `up:<operation>` | `stagePendingPublishedFiles` | Original materialized exact P, revalidated after repair immediately before HEAD (E1-4 / W2-8) | `queuePendingPublishedFileRepairs` | `UpdateLibraryHeadFromSnapshot` | promote / schedule; pending-commit-id is OO-specific |
 | F6 | `SeafHTTP.commitUploadedFileOnce` | single-block upload in this request | register during upload | `stageSeafHTTPPublishAttemptReferences` | `validateSeafHTTPSinglePublicationPlacement` retains original materialized exact P through retries; after durable repair, before HEAD (E1-5a) | `queuePublishedFSObjectBlockReferenceRepairFn` | `UpdateLibraryHeadFromSnapshot` | `finalizeSeafHTTPPublishedBlockReferences` |
-| F7 | `SeafHTTP.commitUploadedFileMultiBlockOnce` | multi-block upload | register during upload | same | **none** | same | same | same |
+| F7 | `SeafHTTP.commitUploadedFileMultiBlockOnce` | multi-block upload | register during upload; exact P retained per accounted position | same | E1-5b validates every distinct original P after durable repair before each HEAD attempt; rejected digest positions rematerialize productively on same-tracker retry | same | same | same |
 | F8 | `Sync.handleSyncHeadPromotion` | client PutBlock / RecvFS / PutCommit | Scope gate: LQ hit ⇒ provenanced; clean LQ miss ⇒ EQ hit provenanced / EQ miss unprovenanced / EQ error abort; unprovenanced blocks skip readiness | `stageSyncCommitBlockDelta` **before** readiness | `prepareSyncCommitBlockPublicationReadiness` captures provenanced exact P; final validation after repair queue | `queueSyncCommitBlockReferenceRepairsFn` **after** readiness | `updateLibraryHeadWithStats` | `finalizeSyncCommitBlockDeltaAndSettleRepairIntent`; shared repair never cleared on request-local loss |
 | F9 | `Sync.tryAutoMergeSyncHeadPromotion` | merge commit of target onto current HEAD | same complete LQ→EQ scope gate and provenanced subset | `stageSyncCommitBlockDelta` | same | queue after readiness; auto-merge commit ID includes a fresh UUID | `updateLibraryHeadWithStats` | structurally unique attempt: cleanup of `pub:` is safe; settlement still required |
 
@@ -464,8 +464,8 @@ stage pub ────────┤                           ├→ HEAD
 An empty-file path with no physical dependencies may skip the repair row. Do
 not freeze readiness-before-repair as the coordinator spine: CFFB requires
 repair-before-fence, while Sync requires initial readiness-before-repair and a final captured exact-P check after repair. CreateFile Office
-and stored UploadFile, OnlyOffice E1-4 and SeafHTTP single-shot E1-5a validate exact-P after repair; SeafHTTP streaming and
-cross-repo use stage → repair → HEAD. Any future unification
+and stored UploadFile, OnlyOffice E1-4 and SeafHTTP single-shot E1-5a and streaming E1-5b validate exact-P after repair;
+cross-repo uses stage → repair → HEAD. Any future unification
 must preserve the observed orders unless a separate PR provides evidence.
 
 ---
@@ -601,7 +601,7 @@ F6 retains original materialized exact P through metadata retries and validates
 it after durable repair, immediately before HEAD. Productive COMMITTED/TERMINAL
 baseline failures, fixed 409 rejection/owned cleanup, terminal P2 replay and
 real HEAD-conflict retry are recorded in [E1-5a](./E1-5A-SEAFHTTP-SINGLE-PUBLICATION-SAFETY.md).
-F7 streaming remains without final exact-P and is OPEN. This closes only measured
+At the E1-5a snapshot F7 streaming remained without final exact-P; E1-5b below supersedes that streaming disposition. This closes only measured
 single-shot pre-HEAD safety, not W2-7, R31, E1 or X1 as a whole. Older dated source
 snapshots below must be read with this disposition and E1-4 OnlyOffice's pre-HEAD
 fix; production GC stays OFF.
@@ -613,11 +613,11 @@ fix; production GC stays OFF.
 | Content origin | Seafile HTTP upload |
 | Operation identity | derived commit id (`sha1(repo:root:desc:unixnano)`) |
 | Provenance | register during upload, not renewed at commit |
-| Exact P | F6 original materialized SHA-256/class/key validated after repair and before each HEAD attempt (E1-5a); F7 none at commit |
+| Exact P | F6 original materialized SHA-256/class/key validated after repair and before each HEAD attempt (E1-5a); F7 every retained original P after durable repair, on every HEAD retry (E1-5b) |
 | Stage | `stageSeafHTTPPublishAttemptReferences` |
 | Extra | direct `INSERT INTO commits` in the stage→HEAD window (frozen R3 CQL=1) |
 | Repair | yes |
-| W2 | F6 measured pre-HEAD `CLOSED-FIX`; F7 and post-HEAD/R31 OPEN |
+| W2 | F6/F7 measured pre-HEAD `CLOSED-FIX`; post-HEAD/R31 OPEN |
 | Common | stage, repair, HEAD, settle |
 | Specific | Seafile fs_object layout, context cancel checks, commit INSERT |
 
@@ -701,7 +701,7 @@ error paths do not queue repair or attempt HEAD.
 | ID | Universal in today's code? | Notes |
 |---|---|---|
 | PUBL-1 Proven/publishable input | **No** | Classification exists in some adapters; Sync unprovenanced blocks and cross-repo borrowed `fs:` still enter `stage pub:`; content-resurrection paths (§3.5) publish borrowed historical `fs:` without any pin, stage, or repair. `UNPROVENANCED` and `ERROR` are not publishable. `BORROWED` is not publishable until the adapter acquires durable own liveness; observing/revalidating foreign `fs:` is the W1 TOCTOU. The coordinator may accept only `PublishableInput`. Classifying those states inside the coordinator and then staging them would centralize the W2 hole (Sync without PutBlock still has no liveness attributable to the commit). `PublishableInput` as defined is scoped to dependencies newly live on the HEAD being published, not to dependencies inherited unchanged from the old HEAD (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`). PC-D1 resolves the responsibility boundary with a certified baseline frontier: newly-live is incremental only when its durable witness is valid; otherwise baseline certification is required. |
-| PUBL-2 Publication authority / continuity | **No** | Exact-P before HEAD exists for F1 Office placements (#238), F2 materialized placements (#237), F3 placements and Sync-provenanced blocks. Empty F1 has no block dependencies. OnlyOffice (E1-4) and SeafHTTP single-shot (E1-5a) now validate their original materialized exact P after durable repair, before HEAD; SeafHTTP streaming and cross-repo lack an equivalent final exact-P check. Authority checks do not establish continuous own-pin liveness through HEAD: W2-0 and W2-6a remain OPEN under the 48h up:/35d pub: TTLs. BorrowedFS/late pin needs authority validation because the pin may arrive after GC won; cross-repo also lacks a proven destination own pin, and content-resurrection paths have neither pin nor exact-P (§3.5). |
+| PUBL-2 Publication authority / continuity | **No** | Exact-P before HEAD exists for F1 Office placements (#238), F2 materialized placements (#237), F3 placements and Sync-provenanced blocks. Empty F1 has no block dependencies. OnlyOffice (E1-4) and SeafHTTP single-shot (E1-5a) now validate their original materialized exact P after durable repair, before HEAD; SeafHTTP streaming (E1-5b) now validates all retained original P; cross-repo lacks an equivalent final exact-P check. Authority checks do not establish continuous own-pin liveness through HEAD: W2-0 and W2-6a remain OPEN under the 48h up:/35d pub: TTLs. BorrowedFS/late pin needs authority validation because the pin may arrive after GC won; cross-repo also lacks a proven destination own pin, and content-resurrection paths have neither pin nor exact-P (§3.5). |
 | PUBL-3 No liveness gap | **Unproven (W2-0 and R31)** | Ordering aims at overlap; 48h up: and 35d pub: TTLs leave pre-HEAD validator-to-HEAD continuity unresolved as well as post-HEAD continuity. |
 | PUBL-4 Durable ambiguity | **Mostly** | UNKNOWN does not take known-loser cleanup. Repair row is the durable witness. Finite `pub:` TTL remains R31 (`ISSUE-GC-PUB-REF-ZERO-REF-01`). |
 | PUBL-5 Known loser ≠ unknown | **Yes in request-local paths; no durable loser** | Classified differently; crash before cleanup collapses to UNKNOWN retain. |
@@ -1156,7 +1156,7 @@ green.
 | M4 Cross-DC HEAD settlement | attempt in eu, repair in na | **PRIOR EVIDENCE — PARTIAL**: #213's shared classifier recognizes a target as an ancestor after HEAD advances and retains repair when one DC is unavailable; `scripts/w2-post-head-multidc-validation.sh` also proves cross-DC HEAD blindness does not authorize cleanup. Full remote replay/settlement, especially Sync-specific M4, remains **GAP** and was not re-executed by PC-0. |
 | M5 Concurrent publishers | writer A na, writer B eu | CAS winner is Paxos-level **OBSERVED**. Live two-DC concurrent HEAD advances under session default `LOCAL_SERIAL` = **EXECUTED** (`scripts/library-head-serial-domain-multidc-validation.sh`, `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` closed 2026-09-14): exactly one of H0→H1 / H0→H2 applies. Full funnel-vs-funnel publication races remain GAP. |
 | M6 Cross-DC repair | pub/repair from one DC, worker in another | **EVIDENCE GAP** for the concrete DC-A write → DC-B discovery → settlement-worker proof; the W2 script's local-miss-not-cleanup observation is not that end-to-end proof, and PC-0 did not re-execute it. |
-| M7 Stale placement | P changes before pre-HEAD fence | **MIXED**: F1 Office and F2 materialized placements have real Cassandra/MinIO GC-before-validation RED/GREEN evidence (`TestW2CreateFileOfficeTemplateExactPlacementBeforeHead`, `TestW2UploadFileExactPlacementBeforeHead`); F3 fence is **OBSERVED** (W1 retired-placement); Sync provenanced blocks have source/existing evidence for exact-P. OnlyOffice E1-4 and SeafHTTP single-shot E1-5a have COMMITTED/TERMINAL RED/GREEN evidence; SeafHTTP streaming and cross-repo lack equivalent pre-HEAD exact-P = **GAP**. These observations do not close TTL-bound own-pin continuity through HEAD (W2-0 OPEN; W2-6a OPEN). |
+| M7 Stale placement | P changes before pre-HEAD fence | **MIXED**: F1 Office and F2 materialized placements have real Cassandra/MinIO GC-before-validation RED/GREEN evidence (`TestW2CreateFileOfficeTemplateExactPlacementBeforeHead`, `TestW2UploadFileExactPlacementBeforeHead`); F3 fence is **OBSERVED** (W1 retired-placement); Sync provenanced blocks have source/existing evidence for exact-P. OnlyOffice E1-4 and SeafHTTP single-shot E1-5a have COMMITTED/TERMINAL RED/GREEN evidence; SeafHTTP streaming E1-5b has victim COMMITTED/TERMINAL RED/GREEN, selective same-tracker recovery and real HEAD-conflict evidence; cross-repo lacks equivalent pre-HEAD exact-P = **GAP**. These observations do not close TTL-bound own-pin continuity through HEAD (W2-0 OPEN; W2-6a OPEN). |
 | M8 Funnel-specific | Sync, CFFB, stored v2, SeafHTTP, OO, cross-repo | **MIXED/PARTIAL**: CFFB/shared has classifier evidence, not full end-to-end multi-DC funnel proof; Sync xDC is **PRIOR EVIDENCE** (#210, see M2/M3); full 3-DC proof for OO/SeafHTTP/cross-repo remains **EVIDENCE GAP**. |
 | M9 Initial HEAD from a blind DC | initializer vs CAS-published HEAD | **PRIOR EVIDENCE, resolved**: audit 2026-09-10 (`scripts/pc0-initial-head-xdc-probe.sh` bug mode, real 3-DC) — the pre-fix `createInitialCommit`/`InitializeLibraryFS` shape from blind dc-eu reverted an LWT-published HEAD in every DC; 2026-09-11 (`scripts/h1-initial-head-multidc-validation.sh`, real 3-DC, handler-level) — both production initializers driven from blind dc-eu keep and return the HEAD dc-na published. Not re-executed by the gate. |
 
@@ -1205,7 +1205,7 @@ observes `verify/capture placement → own-liveness work → stage → repair �
 final exact-P fence → HEAD`; Sync observes `stage → provenance/readiness →
 repair → HEAD`, and can discover `UNPROVENANCED`/`ERROR` after staging. The
 CreateFile Office and stored UploadFile observe `stage → repair → exact-P → HEAD`;
-OnlyOffice and SeafHTTP single-shot now observe `stage → repair → final exact-P → HEAD`; SeafHTTP streaming and cross-repo still observe `stage → repair → HEAD`. The target
+OnlyOffice and SeafHTTP single-shot/streaming now observe `stage → repair → final exact-P → HEAD`; cross-repo still observes `stage → repair → HEAD`. The target
 coordinator contract below deliberately adds a stronger adapter boundary to
 close the classification gap; it is not a claim about every current funnel.
 
@@ -1449,7 +1449,7 @@ would change classification — so the unification remains its own PR.
 | Raw-CQL HEAD writers invisible to the lexical guard | P2 | THIS-PR (hardening, closed) | `TestPC0RawHeadColumnWritersAreInventoried` + mutation leg M7; the finding is not hypothetical (§3.4). Method-value / aliased-callee coverage stays documented as out of scope: P2 TECH DEBT. |
 | §11 protocol-order wording | P2 | THIS-PR (fixed) | `PutCommit` stores the commit before blocks arrive; PutBlock↔pending-commit binding is a DESIGN HYPOTHESIS and `CheckBlocks` pins a DESIGN OPTION, both follow-ups, neither adopted. Sync remains last. |
 | Harness startup sensitivity | P2 | TECH DEBT | #210/#213 scripts abort on non-evidence legs (cost) or EACH_QUORUM timeouts seconds after `migrate`/node restarts; integration runs against the 3-DC fixture need `CASSANDRA_HOSTS` pointed at a fixture node or `TestMain` cleanup fails against the dev Cassandra (§13, `docs/TESTING.md`). No architectural impact. |
-| `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | Publication-authority/continuity before HEAD is not uniform by provenance. Exact-P exists for CreateFileFromBlocks placements, UploadFile's materialized placement (W2-6, PR #237; previously `nil`) and Sync-provenanced blocks. `CreateFile` Office-template publication now checks exact P before HEAD (W2-6a), but remains OPEN because TTL-bound `pub:` does not prove continuity through HEAD; OnlyOffice measured pre-HEAD (E1-4) and SeafHTTP single-shot measured pre-HEAD (E1-5a) are CLOSED-FIX; their post-HEAD/R31, SeafHTTP streaming and cross-repo remain open. This does **not** prescribe exact-P as the only fix. |
+| `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | Publication-authority/continuity before HEAD is not uniform by provenance. Exact-P exists for CreateFileFromBlocks placements, UploadFile's materialized placement (W2-6, PR #237; previously `nil`) and Sync-provenanced blocks. `CreateFile` Office-template publication now checks exact P before HEAD (W2-6a), but remains OPEN because TTL-bound `pub:` does not prove continuity through HEAD; OnlyOffice measured pre-HEAD (E1-4) and SeafHTTP single-shot measured pre-HEAD (E1-5a) are CLOSED-FIX; SeafHTTP streaming measured pre-HEAD is also CLOSED-FIX under E1-5b; their post-HEAD/R31 and cross-repo remain open. This does **not** prescribe exact-P as the only fix. |
 | Sync PutBlock identity | P1 | already `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`; cross-DC visibility slice closed by `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01` (#210, resolved) | Evidence is still inference from `up:sync:<repo>:<block>` — #210 widened its visibility domain, not its identity (§11). The target coordinator must reject input with no provenanced PutBlock; today's Sync can still publish after a clean global miss, which remains the open W2 gap. |
 | `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01` | P2 | ✅ Resolved 2026-09-11 (`fix/library-rollback-ghost-projections`) | Durable `library_rollback_pending` marker + bounded **fair** reaper (clustering cursor, rotating start bucket). Marker is discovery only; cleanup authority remains `DELETE libraries ... IF head_commit_id = null`. Fault-injection covers authority-applied → crash → recovery. Soft-delete alternative not taken (`InitializeLibraryHeadIfUnset` interaction). |
 | HEAD classify split | P2 | FOLLOW-UP / PC-1 | v2 confirms ambiguous CAS with SERIAL; Sync maps every CAS error to UNKNOWN without confirm. Also (2026-09-11, H1 review): v2's `resolveLibraryHeadUpdateError` reports `ambiguous + a different current HEAD` as the original ambiguous failure, although the commit may have applied and been succeeded — the initializer classifies that same shape as UNKNOWN. Not destructive authority today. PC-1 (2026-09-11) introduced the common tri-state `publication.HeadOutcome` and documented the mapping (§9) but deliberately did **not** convert any classifier, because the v2 ambiguous-plus-different-HEAD shape would change classification; the unification is a separate explicit PR after PC-1. |
@@ -1518,3 +1518,16 @@ outside the new package changed) plus
 `TestPC1PublicationPackageHasZeroProductiveImporters` (the new package has no
 production importer, so no call graph, CQL, consistency level, or TTL changed
 through it).
+
+### E1-5b current SeafHTTP streaming disposition (2026-10-04)
+
+F7 retains original confirmed placements with ChunkUpload accounting and across
+metadata retries. After durable repair, bounded authority reads validate every
+distinct original P immediately before each HEAD attempt. Blocked/Changed
+rejects with owned cleanup and selective invalidation; same-tracker retry
+repeats productive materialization only for rejected digests. Real chunked
+COMMITTED/TERMINAL RED/GREEN, normal control, terminal selective recovery,
+HEAD-conflict and omission evidence are in [E1-5b](./E1-5B-SEAFHTTP-STREAMING-PUBLICATION-SAFETY.md).
+Only measured streaming pre-HEAD and same-process retry are CLOSED-FIX. Dated
+snapshots of F7 lacking exact-P are superseded, not broader continuity claims.
+Post-HEAD/R31, W2-11..14, E1/X1 and cross-repo remain OPEN; production GC OFF.

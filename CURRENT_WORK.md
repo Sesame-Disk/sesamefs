@@ -1,6 +1,27 @@
 # Current Work - SesameFS
 
-## Active branch: codex/e1-5a-seafhttp-single-publication-safety
+## Active branch: codex/e1-5b-seafhttp-streaming-publication-safety
+
+E1-5b / W2-7b (2026-10-04), base main@8ce5fd8c with merged #254.
+Plan frozen in 818e0084b before runtime changes. Real chunked HandleUpload,
+Cassandra and SILO reproduced 200 plus HEAD/fs: after victim COMMITTED and
+TERMINAL retirement. Retain each confirmed exact P atomically with accounting;
+validate every distinct P after durable repair before every HEAD attempt.
+Blocked/Changed returns 409, cleans owned attempt state and invalidates only
+positions of rejected digests. Same ChunkUpload retry rematerializes the victim
+to a new P while retaining the healthy original P and upload operation.
+Real HEAD-conflict revalidates both original placements. Omission restores both
+retirement REDs with normal GREEN; filtered required-evidence run fails.
+Unit controls cover missing/malformed placements, Unknown, contradictory
+and coherent duplicates, selective recovery and bounded eight-read fan-out.
+Full Docker Go/integration/API/OIDC and both vet modes PASS. Ten productive
+-race repetitions (40 named subtests plus ten terminal recoveries) and ten
+unit-control race repetitions PASS. Final scoped audit: no pending P0/P1/P2.
+Measured single-shot and streaming pre-HEAD are CLOSED-FIX; post-HEAD/R31,
+W2-11..14, E1-07 as a whole and X1 remain OPEN. Production GC remains OFF.
+[Plan and evidence](docs/E1-5B-SEAFHTTP-STREAMING-PUBLICATION-SAFETY.md).
+
+## Previous merged slice: E1-5a / PR #254
 
 E1-5a / W2-7a (2026-10-04), base main@8319d077 with merged #253: plan frozen
 in 13e7e6e69 before characterization. Productive single-shot SeafHTTP uploads

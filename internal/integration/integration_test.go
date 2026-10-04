@@ -60,6 +60,7 @@ func TestMain(m *testing.M) {
 		os.Getenv("SESAMEFS_REQUIRE_W2_CREATEFILE_EXACT_P_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E14_ONLYOFFICE_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E15A_SEAFHTTP_SINGLE_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_E15B_SEAFHTTP_STREAMING_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P2_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P3_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P4A_EVIDENCE") == "1" ||
@@ -170,6 +171,13 @@ func TestMain(m *testing.M) {
 			code = 1
 		}
 	}
+	if os.Getenv(e15bEvidenceEnv) == "1" {
+		if missing := e15bMissing(e15bEvidence); len(missing) > 0 {
+			fmt.Printf("%s=1 requires all named SeafHTTP streaming legs; missing=%s (check -run filters)\n", e15bEvidenceEnv, strings.Join(missing, ","))
+			code = 1
+		}
+	}
+
 	if os.Getenv(e15aEvidenceEnv) == "1" {
 		if missing := e15aMissing(e15aEvidence); len(missing) > 0 {
 			fmt.Printf("%s=1 requires all named SeafHTTP single-shot legs; missing=%s (check -run filters)\n", e15aEvidenceEnv, strings.Join(missing, ","))

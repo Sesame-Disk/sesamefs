@@ -2967,30 +2967,30 @@ func TestChunkUploadAccountBlockOnceSurvivesFinalizeRetry(t *testing.T) {
 	}()
 
 	calls := 0
-	account := func() error {
+	account := func() (seafHTTPBlockPlacement, error) {
 		calls++
-		return nil
+		return seafHTTPBlockPlacement{blockID: strings.Repeat("a", 64), storageClass: "hot", storageKey: "original-key"}, nil
 	}
-	if err := upload.AccountBlockOnce(0, "block-a", account); err != nil {
+	if err := upload.AccountBlockOnce(0, strings.Repeat("a", 64), account); err != nil {
 		t.Fatalf("first account failed: %v", err)
 	}
-	if err := upload.AccountBlockOnce(0, "block-a", account); err != nil {
+	if err := upload.AccountBlockOnce(0, strings.Repeat("a", 64), account); err != nil {
 		t.Fatalf("retry account failed: %v", err)
 	}
 	if calls != 1 {
 		t.Fatalf("account called %d times, want 1", calls)
 	}
-	if err := upload.AccountBlockOnce(0, "block-b", account); err == nil {
+	if err := upload.AccountBlockOnce(0, strings.Repeat("b", 64), account); err == nil {
 		t.Fatal("same block position changing identity should be rejected")
 	}
-	accounted, err := upload.BlockAlreadyAccounted(0, "block-a")
+	accounted, err := upload.BlockAlreadyAccounted(0, strings.Repeat("a", 64))
 	if err != nil {
 		t.Fatalf("BlockAlreadyAccounted failed: %v", err)
 	}
 	if !accounted {
 		t.Fatal("block position should be marked accounted")
 	}
-	accounted, err = upload.BlockAlreadyAccounted(1, "block-a")
+	accounted, err = upload.BlockAlreadyAccounted(1, strings.Repeat("a", 64))
 	if err != nil {
 		t.Fatalf("BlockAlreadyAccounted for missing position failed: %v", err)
 	}
@@ -3205,7 +3205,7 @@ func TestFinalizeUploadStreamingEncryptedLibraryWithoutDecryptSessionReturnsSent
 		storeCalls.Add(1)
 		return nil
 	}
-	commitSeafHTTPUploadedFileMultiBlockFn = func(h *SeafHTTPHandler, ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool) (string, string, int64, int64, error) {
+	commitSeafHTTPUploadedFileMultiBlockFn = func(h *SeafHTTPHandler, ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool, placements []seafHTTPBlockPlacement) (string, string, int64, int64, error) {
 		storeCalls.Add(1)
 		return "", "", 0, 0, nil
 	}
@@ -3306,7 +3306,7 @@ func TestFinalizeUploadStreamingDoesNotWrapS3PutInMetadataPermit(t *testing.T) {
 
 	expectedSHA1 := sha1.Sum([]byte("hello"))
 	expectedBlockID := hex.EncodeToString(expectedSHA1[:])
-	commitSeafHTTPUploadedFileMultiBlockFn = func(h *SeafHTTPHandler, ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool) (string, string, int64, int64, error) {
+	commitSeafHTTPUploadedFileMultiBlockFn = func(h *SeafHTTPHandler, ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool, placements []seafHTTPBlockPlacement) (string, string, int64, int64, error) {
 		if orgID != "00000000-0000-0000-0000-000000000001" || repoID != "repo1" || userID != "user1" {
 			return "", "", 0, 0, fmt.Errorf("unexpected commit identity %s/%s/%s", orgID, repoID, userID)
 		}
@@ -3465,15 +3465,15 @@ func finalizeUploadStreamingReuseFixture(t *testing.T, decision db.BlockReusePro
 		directPuts.Add(1)
 		return hash, nil
 	}
-	ensureReusableBlockPresentForUploadFn = func(_ context.Context, _ *db.DB, _ string, _ db.BlockReuseProbe, _ []byte, _ *storage.Manager, _ *storage.BlockStore, _ string, _ string, _ v2.BlockMaterializationPhase) (string, error) {
+	ensureReusableBlockPresentForUploadFn = func(_ context.Context, _ *db.DB, _ string, probe db.BlockReuseProbe, _ []byte, _ *storage.Manager, _ *storage.BlockStore, _ string, _ string, _ v2.BlockMaterializationPhase) (string, error) {
 		reusableChecks.Add(1)
-		return "", nil
+		return probe.StorageKey, nil
 	}
 	registerUploadedBlockTargetAndMappingForUploadFn = func(context.Context, *db.DB, string, string, string, string, int, v2.BlockMaterializationTarget, string) error {
 		registerCalls.Add(1)
 		return nil
 	}
-	commitSeafHTTPUploadedFileMultiBlockFn = func(h *SeafHTTPHandler, ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool) (string, string, int64, int64, error) {
+	commitSeafHTTPUploadedFileMultiBlockFn = func(h *SeafHTTPHandler, ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool, placements []seafHTTPBlockPlacement) (string, string, int64, int64, error) {
 		return "commit-1", filename, 0, 0, nil
 	}
 
@@ -3635,7 +3635,7 @@ func TestSeafHTTPHandlerUploadChunkedEncryptedLibraryUnlockRetryReusesTrackerAnd
 
 	expectedSHA1 := sha1.Sum([]byte("hello"))
 	expectedFileID := hex.EncodeToString(expectedSHA1[:])
-	commitSeafHTTPUploadedFileMultiBlockFn = func(h *SeafHTTPHandler, ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool) (string, string, int64, int64, error) {
+	commitSeafHTTPUploadedFileMultiBlockFn = func(h *SeafHTTPHandler, ctx context.Context, orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool, placements []seafHTTPBlockPlacement) (string, string, int64, int64, error) {
 		commitCalls.Add(1)
 		if fileID != expectedFileID {
 			return "", "", 0, 0, fmt.Errorf("commit fileID = %s, want %s", fileID, expectedFileID)
