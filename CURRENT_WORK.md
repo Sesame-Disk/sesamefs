@@ -1,6 +1,27 @@
-# Current Work - SesameFS
+# Current Work
 
-## Active branch: codex/e1-09-cross-repo-publication-safety
+## Active slice: E1-10 / RestoreTrashItem retained-history
+
+Base main@53298f7af4a1efc51039291146adc5f6e1204c43 (#258 merged).
+Plan frozen in b823f11de. Actual single-file/one-block/plaintext upload/delete/
+restore retains historical fs:. Directed normal, productive GC attempt and real
+HEAD-conflict retry PASS. Worker settles the candidate before claim/global proof;
+restore preserves original fs_id/P/K/bytes without repair or fs: settlement.
+No production fix: only integration scheduling hooks and mandatory three-leg
+gate in both standard Docker suites. Narrow retained-history CLOSED-EVIDENCE;
+W2-10/E1-10 overall, R31, E1/X1 remain OPEN. Production GC OFF; shared dev GC and
+E1-09 namespace isolation unchanged; E1-10 reuses that backend/keyspace for
+owned-worker proof. An initial shared-daemon race run failed when its candidate
+was consumed externally; no false PASS or global GC change. Final isolated
+-race 15/15 legs PASS (83.639s); rejection/omission controls exercised.
+Actual final Docker go-all-test PASS (exit 0): Go short/coverage, mandatory
+integration 862.293s, API 20/20, OIDC 25/25 (zero OIDC skips). E1-10 3/3, E1-09
+14/14 and daemon controls 14/14 PASS, zero disabled-GC skips. Final vet/style and
+host/image/runner Go hashes agree. Scoped final audit found no unresolved
+introduced P0/P1/P2; the existing W2-10 P1 remains OPEN.
+[Plan and evidence](docs/E1-10-RESTORETRASH-RETAINED-HISTORY.md).
+
+## Previous merged slice: E1-09 / PR #258
 
 E1-09 / W2-9 (2026-10-05), base main@975b3057 with merged #257.
 Plan e3aa03c3b, unchanged-runtime RED d8153a52c: productive source library purge

@@ -6897,6 +6897,14 @@ retry controls retain original P/K. This does not prove continuity if retention
 removes metadata/refs concurrently; no extant-history COMMITTED/TERMINAL RED
 was reproduced and no runtime migration/fix or W2-10 closure is claimed.
 
+**E1-10 RestoreTrashItem update (2026-10-05)**: [single-file retained-history evidence](./E1-10-RESTORETRASH-RETAINED-HISTORY.md)
+measures productive upload/delete/restore with one plaintext block. The sole
+historical fs: stops the real worker before claim/D, and restore preserves exact
+P/K/bytes. A real competing HEAD forces CAS retry preserving both entries.
+This is positive evidence only for that retained schedule; no retirement RED,
+new fence or general W2-10 closure. The existing P1 remains OPEN, including
+concurrent retention/cleanup and the other resurrection funnels.
+
 #### Problem
 
 PC-0 originally listed these four handlers among the tree mutations that

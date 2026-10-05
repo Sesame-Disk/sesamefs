@@ -385,6 +385,7 @@ func (h *TrashHandler) RestoreTrashItem(c *gin.Context) {
 	}
 
 	oldEntry := *oldResult.TargetEntry
+	restoreTrashAfterHistoricalEntryBarrier(repoID, oldEntry.ID)
 
 	// Determine parent directory path
 	parentPath := path.Dir(filePath)
@@ -444,6 +445,7 @@ func (h *TrashHandler) RestoreTrashItem(c *gin.Context) {
 			return fmt.Errorf("failed to create commit: %w", err)
 		}
 
+		restoreTrashBeforeHeadBarrier(repoID)
 		if err := fsHelper.UpdateLibraryHeadFromSnapshot(snapshot, repoID, newCommitID, snapshot.HeadCommitID); err != nil {
 			return err
 		}
