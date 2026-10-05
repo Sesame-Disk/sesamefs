@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,6 +25,8 @@ func TestWriteMoveFileError_MapsSentinelErrors(t *testing.T) {
 		wantConflict []string
 	}{
 		{name: "head conflict", err: ErrLibraryHeadConflict, wantStatus: http.StatusConflict, wantError: "library was modified concurrently; retry the move"},
+		{name: "physical fence blocked", err: ErrBlockDeleteInProgress, wantStatus: http.StatusConflict, wantError: "library was modified concurrently; retry the move"},
+		{name: "wrapped physical fence blocked", err: fmt.Errorf("publication failed: %w", ErrBlockDeleteInProgress), wantStatus: http.StatusConflict, wantError: "library was modified concurrently; retry the move"},
 		{name: "source missing", err: ErrBatchSourceNotFound, wantStatus: http.StatusNotFound, wantError: "source file not found"},
 		{name: "destination missing", err: ErrBatchDestinationNotFound, wantStatus: http.StatusNotFound, wantError: "destination directory not found"},
 		{name: "quota exceeded", err: ErrStorageQuotaExceeded, wantStatus: http.StatusForbidden, wantError: "storage quota exceeded"},

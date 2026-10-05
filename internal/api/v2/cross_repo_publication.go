@@ -9,7 +9,6 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
-	"golang.org/x/sync/errgroup"
 )
 
 // captureCopiedBlockPlacements retains the source attempt's canonical physical
@@ -34,33 +33,22 @@ func (h *FSHelper) captureCopiedBlockPlacements(orgID, srcRepoID string, files [
 			placements = append(placements, commitBlockPlacement{blockID: id})
 		}
 	}
-	g, gctx := errgroup.WithContext(context.Background())
-	sem := make(chan struct{}, blockVerifyConcurrency)
-	for i := range placements {
-		i := i
-		g.Go(func() error {
-			select {
-			case sem <- struct{}{}:
-			case <-gctx.Done():
-				return gctx.Err()
-			}
-			defer func() { <-sem }()
-			block := &placements[i]
-			id := block.blockID
-			err := h.db.Session().Query(`SELECT storage_class, storage_key FROM blocks WHERE org_id = ? AND block_id = ?`, orgID, id).WithContext(gctx).Consistency(gocql.LocalQuorum).Scan(&block.storageClass, &block.storageKey)
-			if errors.Is(err, gocql.ErrNotFound) {
-				return fmt.Errorf("%w: copied block %s has no canonical physical life", ErrBlockDeleteInProgress, id)
-			}
-			if err != nil {
-				return fmt.Errorf("read copied block %s physical life: %w", id, err)
-			}
-			if !db.IsSHA256BlockID(id) || !config.IsCanonicalStorageClassName(block.storageClass) || block.storageKey == "" || strings.TrimSpace(block.storageKey) != block.storageKey {
-				return fmt.Errorf("%w: incomplete copied physical life for %s", db.ErrBlockMetadataPermanent, id)
-			}
-			return nil
-		})
-	}
-	if err := g.Wait(); err != nil {
+	err := runBoundedPublicationChecks(len(placements), func(gctx context.Context, i int) error {
+		block := &placements[i]
+		id := block.blockID
+		err := h.db.Session().Query(`SELECT storage_class, storage_key FROM blocks WHERE org_id = ? AND block_id = ?`, orgID, id).WithContext(gctx).Consistency(gocql.LocalQuorum).Scan(&block.storageClass, &block.storageKey)
+		if errors.Is(err, gocql.ErrNotFound) {
+			return fmt.Errorf("%w: copied block %s has no canonical physical life", ErrBlockDeleteInProgress, id)
+		}
+		if err != nil {
+			return fmt.Errorf("read copied block %s physical life: %w", id, err)
+		}
+		if !db.IsSHA256BlockID(id) || !config.IsCanonicalStorageClassName(block.storageClass) || block.storageKey == "" || strings.TrimSpace(block.storageKey) != block.storageKey {
+			return fmt.Errorf("%w: incomplete copied physical life for %s", db.ErrBlockMetadataPermanent, id)
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return placements, nil

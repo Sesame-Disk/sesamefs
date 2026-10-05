@@ -158,7 +158,8 @@ final-directed,unit-vet-final,omission-final,race-final,download-race,filtered,
 unavailable,full-suite,owned-artifacts,vet-final,final-images}.log.
 
 
-Host, final validation runner and final test image agree on these Go SHA-256s:
+Historical validation at PR HEAD 8d5596f9b (before the cross-audit corrections):
+Host, validation runner and test image agreed on these Go SHA-256s:
 
 | Source | SHA-256 |
 |---|---|
@@ -175,3 +176,35 @@ c01c149f6387ef0e43107536206cd155e5b6ed73f7cff716192b8f6104195144.
 Cassandra/SILO evidence is single-DC; no optional 3DC phase is certified. Local
 GC uses the existing dev configuration, including its background participant;
 production activation/configuration and DB/GC runtime are unchanged.
+
+
+## Cross-audit corrections (2026-10-05)
+
+The external cross-audit of 8d5596f9b correctly identified two P2 blockers. The earlier “no unresolved introduced P0/P1/P2” statement above describes that audit's conclusion and was incomplete: active-query semaphores did not bound goroutine creation, and direct MoveFile did not map the newly exposed retirement sentinel to retryable 409.
+
+Both capture and the shared final exact-P validator now use `runBoundedPublicationChecks`, with errgroup.SetLimit(20) before goroutine creation. Canceled queued jobs do not perform authority reads; scheduling stops after the first observed error, and the original worker error is returned. The shared validator's authority primitive, outcomes, captured P and ordering are unchanged. The direct MoveFile error mapper now handles wrapped and unwrapped ErrBlockDeleteInProgress like HEAD conflict (409/retry).
+
+Regression checks hold the first 20 workers of a 131,072-item input and measure the actual goroutine population, then verify all checks complete; both the common capture scheduler and final validator are exercised. Additional checks cover fail-closed cancellation and wrapped/unwrapped direct MoveFile error responses. This resource test does not certify multiblock W2-9 physical-life publication.
+
+The pre-existing P1 source identity race is registered as ISSUE-CROSSREPO-MOVE-SOURCE-IDENTITY-RACE-01 in KNOWN_ISSUES.md, confirmed by source inspection and left for a separate PR. Broader W2-9/E1/X1 and production GC disposition remain unchanged. Local dev GC configuration is not claimed OFF.
+
+Correction validation (Docker):
+
+- New resource/authority/MoveFile regressions: three -race repetitions PASS (8.369s). Both scheduler and final validator finish all 131,072 checks with bounded goroutine population; first-error cancellation preserves the original error.
+- Entire Go short/coverage suite, normal vet and integration vet PASS on corrected source.
+- Required E1-09 matrix: 14/14 named copy/move legs plus completeness contract PASS under -race (37.474s). Initial runner without Compose credentials/config failed before executing legs; this was not counted as evidence. The first correctly configured run passed 13/14 but the copy/committed checkpoint observed D1 already TERMINAL with the existing background GC active (59.423s FAIL). Its async session-close errors occurred after test failure/teardown, not as evidence of writer safety. The complete fresh-fixture rerun passed without source or dev GC configuration changes.
+- Isolated /tmp source copy, omission of SetLimit and direct MoveFile sentinel mapping: expected compiled FAIL (0.144s), roughly 24,600 queued goroutines at the held-wave observation and both raw/wrapped sentinel responses 500 instead of 409. The real /build source and host were not mutated by this control.
+- External HTTP backend images were not rebuilt for this correction; E1-09 invokes the corrected productive batch handlers in-process against real Cassandra/SILO, and external purge/download helpers use the existing dev nodes. Direct MoveFile status mapping is covered by handler error-response tests. The previous complete API/OIDC run and image hashes above remain historical evidence at 8d5596f9b, not a claim of rerunning those suites on this correction.
+
+Logs outside Git: $TEMP/sesamefs-e19-cross-audit-{unit,short-vet,integration,integration-final,integration-rerun,omission}.log. Final correction audit: both supplied THIS-PR P2s are resolved; no remaining introduced P0/P1/P2 identified within the audited scope. The separately registered source-identity P1 remains OPEN.
+
+Corrected source hashes (host and Docker validation runner):
+
+| Source | SHA-256 |
+|---|---|
+
+| internal/api/v2/cross_repo_publication.go | ca1456a57a5f9dad0942d6041bd1bd88077e9f7c1f38fcf3ec553f3a6591cadd |
+| internal/api/v2/cross_repo_publication_test.go | 533baf2ee18cd416986d146bcef88d2207e0d288c7ea576fcd5288565f464a77 |
+| internal/api/v2/file_from_blocks.go | b36b8429043f23f92a5e02bd7804a059c6ecbd8e680d7b5f4770b1d5fb1dd162 |
+| internal/api/v2/files.go | ddc4739c36c41fe949b7e6c1b2d57ccbbebbf5ccc0dc0383e9b3ed05bc0454bb |
+| internal/api/v2/files_batch_test.go | aea40ef08602c1a9e1a116eb9e642800997e9779736eda1982ed15af9cf3803f |

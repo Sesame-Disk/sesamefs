@@ -1,5 +1,13 @@
 # Open Work Index
 
+## PR #258 source-removal identity follow-up (2026-10-05)
+
+[ISSUE-CROSSREPO-MOVE-SOURCE-IDENTITY-RACE-01](./KNOWN_ISSUES.md#issue-crossrepo-move-source-identity-race-01)
+is P1 GENERAL / OPEN, pre-existing: after copying FS-A, move can reanchor
+source cleanup to a replacement FS-B and remove it by name without checking
+its fs_id. Separate from E1-09 physical-life safety and existing move partial
+success; not fixed or closed by #258.
+
 ## Greenfield first-production reconciliation (2026-09-30)
 
 W2-0 is **CLOSED-EVIDENCE for the covered current-version mechanism** under

@@ -8,6 +8,17 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-05 - PR #258 cross-audit corrections
+
+Confirmed and fixed two P2s: source exact-P capture and the shared final validator
+now bound goroutine creation with errgroup.SetLimit(20), and direct MoveFile maps
+wrapped/unwrapped ErrBlockDeleteInProgress to retryable HTTP 409. Added maximum
+manifest worker-population, fail-closed scheduling and HTTP mapping regressions.
+Registered the pre-existing P1 source fs_id identity removal race separately as
+ISSUE-CROSSREPO-MOVE-SOURCE-IDENTITY-RACE-01; no source-removal redesign here.
+The measured E1-09 physical-life scope and broader W2-9/E1/X1 remain unchanged.
+See [correction evidence](./E1-09-CROSS-REPO-PUBLICATION-SAFETY.md#cross-audit-corrections-2026-10-05).
+
 ## 2026-10-05 - E1-09 cross-repo exact-life publication fix
 
 Real source library purge/GC COMMITTED and TERMINAL reproduce unsafe destination

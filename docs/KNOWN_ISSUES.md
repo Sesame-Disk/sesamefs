@@ -11254,3 +11254,12 @@ Async task progress also had a reproduced data race; fields are now snapshotted
 under the TaskStore lock. Move source disappearance after safe destination
 publication remains existing partial-operation semantics, not rollback.
 [Evidence and limits](./E1-09-CROSS-REPO-PUBLICATION-SAFETY.md).
+
+
+## ISSUE-CROSSREPO-MOVE-SOURCE-IDENTITY-RACE-01
+
+**Status:** OPEN. **Severity:** P1 / GENERAL follow-up, pre-existing; not introduced by PR #258 and not a blocker of its physical-life publication contract.
+
+After destination publication, `processSingleItem` retries source removal against the latest source HEAD, resolves the path again and calls `RemoveEntryFromList` by name. It does not compare the current entry's fs_id with the entry copied by the destination attempt. A concurrent writer can replace `/a.txt` FS-A with FS-B after FS-A was copied; source removal can then delete FS-B while the destination contains only FS-A. Reanchoring to the newer HEAD means the source CAS does not establish copied-object identity. This is confirmed by source inspection; no deterministic runtime reproduction is claimed here.
+
+A separate fix should retain the successfully copied source identity and require current source entry fs_id equality before deletion, returning conflict or an explicitly defined no-op on mismatch. Keep the existing destination-first partial-success semantics separate from that identity check. No fix or closure is included in E1-09.

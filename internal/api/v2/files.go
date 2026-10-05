@@ -2860,7 +2860,7 @@ func (h *FileHandler) MoveFile(c *gin.Context) {
 
 func writeMoveFileError(c *gin.Context, err error, srcPath string) {
 	switch {
-	case errors.Is(err, ErrLibraryHeadConflict):
+	case errors.Is(err, ErrLibraryHeadConflict), errors.Is(err, ErrBlockDeleteInProgress):
 		c.JSON(http.StatusConflict, gin.H{"error": "library was modified concurrently; retry the move"})
 	case errors.Is(err, ErrBatchSourceNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": "source file not found"})

@@ -15,8 +15,14 @@ Only measured single-file/single-block plaintext same-org/representation
 pre-HEAD is CLOSED-FIX; W2-9 overall, R31, E1/X1 remain OPEN and production GC OFF.
 Validation: standard Docker PASS (Go integration 502.758s, 20 API suites,
 25/25 OIDC checks), 140 named -race legs plus 42 final-source legs with HTTP
-byte downloads, short/coverage and both vet modes PASS. Final audit has no
-unresolved introduced P0/P1/P2. The 196 final-run physical keys/blocks, refs and
+byte downloads, short/coverage and both vet modes PASS at 8d5596f9b.
+Cross-audit confirmed two P2s missed by that audit: goroutine creation fan-out
+and direct MoveFile 500 for the new retryable fence rejection. Both corrected
+using a shared SetLimit scheduler and 409 mapping. Correction checks and
+results: three unit -race repetitions, Go short/coverage, both vet modes and
+14/14 required E1-09 legs -race PASS. Isolated omission reproduces both P2s;
+background-GC checkpoint interference in the earlier run is documented. The pre-existing P1 source
+identity removal race is registered separately, not fixed or closed here. The 196 final-run physical keys/blocks, refs and
 owned expiry projections were already absent; earlier owned RED artifacts cleaned.
 [Plan, RED and evidence](docs/E1-09-CROSS-REPO-PUBLICATION-SAFETY.md).
 

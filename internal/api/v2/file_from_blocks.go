@@ -763,34 +763,23 @@ func (h *FileHandler) validateCommitBlockPublicationFences(orgID string, blocks 
 	if len(blocks) == 0 {
 		return nil
 	}
-	g, gctx := errgroup.WithContext(context.Background())
-	sem := make(chan struct{}, blockVerifyConcurrency)
-	for _, block := range blocks {
-		block := block
-		g.Go(func() error {
-			select {
-			case sem <- struct{}{}:
-			case <-gctx.Done():
-				return gctx.Err()
-			}
-			defer func() { <-sem }()
-			outcome, err := validateBorrowedFSPublicationAuthorityFn(h.db, orgID, block.blockID, db.BlockPhysicalLocation{
-				StorageClass: block.storageClass,
-				StorageKey:   block.storageKey,
-			})
-			switch outcome {
-			case db.BlockRepairAuthorityAuthorized:
-				return nil
-			case db.BlockRepairAuthorityBlocked, db.BlockRepairAuthorityChanged:
-				return fmt.Errorf("%w: block %s is no longer safe to publish against: %w", ErrBlockDeleteInProgress, block.blockID, err)
-			case db.BlockRepairAuthorityPermanent:
-				return fmt.Errorf("validate exact physical authority for %s: %w", block.blockID, err)
-			default:
-				return fmt.Errorf("%w: validate exact physical authority for %s: %w", ErrBlockMaterializationTransient, block.blockID, err)
-			}
+	return runBoundedPublicationChecks(len(blocks), func(_ context.Context, i int) error {
+		block := blocks[i]
+		outcome, err := validateBorrowedFSPublicationAuthorityFn(h.db, orgID, block.blockID, db.BlockPhysicalLocation{
+			StorageClass: block.storageClass,
+			StorageKey:   block.storageKey,
 		})
-	}
-	return g.Wait()
+		switch outcome {
+		case db.BlockRepairAuthorityAuthorized:
+			return nil
+		case db.BlockRepairAuthorityBlocked, db.BlockRepairAuthorityChanged:
+			return fmt.Errorf("%w: block %s is no longer safe to publish against: %w", ErrBlockDeleteInProgress, block.blockID, err)
+		case db.BlockRepairAuthorityPermanent:
+			return fmt.Errorf("validate exact physical authority for %s: %w", block.blockID, err)
+		default:
+			return fmt.Errorf("%w: validate exact physical authority for %s: %w", ErrBlockMaterializationTransient, block.blockID, err)
+		}
+	})
 }
 
 // summarizeBlockVerification translates the raw per-distinct-block verification
@@ -916,4 +905,24 @@ func classifyBlockOwnership(database *db.DB, orgID, referrer, blockID string) (b
 		return blockCommitLivenessNone, err
 	}
 	return classifyBlockReferrerProvenance(referrers, referrer), nil
+}
+
+// runBoundedPublicationChecks bounds goroutine creation, not only active I/O.
+// A canceled check prevents queued work from performing authority reads.
+func runBoundedPublicationChecks(count int, check func(context.Context, int) error) error {
+	g, ctx := errgroup.WithContext(context.Background())
+	g.SetLimit(blockVerifyConcurrency)
+	for i := 0; i < count; i++ {
+		if ctx.Err() != nil {
+			break
+		}
+		i := i
+		g.Go(func() error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return check(ctx, i)
+		})
+	}
+	return g.Wait()
 }
