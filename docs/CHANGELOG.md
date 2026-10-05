@@ -8,6 +8,62 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-05 - PR #258 shared test GC restoration
+
+Reject the preceding blanket GC-OFF isolation as P2 THIS-PR / TEST-INFRA:
+it suppressed daemon-dependent coverage. Restore primary GC inheritance and
+remove the new share-link skip. E1-09 alone uses a profile-test backend/keyspace
+(sesamefs_e19), with mandatory child-process evidence in both standard runners.
+The child uses the same binary/race instrumentation and retains the strict
+COMMITTED-through-writer certificate. Normal GC cannot scan its separate keyspace.
+No W2-9 production runtime or production GC configuration changes here.
+Restored coverage exposed MaxRetry's pre-existing global-worker-timestamp wait
+race. Observe its exact DLQ/queue/snapshot outcome with the original combined
+90s budget and preserve every assertion; register cleanup before inserting.
+The first failed go-all-test is retained rather than treated as final evidence.
+The second run restored every daemon-dependent test but exposed the pre-existing
+native-proof queue/cutoff race. Retry only the real dequeue with a fresh cutoff,
+at most three times; preserve candidate/P/bytes and require our own probe. A real
+peer-window control validates this; its rejected duplicate-enqueue approach and
+both complete failed runs are retained. No production runtime changes.
+Final actual go-all-test PASS: integration 845.139s, 20/20 API suites, 25/25 OIDC
+checks; E1-09 and daemon-dependent cases each 14/14, zero GC-disabled skips.
+The native matrix, exact peer-window control and final vet/style checks PASS.
+
+## 2026-10-05 - PR #258 COMMITTED evidence isolation
+
+Confirm TEST-EVIDENCE P2: active dev background recovery could consume D1 before
+the resumed writer. Historical ccdebcb72 solution (superseded above) disabled
+daemon GC on all three nodes;
+E1-09 rejects enabled/unknown status and strictly checks exact COMMITTED state
+through writer completion before explicit recovery. Terminal legs remain distinct.
+No production runtime change. Retract direct MoveFile 500 as a current runtime
+blocker: cross-repo returns 501 before publication; retain 409 mapper hardening.
+Register pre-existing FileFromBlocks fan-outs as a separate P2 GENERAL follow-up.
+
+## 2026-10-05 - PR #258 cross-audit corrections
+
+Historical classification corrected above: the real P2 was worker creation.
+Source exact-P capture and the shared final validator
+now bound goroutine creation with errgroup.SetLimit(20), and direct MoveFile maps
+wrapped/unwrapped ErrBlockDeleteInProgress to retryable HTTP 409. Added maximum
+manifest worker-population, fail-closed scheduling and HTTP mapping regressions.
+Registered the pre-existing P1 source fs_id identity removal race separately as
+ISSUE-CROSSREPO-MOVE-SOURCE-IDENTITY-RACE-01; no source-removal redesign here.
+The measured E1-09 physical-life scope and broader W2-9/E1/X1 remain unchanged.
+See [correction evidence](./E1-09-CROSS-REPO-PUBLICATION-SAFETY.md#cross-audit-corrections-2026-10-05).
+
+## 2026-10-05 - E1-09 cross-repo exact-life publication fix
+
+Real source library purge/GC COMMITTED and TERMINAL reproduce unsafe destination
+HEAD/fs: for async copy and move. Per-attempt source P capture, staged identity
+validation and final exact-P after repair prevent that publication. Fourteen
+required copy/move legs include normal, captured-life retirement, repair-first,
+HEAD conflict and replay. Fix reproduced async progress data race with a locked
+snapshot. Measured single-file/block plaintext same-org/representation pre-HEAD
+CLOSED-FIX only; broader W2-9/R31, E1/X1 OPEN and production GC OFF.
+[Plan and evidence](./E1-09-CROSS-REPO-PUBLICATION-SAFETY.md).
+
 ## 2026-10-04 - E1-7 Sync RecvFS-before-PutBlock characterization
 
 Six named productive Sync/Cassandra/SILO legs distinguish fresh metadata from

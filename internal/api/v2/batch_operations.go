@@ -237,7 +237,7 @@ func enqueueZeroRefBlocks(database *db.DB, orgID, repoID string, blockIDs []stri
 
 func batchOperationErrorResponse(err error, opType, itemName string) (int, gin.H, string) {
 	switch {
-	case errors.Is(err, ErrLibraryHeadConflict):
+	case errors.Is(err, ErrLibraryHeadConflict), errors.Is(err, ErrBlockDeleteInProgress):
 		msg := fmt.Sprintf("library was modified concurrently; retry the %s", opType)
 		return http.StatusConflict, gin.H{"error": msg}, msg
 	case errors.Is(err, ErrBatchSourceNotFound):
@@ -718,6 +718,7 @@ func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstR
 
 		entryFSID := srcResult.TargetEntry.ID
 		var pendingCopiedFiles []*pendingPublishedFile
+		var copiedPlacements []commitBlockPlacement
 		cleanupPendingCopyPublish := func() {
 			if cleanupErr := CleanupFailedPublishAttempt(h.db, orgID, dstRepoID, "", "", pendingCopiedFiles); cleanupErr != nil {
 				log.Printf("[processSingleItem] WARNING: failed to clean up pending copied fs_objects before commit publish: %v", cleanupErr)
@@ -729,6 +730,14 @@ func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstR
 			if err != nil {
 				cleanupPendingCopyPublish()
 				return fmt.Errorf("failed to copy fs_objects to destination library: %w", err)
+			}
+			// Capture this attempt's physical lives before destination pub:/repair.
+			// A late pin cannot revive a retired life; the final gate below must
+			// compare these exact placements after durable repair acquisition.
+			copiedPlacements, err = fsHelper.captureCopiedBlockPlacements(orgID, srcRepoID, pendingCopiedFiles)
+			if err != nil {
+				cleanupPendingCopyPublish()
+				return fmt.Errorf("capture copied block authority: %w", err)
 			}
 			entryFSID = newFSID
 		}
@@ -809,6 +818,14 @@ func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstR
 				cleanupErr,
 				clearErr,
 			)
+		}
+
+		if len(pendingCopiedFiles) > 0 {
+			if err := fsHelper.validateCopiedBlockPublication(orgID, pendingCopiedFiles, copiedPlacements); err != nil {
+				cleanupErr := CleanupFailedPublishAttempt(h.db, orgID, dstRepoID, newDstCommitID, newDstCommitID, pendingCopiedFiles)
+				clearErr := clearPendingPublishedFileRepairs(h.db, orgID, dstRepoID, newDstCommitID, pendingCopiedFiles)
+				return errors.Join(fmt.Errorf("copied block no longer safe to publish: %w", err), cleanupErr, clearErr)
+			}
 		}
 
 		if err := fsHelper.UpdateLibraryHeadFromSnapshot(dstSnapshot, dstRepoID, newDstCommitID, dstSnapshot.HeadCommitID); err != nil {
@@ -1152,6 +1169,10 @@ func (h *BatchOperationHandler) GetTaskProgress(c *gin.Context) {
 
 	h.tasks.mu.RLock()
 	task, exists := h.tasks.tasks[taskID]
+	var snapshot AsyncTask
+	if exists {
+		snapshot = *task
+	}
 	h.tasks.mu.RUnlock()
 
 	if !exists {
@@ -1160,12 +1181,12 @@ func (h *BatchOperationHandler) GetTaskProgress(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"task_id":       task.ID,
-		"done":          task.Status == "done",
-		"successful":    task.Done,
-		"failed":        task.Failed,
-		"total":         task.Total,
-		"failed_reason": task.FailedReason,
+		"task_id":       snapshot.ID,
+		"done":          snapshot.Status == "done",
+		"successful":    snapshot.Done,
+		"failed":        snapshot.Failed,
+		"total":         snapshot.Total,
+		"failed_reason": snapshot.FailedReason,
 	})
 }
 

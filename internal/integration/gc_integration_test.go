@@ -2947,6 +2947,20 @@ func TestGC_MaxRetryItemMovesToFailedQueue(t *testing.T) {
 	libraryID := uuid.New()
 
 	failedBefore := readGCFailedSnapshotTotal(t)
+	var failedAt time.Time
+
+	t.Cleanup(func() {
+		_ = session.Query(`
+			DELETE FROM gc_queue WHERE org_id = ? AND bucket = ? AND queued_at = ? AND item_type = ? AND item_id = ? AND candidate_storage_class = ? AND candidate_storage_key = ? AND identity_at = ?
+		`, orgID.String(), queueBucket, queuedAt, "unknown_type", itemID, "", "", queuedAt).Exec()
+		deleteGCFailedItemsByIdentity(t, orgID.String(), "unknown_type", itemID)
+		// FailItem writes gc_pending_items on the way to the DLQ, and this item
+		// type never completes, so nothing else removes that row.
+		deleteGCPendingItemsByIdentity(t, orgID, libraryID, gcpkg.ItemType("unknown_type"), itemID)
+		_ = session.Query(`DELETE FROM gc_active_orgs WHERE bucket = ? AND org_id = ?`, bucket, orgID.String()).Exec()
+		_ = session.Query(`DELETE FROM gc_dirty_orgs WHERE bucket = ? AND org_id = ?`, bucket, orgID.String()).Exec()
+		repairGCSnapshotsForTest(t, orgID)
+	})
 
 	if err := session.Query(`
 		INSERT INTO gc_queue (org_id, bucket, queued_at, identity_at, item_type, item_id, library_id, storage_class, candidate_storage_class, candidate_storage_key, retry_count)
@@ -2966,9 +2980,10 @@ func TestGC_MaxRetryItemMovesToFailedQueue(t *testing.T) {
 	`, bucket, orgID.String(), time.Now().UTC()).Exec(); err != nil {
 		t.Fatalf("failed to insert dirty org row: %v", err)
 	}
-	var failedAt time.Time
-
-	triggerGCWorkerAndWait(t)
+	// The accepted trigger can wait behind another daemon pass. LastWorkerRun
+	// describes global completion, not this row. Spend the original combined
+	// 45s + 45s budget observing the exact fixture and its reconciled snapshot.
+	triggerGCWorker(t)
 
 	var (
 		failedItemType  string
@@ -2977,7 +2992,7 @@ func TestGC_MaxRetryItemMovesToFailedQueue(t *testing.T) {
 		lastError       string
 		rowFound        bool
 	)
-	ok := pollUntil(t, 45*time.Second, 500*time.Millisecond, func() bool {
+	ok := pollUntil(t, 90*time.Second, 500*time.Millisecond, func() bool {
 		iter := session.Query(`
 			SELECT failed_at, item_type, item_id, retry_count, last_error FROM gc_failed_items WHERE org_id = ?
 		`, orgID.String()).Iter()
@@ -3004,20 +3019,6 @@ func TestGC_MaxRetryItemMovesToFailedQueue(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected max-retry item to be moved from gc_queue to gc_failed_items")
 	}
-	t.Cleanup(func() {
-		_ = session.Query(`
-			DELETE FROM gc_queue WHERE org_id = ? AND bucket = ? AND queued_at = ? AND item_type = ? AND item_id = ? AND candidate_storage_class = ? AND candidate_storage_key = ? AND identity_at = ?
-		`, orgID.String(), queueBucket, queuedAt, "unknown_type", itemID, "", "", queuedAt).Exec()
-		_ = session.Query(`
-			DELETE FROM gc_failed_items WHERE org_id = ? AND failed_at = ? AND item_type = ? AND item_id = ? AND candidate_storage_class = ? AND candidate_storage_key = ? AND identity_at = ?
-		`, orgID.String(), failedAt, "unknown_type", itemID, "", "", queuedAt).Exec()
-		// FailItem writes gc_pending_items on the way to the DLQ, and this item
-		// type never completes, so nothing else removes that row.
-		deleteGCPendingItemsByIdentity(t, orgID, libraryID, gcpkg.ItemType("unknown_type"), itemID)
-		_ = session.Query(`DELETE FROM gc_active_orgs WHERE bucket = ? AND org_id = ?`, bucket, orgID.String()).Exec()
-		_ = session.Query(`DELETE FROM gc_dirty_orgs WHERE bucket = ? AND org_id = ?`, bucket, orgID.String()).Exec()
-		repairGCSnapshotsForTest(t, orgID)
-	})
 
 	statusAfter := getGCStatus(t)
 	queueSnapshotAfter := readGCQueueSnapshotTotal(t)

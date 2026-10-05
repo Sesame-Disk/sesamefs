@@ -1,6 +1,55 @@
 # Current Work - SesameFS
 
-## Active branch: codex/e1-7-sync-recvfs-before-putblock
+## Active branch: codex/e1-09-cross-repo-publication-safety
+
+E1-09 / W2-9 (2026-10-05), base main@975b3057 with merged #257.
+Plan e3aa03c3b, unchanged-runtime RED d8153a52c: productive source library purge
+and real GC COMMITTED/TERMINAL allow unsafe destination HEAD/fs: in copy and
+move. Move's later task failure does not undo the already published destination.
+Fix captures exact source P per retry, checks staged identities and validates
+exact-P after durable repair before HEAD. No new schema/lease/coordinator.
+Fourteen real Cassandra/SILO copy/move legs include late captured-P retirement,
+repair-first with genuine pub: expiration, actual HEAD conflict and skip replay.
+The same task's progress data race is fixed by a locked value snapshot.
+Only measured single-file/single-block plaintext same-org/representation
+pre-HEAD is CLOSED-FIX; W2-9 overall, R31, E1/X1 remain OPEN and production GC OFF.
+Validation: standard Docker PASS (Go integration 502.758s, 20 API suites,
+25/25 OIDC checks), 140 named -race legs plus 42 final-source legs with HTTP
+byte downloads, short/coverage and both vet modes PASS at 8d5596f9b.
+Cross-audit confirmed the worker-creation P2, fixed by the shared SetLimit
+scheduler. Direct MoveFile cross-repo returns 501 before publication; its 409
+mapper change is hardening, and the earlier THIS-PR classification is retracted.
+The cc5a9cc3d COMMITTED schedule needed isolation from external recovery.
+The ccdebcb72 attempt disabled the shared daemon and caused 14 daemon-dependent
+skips. That solution is rejected as P2 THIS-PR / TEST-INFRA and superseded.
+Normal Compose again inherits primary GC_ENABLED from the env file; nodes 2/3
+remain disabled. The added share-link prerequisite/skip is removed.
+Only E1-09 runs in sesamefs_e19, served by a profile-test backend with GC OFF.
+Both standard runners invoke the same test binary in an isolated child process;
+its own TestMain requires all 14 legs before the parent can record evidence.
+The normal daemon cannot discover that keyspace's recovery roots. Strict exact
+COMMITTED certificates and authenticated status checks remain before/after writer.
+Repeated active-daemon E1-09 -race validation: 42/42 legs PASS (139.748s).
+Wrong active-daemon endpoint fails the mandatory child/parent gate (6.812s).
+The first actual go-all-test exposed MaxRetry's pre-existing global-timestamp
+wait race; its exact DLQ row appeared after about 64s. That test now polls its
+own outcome with the original combined 90s budget and registers cleanup early.
+The second complete run restored 14/14 daemon tests and E1-09, with zero
+GC-disabled skips, but exposed a pre-existing native-proof cutoff/discovery race.
+Its helper now retries only the actual dequeue (three attempts), never re-enqueues
+or accepts a peer as proof. Exact candidate/P/bytes and own read remain mandatory.
+A real peer in the precise window PASSes the scratch-source control (10.164s).
+Both full failures are retained. Actual final go-all-test PASS (exit 0): Go
+short/coverage, mandatory integration 845.139s, API 20/20, OIDC 25/25. E1-09 and
+standard daemon cases both 14/14; zero disabled-GC skips. Native ambiguity full
+matrix PASS (104.73s); final integration vet/style checks PASS. Source hashes
+match the current Docker image. No unresolved introduced P0/P1/P2 in final audit.
+The pre-existing P1 source identity and P2 FileFromBlocks fan-outs remain OPEN.
+At 8d5596f9b, the 196 final-run physical keys/blocks, refs and owned expiry
+projections were already absent; earlier owned RED artifacts cleaned.
+[Plan, RED and evidence](docs/E1-09-CROSS-REPO-PUBLICATION-SAFETY.md).
+
+## Previous merged slice: E1-7 / PR #257
 
 E1-7 / W2-5 (2026-10-04), base main@42dc3c38 with merged #256.
 Plan frozen in 07848d392. Six named real-Cassandra/SILO legs distinguish fresh

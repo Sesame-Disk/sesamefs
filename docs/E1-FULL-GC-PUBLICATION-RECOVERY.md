@@ -94,8 +94,9 @@ Source trace with subsequent scoped dispositions:
   terminal P2 replay are CLOSED-FIX; post-HEAD/R31 W2-8 remains OPEN.
 - Cross-repository copy/move in `BatchOperationHandler.processSingleItem`
   copies source fs objects, stages destination `pub:` references and durable
-  repair before HEAD, then promotes after HEAD. The source trace does not prove
-  safety if stale source metadata is presented after D; W2-9 stays OPEN.
+  repair before HEAD, then promotes after HEAD. E1-09 now adds source exact-P
+  capture per attempt and final validation after repair: the measured productive
+  source-purge retirement schedule is CLOSED-FIX; W2-9 overall stays OPEN.
 - `RevertFile`, `RevertDirectory`, `RestoreTrashItem` and `RevertDirents`
   rebuild a tree from historical fs objects and update HEAD directly, without
   the pending-publish `pub:`/repair sequence or an exact-placement check. No
@@ -251,3 +252,34 @@ No runtime fix. Only the measured direct ordered contract is CLOSED-EVIDENCE;
 E1-05 is PARTIAL and W2-5 overall OPEN. Auto-merge, concurrent durable boundaries,
 other orders, multi-block/DC and post-HEAD/R31 are not certified by this slice.
 Production GC remains OFF; E1/X1 are not closed.
+
+
+## E1-09 / W2-9 cross-repo source-purge retirement — 2026-10-05
+
+[Plan/RED/fix/evidence](./E1-09-CROSS-REPO-PUBLICATION-SAFETY.md): productive
+source library purge (not Phase 5/6 and not manual fs: deletion) allows actual
+GC COMMITTED/TERMINAL after source metadata read. Both copy and move originally
+publish unsafe destination HEAD/fs:; move's eventual source failure is not
+rollback. Exact source P capture per retry and final validation after repair
+reject retirement, while repair-first protects P1 even after actual pub: expiry.
+Fourteen named legs include normal controls, captured-P windows, HEAD-conflict
+retry and source move ordering. Only measured single-file/block plaintext,
+same-org/representation pre-HEAD is CLOSED-FIX. E1-09 PARTIAL, W2-9 overall and
+post-HEAD/R31 OPEN; E1/X1 and production GC OFF unchanged.
+
+
+E1-09 cross-audit stabilization (2026-10-05): exact COMMITTED continuation is
+isolated in the profile-test sesamefs-e19 backend/keyspace. The shared primary
+again inherits GC_ENABLED and retains daemon-dependent coverage. The preceding
+blanket-GC-OFF solution at ccdebcb72 is superseded as P2 TEST-INFRA, not accepted
+as final standard-suite evidence. Both standard runners require the complete
+14-leg isolated child test process. Exact D/P/time, COMMITTED orphan/root,
+canonical absence and extant K1 remain certified before/after writer assertions,
+before explicit recovery; TERMINAL is never accepted in those legs. Unknown
+workers sharing the isolated keyspace remain outside the harness certificate.
+
+Final restored-daemon go-all-test PASS: integration 845.139s, API 20/20, OIDC
+25/25; E1-09 14/14 and standard daemon-dependent cases 14/14, zero disabled-GC
+skips. Two pre-existing harness races revealed by restoration were corrected
+without changing runtime or accepting peer activity as the own worker proof.
+The exact native peer-window scratch control and full native matrix PASS.

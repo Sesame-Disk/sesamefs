@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,6 +25,8 @@ func TestWriteMoveFileError_MapsSentinelErrors(t *testing.T) {
 		wantConflict []string
 	}{
 		{name: "head conflict", err: ErrLibraryHeadConflict, wantStatus: http.StatusConflict, wantError: "library was modified concurrently; retry the move"},
+		{name: "physical fence blocked", err: ErrBlockDeleteInProgress, wantStatus: http.StatusConflict, wantError: "library was modified concurrently; retry the move"},
+		{name: "wrapped physical fence blocked", err: fmt.Errorf("publication failed: %w", ErrBlockDeleteInProgress), wantStatus: http.StatusConflict, wantError: "library was modified concurrently; retry the move"},
 		{name: "source missing", err: ErrBatchSourceNotFound, wantStatus: http.StatusNotFound, wantError: "source file not found"},
 		{name: "destination missing", err: ErrBatchDestinationNotFound, wantStatus: http.StatusNotFound, wantError: "destination directory not found"},
 		{name: "quota exceeded", err: ErrStorageQuotaExceeded, wantStatus: http.StatusForbidden, wantError: "storage quota exceeded"},
@@ -668,5 +671,24 @@ func TestCopyFileRequest_FilenameTypes(t *testing.T) {
 				t.Errorf("got %d filenames, want %d", len(filenames), tt.wantFileCount)
 			}
 		})
+	}
+}
+
+// The direct endpoint rejects cross-repo moves before processSingleItem. Its
+// fence error mapper is hardening, not an exposed cross-repo runtime fix.
+func TestMoveFileCrossRepoRejectsBeforePublication(t *testing.T) {
+	r := gin.New()
+	r.POST("/repos/:repo_id/file/move", func(c *gin.Context) {
+		c.Set("org_id", "test-org")
+		c.Set("user_id", "test-user")
+		(&FileHandler{}).MoveFile(c)
+	})
+	body := bytes.NewBufferString(`{"src_path":"/a.txt","dst_repo_id":"other","dst_dir":"/"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/repos/source/file/move", body)
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("cross-repo direct move reached publication: HTTP %d body=%s", rec.Code, rec.Body.String())
 	}
 }
