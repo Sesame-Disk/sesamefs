@@ -33,3 +33,24 @@ R31/W2-11..14, Phase 5/6 fixes, coordinator, PRE-GC/A1 or GC activation.
 Final validation in Docker: directed characterization, meaningful mutation
 control if runtime changes, race repetitions, Go regression/vet and appropriate
 standard suite. Audit all changes and claim limits, commit/push and create PR.
+## Frozen unchanged-runtime RED
+
+Directed Docker run on production source main@975b3057: integration FAIL
+(16.328s). Normal copy/move PASS. Both copy and move publish destination HEAD
+and permanent destination fs: after productive source library purge and exact
+P1 COMMITTED, and separately TERMINAL/K1 absent. Copy reports task success;
+move reports failure later because source library is already gone, but its
+destination HEAD/fs: are already published. Task failure is not rollback.
+
+Source deletion used actual owner HTTP soft-delete and permanent-delete routes;
+real source-library queue/cascade/processFSObject removed the permanent fs:.
+Only source-owned temporary up: was explicitly lapsed. No source fs: CQL delete,
+Phase 5/6 scan, synthetic metadata/P/ref/claim or invented GC answer was used.
+Completed real source SELECT response was paused before caller continuation.
+Real EACH_QUORUM two-zero reads/full repair scan and exact COMMITTED/root,
+TERMINAL/K1 deletion checks reuse the prior verified worker helpers.
+
+Raw log: external $TEMP/sesamefs-e19-red.log. The safety assertions fail on this
+revision; the next commit must make them pass. Existing HTTP normal copy/delete
+regression already exists; the report's "never measured" claim is narrowed to
+this previously untested pre-pub purge/retirement schedule.
