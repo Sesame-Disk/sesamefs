@@ -220,3 +220,19 @@ failures and coherent/contradictory duplicates. Only measured streaming pre-HEAD
 and selective same-process retry are CLOSED-FIX. This supersedes the streaming
 OPEN snapshot in the earlier E1-5a section, not its scope. E1-07 remains PARTIAL;
 post-HEAD/R31, W2-11..14 and X1 remain OPEN. Production GC stays OFF.
+
+## E1-6 / W2-10a RevertFile retained-history — 2026-10-04
+
+The [E1-6 frozen plan and evidence](./E1-6-REVERTFILE-PUBLICATION-SAFETY.md)
+uses productive historical upload, DeleteFile and RevertFile. Leaving current
+HEAD retains historical fs:; after explicit lapse of only the upload's up:,
+the real block worker sees a positive local reference, settles the controlled
+candidate and stops before claim/global zero-proof. An independent global read
+also observes real liveness. One/two-block, actual competing HEAD retry,
+same-content and skip controls preserve original historical layout/P/K.
+Current RevertFile still creates no own pin/pub:/repair/exact-P sequence.
+No COMMITTED/TERMINAL leg, retirement RED or runtime fix is claimed. This
+measures only the retained-history schedule; removal of historical metadata
+or references, Phase 5/6, multi-DC visibility and post-HEAD recovery are not
+certified. E1-10 and W2-10 remain OPEN, including all other resurrection funnels.
+The E1-10 hypothesis/exit criteria above are unchanged. X1 remains OPEN.

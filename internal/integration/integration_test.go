@@ -61,6 +61,7 @@ func TestMain(m *testing.M) {
 		os.Getenv("SESAMEFS_REQUIRE_E14_ONLYOFFICE_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E15A_SEAFHTTP_SINGLE_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E15B_SEAFHTTP_STREAMING_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_E16_REVERTFILE_CHARACTERIZATION") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P2_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P3_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P4A_EVIDENCE") == "1" ||
@@ -168,6 +169,12 @@ func TestMain(m *testing.M) {
 	if os.Getenv(w2PublicationContinuityEnv) == "1" {
 		if missing := w2PublicationContinuityMissing(w2PublicationContinuityObserved); len(missing) > 0 {
 			fmt.Printf("%s=1 requires all named W2-0 legs; missing=%s (check -run filters)\n", w2PublicationContinuityEnv, strings.Join(missing, ","))
+			code = 1
+		}
+	}
+	if os.Getenv(e16EvidenceEnv) == "1" {
+		if missing := e16Missing(e16Evidence); len(missing) > 0 {
+			fmt.Printf("%s=1 requires all named RevertFile retained-history legs; missing=%s (check -run filters)\n", e16EvidenceEnv, strings.Join(missing, ","))
 			code = 1
 		}
 	}
