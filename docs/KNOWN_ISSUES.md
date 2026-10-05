@@ -6195,9 +6195,9 @@ Deployment contract: [X1 source of record](./X1-CRITICAL-PATH.md#first-productio
 
 ### ISSUE-PC0-EXACT-P-FUNNEL-GAP-01: Publication-authority/continuity before HEAD is not uniform by provenance
 
-**Status**: 🟡 Open — partially fixed. `UploadFile` fixed by W2-6 (PR #237, 2026-09-29): it passes its materialized exact placement to the shared finalizer, which re-validates it after `pub:` and immediately before HEAD (evidence `TestW2UploadFileExactPlacementBeforeHead`, RED on the previous code). W2-6a adds the missing exact-P check for `CreateFile` Office templates by carrying the actual SHA-256/class/key into the same final check after durable `pub:` (nine real Cassandra/MinIO legs plus reuse and empty-file controls). E1-4 / W2-8 fixes OnlyOffice pre-HEAD exact-P (real callback RED after COMMITTED/TERMINAL P1; fixed rejection and P2 replay). OnlyOffice post-HEAD/R31 remains open. SeafHTTP single-shot (E1-5a) and streaming (E1-5b, selective same-tracker recovery) measured pre-HEAD are CLOSED-FIX; post-HEAD/R31 and cross-repo remain open; covered current-version W2-0 is CLOSED-EVIDENCE under the first-production contract and R31 remains OPEN.
+**Status**: 🟡 Open — partially fixed. `UploadFile` fixed by W2-6 (PR #237, 2026-09-29): it passes its materialized exact placement to the shared finalizer, which re-validates it after `pub:` and immediately before HEAD (evidence `TestW2UploadFileExactPlacementBeforeHead`, RED on the previous code). W2-6a adds the missing exact-P check for `CreateFile` Office templates by carrying the actual SHA-256/class/key into the same final check after durable `pub:` (nine real Cassandra/MinIO legs plus reuse and empty-file controls). E1-4 / W2-8 fixes OnlyOffice pre-HEAD exact-P (real callback RED after COMMITTED/TERMINAL P1; fixed rejection and P2 replay). OnlyOffice post-HEAD/R31 remains open. SeafHTTP single-shot (E1-5a) and streaming (E1-5b, selective same-tracker recovery) measured pre-HEAD are CLOSED-FIX; post-HEAD/R31 remain open; cross-repo E1-09 measured single-file/block plaintext pre-HEAD is CLOSED-FIX, broader W2-9 OPEN; covered current-version W2-0 is CLOSED-EVIDENCE under the first-production contract and R31 remains OPEN.
 **Severity**: High (P1) — W2 writer protocol completeness
-**Affected**: ~~`UploadFile` → `finalizeStoredUploadMetadataOnce` with `commitBlocks=nil`~~ (fixed, W2-6); `CreateFile` Office-template publication (partial exact-P fix, W2-6a OPEN through R31; covered pre-HEAD pin-expiry continuity proved); OnlyOffice `publishEditedDocumentMetadata` (E1-4 pre-HEAD CLOSED-FIX; post-HEAD/R31 OPEN); SeafHTTP single-shot (E1-5a measured pre-HEAD CLOSED-FIX; post-HEAD/R31 OPEN) and streaming once-path (E1-5b measured pre-HEAD CLOSED-FIX; post-HEAD/R31 OPEN); cross-repo `processSingleItem`
+**Affected**: ~~`UploadFile` → `finalizeStoredUploadMetadataOnce` with `commitBlocks=nil`~~ (fixed, W2-6); `CreateFile` Office-template publication (partial exact-P fix, W2-6a OPEN through R31; covered pre-HEAD pin-expiry continuity proved); OnlyOffice `publishEditedDocumentMetadata` (E1-4 pre-HEAD CLOSED-FIX; post-HEAD/R31 OPEN); SeafHTTP single-shot (E1-5a measured pre-HEAD CLOSED-FIX; post-HEAD/R31 OPEN) and streaming once-path (E1-5b measured pre-HEAD CLOSED-FIX; post-HEAD/R31 OPEN); cross-repo `processSingleItem` (E1-09 measured pre-HEAD CLOSED-FIX; broader/post-HEAD OPEN)
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization
 
 #### Problem
@@ -6210,17 +6210,18 @@ W1/W2 proved that publishing against a retired or changed exact physical placeme
 - OnlyOffice callbacks carry their original materialized SHA-256/class/key through durable repair to final exact-P before HEAD (E1-4 / W2-8); COMMITTED/TERMINAL rejection and terminal P2 replay are covered, while post-HEAD/R31 stays OPEN.
 
 `UploadFile` called `finalizeStoredUploadMetadata(..., nil)`, so
-`validateCommitBlockPublicationFences` was a no-op (fixed by W2-6, PR #237). `CreateFile` Office templates now call it too (W2-6a). OnlyOffice,
-SeafHTTP, and cross-repo remain outside that final exact-P mechanism. Those funnels can still stage `pub:`,
-queue repair, and CAS HEAD.
+`validateCommitBlockPublicationFences` was a no-op (fixed by W2-6, PR #237). `CreateFile` Office templates now call it too (W2-6a). The original characterization also identified OnlyOffice, SeafHTTP and cross-repo
+without that final exact-P mechanism. Subsequent E1-4/E1-5/E1-09 fixes cover their
+measured pre-HEAD contracts; broader funnels and post-HEAD/R31 remain open.
 
 This is a **publication-readiness/authority gap by provenance**, not a
 prescription that every funnel must run another exact-P read just before
 HEAD. Own-`up:` materialization can also close continuity by keeping
 renewal/TTL overlap (`up:` → GC fence → install/repair → own `up:` remains).
 BorrowedFS/late pin still needs exact-P because the pin may arrive after GC
-won. Cross-repo shows exact-P alone is still TOCTOU without a destination
-own pin.
+won. A bare exact-P read alone still has a TOCTOU gap without destination protection.
+E1-09 acquires destination pub: and durable repair before the final read; its
+repair-first control measures that protection even after pub: expires.
 
 This is a completeness gap in the current writer protocol, not a new race
 invented by PC-0.
@@ -11239,3 +11240,17 @@ creates P2 and publication settles normally. Fresh metadata alone creates no P;
 that absence is not extrapolated to reused content. No runtime fix is added.
 CLOSED-EVIDENCE applies only to that measured ordered contract. W2-5/E1-05
 overall, R31/W2-11..14, W2-10, E1 and X1 remain OPEN; production GC remains OFF.
+
+
+## E1-09 / W2-9 source-purge publication fix — 2026-10-05
+
+`ISSUE-W2-CROSSREPO-RETIRED-LIFE-PUBLICATION-01`: productive source purge and
+GC COMMITTED/TERMINAL reproduce destination HEAD/fs: after P1 retirement in
+both copy and move. Fixed by per-attempt source P capture, staged-ID equality
+and final exact-P after durable repair, before HEAD. Scope: single file/block,
+plaintext, same org/representation pre-HEAD CLOSED-FIX. Directories/multiblock,
+multi-DC and post-HEAD/R31 stay OPEN; E1/X1 and production GC OFF unchanged.
+Async task progress also had a reproduced data race; fields are now snapshotted
+under the TaskStore lock. Move source disappearance after safe destination
+publication remains existing partial-operation semantics, not rollback.
+[Evidence and limits](./E1-09-CROSS-REPO-PUBLICATION-SAFETY.md).

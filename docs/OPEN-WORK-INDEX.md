@@ -471,3 +471,17 @@ creates P2 and publication settles normally. Fresh metadata alone creates no P;
 that absence is not extrapolated to reused content. No runtime fix is added.
 CLOSED-EVIDENCE applies only to that measured ordered contract. W2-5/E1-05
 overall, R31/W2-11..14, W2-10, E1 and X1 remain OPEN; production GC remains OFF.
+
+
+## E1-09 / W2-9 source-purge publication fix — 2026-10-05
+
+`ISSUE-W2-CROSSREPO-RETIRED-LIFE-PUBLICATION-01`: productive source purge and
+GC COMMITTED/TERMINAL reproduce destination HEAD/fs: after P1 retirement in
+both copy and move. Fixed by per-attempt source P capture, staged-ID equality
+and final exact-P after durable repair, before HEAD. Scope: single file/block,
+plaintext, same org/representation pre-HEAD CLOSED-FIX. Directories/multiblock,
+multi-DC and post-HEAD/R31 stay OPEN; E1/X1 and production GC OFF unchanged.
+Async task progress also had a reproduced data race; fields are now snapshotted
+under the TaskStore lock. Move source disappearance after safe destination
+publication remains existing partial-operation semantics, not rollback.
+[Evidence and limits](./E1-09-CROSS-REPO-PUBLICATION-SAFETY.md).

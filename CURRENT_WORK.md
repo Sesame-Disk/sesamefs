@@ -1,6 +1,26 @@
 # Current Work - SesameFS
 
-## Active branch: codex/e1-7-sync-recvfs-before-putblock
+## Active branch: codex/e1-09-cross-repo-publication-safety
+
+E1-09 / W2-9 (2026-10-05), base main@975b3057 with merged #257.
+Plan e3aa03c3b, unchanged-runtime RED d8153a52c: productive source library purge
+and real GC COMMITTED/TERMINAL allow unsafe destination HEAD/fs: in copy and
+move. Move's later task failure does not undo the already published destination.
+Fix captures exact source P per retry, checks staged identities and validates
+exact-P after durable repair before HEAD. No new schema/lease/coordinator.
+Fourteen real Cassandra/SILO copy/move legs include late captured-P retirement,
+repair-first with genuine pub: expiration, actual HEAD conflict and skip replay.
+The same task's progress data race is fixed by a locked value snapshot.
+Only measured single-file/single-block plaintext same-org/representation
+pre-HEAD is CLOSED-FIX; W2-9 overall, R31, E1/X1 remain OPEN and production GC OFF.
+Validation: standard Docker PASS (Go integration 502.758s, 20 API suites,
+25/25 OIDC checks), 140 named -race legs plus 42 final-source legs with HTTP
+byte downloads, short/coverage and both vet modes PASS. Final audit has no
+unresolved introduced P0/P1/P2. The 196 final-run physical keys/blocks, refs and
+owned expiry projections were already absent; earlier owned RED artifacts cleaned.
+[Plan, RED and evidence](docs/E1-09-CROSS-REPO-PUBLICATION-SAFETY.md).
+
+## Previous merged slice: E1-7 / PR #257
 
 E1-7 / W2-5 (2026-10-04), base main@42dc3c38 with merged #256.
 Plan frozen in 07848d392. Six named real-Cassandra/SILO legs distinguish fresh

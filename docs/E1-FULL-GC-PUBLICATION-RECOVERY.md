@@ -94,8 +94,9 @@ Source trace with subsequent scoped dispositions:
   terminal P2 replay are CLOSED-FIX; post-HEAD/R31 W2-8 remains OPEN.
 - Cross-repository copy/move in `BatchOperationHandler.processSingleItem`
   copies source fs objects, stages destination `pub:` references and durable
-  repair before HEAD, then promotes after HEAD. The source trace does not prove
-  safety if stale source metadata is presented after D; W2-9 stays OPEN.
+  repair before HEAD, then promotes after HEAD. E1-09 now adds source exact-P
+  capture per attempt and final validation after repair: the measured productive
+  source-purge retirement schedule is CLOSED-FIX; W2-9 overall stays OPEN.
 - `RevertFile`, `RevertDirectory`, `RestoreTrashItem` and `RevertDirents`
   rebuild a tree from historical fs objects and update HEAD directly, without
   the pending-publish `pub:`/repair sequence or an exact-placement check. No
@@ -251,3 +252,17 @@ No runtime fix. Only the measured direct ordered contract is CLOSED-EVIDENCE;
 E1-05 is PARTIAL and W2-5 overall OPEN. Auto-merge, concurrent durable boundaries,
 other orders, multi-block/DC and post-HEAD/R31 are not certified by this slice.
 Production GC remains OFF; E1/X1 are not closed.
+
+
+## E1-09 / W2-9 cross-repo source-purge retirement — 2026-10-05
+
+[Plan/RED/fix/evidence](./E1-09-CROSS-REPO-PUBLICATION-SAFETY.md): productive
+source library purge (not Phase 5/6 and not manual fs: deletion) allows actual
+GC COMMITTED/TERMINAL after source metadata read. Both copy and move originally
+publish unsafe destination HEAD/fs:; move's eventual source failure is not
+rollback. Exact source P capture per retry and final validation after repair
+reject retirement, while repair-first protects P1 even after actual pub: expiry.
+Fourteen named legs include normal controls, captured-P windows, HEAD-conflict
+retry and source move ordering. Only measured single-file/block plaintext,
+same-org/representation pre-HEAD is CLOSED-FIX. E1-09 PARTIAL, W2-9 overall and
+post-HEAD/R31 OPEN; E1/X1 and production GC OFF unchanged.

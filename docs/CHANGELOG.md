@@ -8,6 +8,17 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-05 - E1-09 cross-repo exact-life publication fix
+
+Real source library purge/GC COMMITTED and TERMINAL reproduce unsafe destination
+HEAD/fs: for async copy and move. Per-attempt source P capture, staged identity
+validation and final exact-P after repair prevent that publication. Fourteen
+required copy/move legs include normal, captured-life retirement, repair-first,
+HEAD conflict and replay. Fix reproduced async progress data race with a locked
+snapshot. Measured single-file/block plaintext same-org/representation pre-HEAD
+CLOSED-FIX only; broader W2-9/R31, E1/X1 OPEN and production GC OFF.
+[Plan and evidence](./E1-09-CROSS-REPO-PUBLICATION-SAFETY.md).
+
 ## 2026-10-04 - E1-7 Sync RecvFS-before-PutBlock characterization
 
 Six named productive Sync/Cassandra/SILO legs distinguish fresh metadata from
