@@ -62,6 +62,8 @@ type shareRecipientState struct {
 }
 
 func TestShareLinkGCProjection_UpdateExpirationRekeysProjection(t *testing.T) {
+	// This case explicitly triggers the daemon scanner; it is not an in-process GC proof.
+	requireGCEnabled(t)
 	repoName := fmt.Sprintf("inttest-share-link-gc-update-%d", time.Now().UnixNano())
 	repoID := createTestLibrary(t, adminClient, repoName)
 	oldExpiry := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)

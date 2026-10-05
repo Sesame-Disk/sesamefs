@@ -266,3 +266,13 @@ Fourteen named legs include normal controls, captured-P windows, HEAD-conflict
 retry and source move ordering. Only measured single-file/block plaintext,
 same-org/representation pre-HEAD is CLOSED-FIX. E1-09 PARTIAL, W2-9 overall and
 post-HEAD/R31 OPEN; E1/X1 and production GC OFF unchanged.
+
+
+E1-09 cross-audit stabilization (2026-10-05): COMMITTED continuation is now
+isolated in the standard three-node Docker fleet with daemon GC disabled and
+authenticated node-status checks. The exact D/P/time, COMMITTED orphan/root,
+canonical absence and extant K1 are certified before resume and after writer
+assertions, before explicit recovery; TERMINAL is never accepted in those legs.
+Five consecutive required -race matrices pass (70/70 legs). The earlier
+active-background-GC rerun did not certify that schedule and is superseded.
+Only controlled-fleet evidence is claimed; shared unknown workers are excluded.

@@ -8,9 +8,20 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-05 - PR #258 COMMITTED evidence isolation
+
+Confirm TEST-EVIDENCE P2: active dev background recovery could consume D1 before
+the resumed writer. Standard Compose now disables daemon GC on all three nodes;
+E1-09 rejects enabled/unknown status and strictly checks exact COMMITTED state
+through writer completion before explicit recovery. Terminal legs remain distinct.
+No production runtime change. Retract direct MoveFile 500 as a current runtime
+blocker: cross-repo returns 501 before publication; retain 409 mapper hardening.
+Register pre-existing FileFromBlocks fan-outs as a separate P2 GENERAL follow-up.
+
 ## 2026-10-05 - PR #258 cross-audit corrections
 
-Confirmed and fixed two P2s: source exact-P capture and the shared final validator
+Historical classification corrected above: the real P2 was worker creation.
+Source exact-P capture and the shared final validator
 now bound goroutine creation with errgroup.SetLimit(20), and direct MoveFile maps
 wrapped/unwrapped ErrBlockDeleteInProgress to retryable HTTP 409. Added maximum
 manifest worker-population, fail-closed scheduling and HTTP mapping regressions.

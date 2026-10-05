@@ -8,13 +8,11 @@ services:
     env_file:
       - ${ENV_FILE:-.env}           # All secrets from the selected env file
     environment:
-      # GC_ENABLED is deliberately NOT pinned here: this is the single local node
-      # allowed to run the GC worker/scanner so the suites can exercise them, and it
-      # takes the value from the env file. Nodes 2, 3 and the cgroup probe pin it to
-      # false so the multi-instance lease has exactly one candidate. The fleet-wide
-      # "GC_ENABLED=false on every replica in every DC" rule while X1 remains open is a
-      # PRODUCTION rule and is enforced in docker-compose.prod.yml and
-      # .env.prod.example, not here.
+      # Deterministic GC evidence uses scoped in-process workers/recovery.
+      # No external daemon may consume a COMMITTED fixture before its writer.
+      # Opt in only for separate development/admin-GC exercises; required E1-09
+      # rejects an enabled background participant on any of the three nodes.
+      - GC_ENABLED=${SESAMEFS_DEV_BACKGROUND_GC_ENABLED:-false}
       - PORT=${PORT:-8080}
       - SERVER_URL=${SERVER_URL}
       - BILLING_URL=${BILLING_URL:-https://t-accounts.sesamedisk.com/billing/}
@@ -551,6 +549,7 @@ services:
       - ./scripts/wait-for-http.sh http://sesamefs:8080/health sesamefs; ./scripts/wait-for-http.sh http://sesamefs-node-2:8080/health sesamefs-node-2; ./scripts/wait-for-http.sh http://sesamefs-node-3:8080/health sesamefs-node-3; SESAMEFS_REQUIRE_R3_CHARACTERIZATION=1 SESAMEFS_REQUIRE_X1_NONOVERLAP_CHARACTERIZATION=1 SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE=1 SESAMEFS_REQUIRE_SESSIONUPLOAD_OWN_LIVENESS_EVIDENCE=1 SESAMEFS_REQUIRE_W2_POST_HEAD_EVIDENCE=1 SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE=1 SESAMEFS_REQUIRE_W2_UPLOADFILE_EXACT_P_EVIDENCE=1 SESAMEFS_REQUIRE_W2_CREATEFILE_EXACT_P_EVIDENCE=1 SESAMEFS_REQUIRE_E14_ONLYOFFICE_EVIDENCE=1 SESAMEFS_REQUIRE_E15A_SEAFHTTP_SINGLE_EVIDENCE=1 SESAMEFS_REQUIRE_E15B_SEAFHTTP_STREAMING_EVIDENCE=1 SESAMEFS_REQUIRE_E16_REVERTFILE_CHARACTERIZATION=1 SESAMEFS_REQUIRE_E17_SYNC_RECVFS_CHARACTERIZATION=1 SESAMEFS_REQUIRE_E19_CROSS_REPO_EVIDENCE=1 SESAMEFS_REQUIRE_W2_PUBLICATION_CONTINUITY_EVIDENCE=1 SESAMEFS_REQUIRE_W2_CLOSURE_EVIDENCE=1 SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE=1 ./scripts/go-test-stream.sh -tags integration -v -count=1 -timeout 15m ./internal/integration/...
     environment:
       - SESAMEFS_REQUIRE_W24_CHARACTERIZATION=1
+      - SESAMEFS_TEST_IN_CONTAINER=1
       - SESAMEFS_URL=http://sesamefs:8080
       - SESAMEFS_URL_2=http://sesamefs-node-2:8080
       - SESAMEFS_URL_3=http://sesamefs-node-3:8080

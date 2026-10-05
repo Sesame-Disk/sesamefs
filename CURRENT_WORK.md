@@ -16,14 +16,23 @@ pre-HEAD is CLOSED-FIX; W2-9 overall, R31, E1/X1 remain OPEN and production GC O
 Validation: standard Docker PASS (Go integration 502.758s, 20 API suites,
 25/25 OIDC checks), 140 named -race legs plus 42 final-source legs with HTTP
 byte downloads, short/coverage and both vet modes PASS at 8d5596f9b.
-Cross-audit confirmed two P2s missed by that audit: goroutine creation fan-out
-and direct MoveFile 500 for the new retryable fence rejection. Both corrected
-using a shared SetLimit scheduler and 409 mapping. Correction checks and
-results: three unit -race repetitions, Go short/coverage, both vet modes and
-14/14 required E1-09 legs -race PASS. Isolated omission reproduces both P2s;
-background-GC checkpoint interference in the earlier run is documented. The pre-existing P1 source
-identity removal race is registered separately, not fixed or closed here. The 196 final-run physical keys/blocks, refs and
-owned expiry projections were already absent; earlier owned RED artifacts cleaned.
+Cross-audit confirmed the worker-creation P2, fixed by the shared SetLimit
+scheduler. Direct MoveFile cross-repo returns 501 before publication; its 409
+mapper change is hardening, and the earlier THIS-PR classification is retracted.
+The cc5a9cc3d COMMITTED schedule evidence was not isolated from dev recovery;
+the standard Compose fleet now disables background GC and E1-09 verifies all
+three nodes plus exact COMMITTED certificates through writer completion.
+Isolation validation: 5 consecutive -race matrices / 70 legs PASS (260.270s),
+exact COMMITTED certificates before/after writer, active-fleet and premature
+recovery controls fail closed. Final standard integration command/environment
+PASS (555.283s). Direct 501/mapper tests and integration vet PASS. A share-link
+scanner case now declares its daemon prerequisite; its complete enabled-daemon
+branch independently PASSed, and the fleet is restored to background GC OFF.
+The initial runner marker omission and undeclared scanner prerequisite were
+fixed and their failed standard runs are documented. The pre-existing P1
+source identity and P2 FileFromBlocks fan-outs remain registered / OPEN.
+At 8d5596f9b, the 196 final-run physical keys/blocks, refs and owned expiry
+projections were already absent; earlier owned RED artifacts cleaned.
 [Plan, RED and evidence](docs/E1-09-CROSS-REPO-PUBLICATION-SAFETY.md).
 
 ## Previous merged slice: E1-7 / PR #257

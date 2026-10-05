@@ -11263,3 +11263,10 @@ publication remains existing partial-operation semantics, not rollback.
 After destination publication, `processSingleItem` retries source removal against the latest source HEAD, resolves the path again and calls `RemoveEntryFromList` by name. It does not compare the current entry's fs_id with the entry copied by the destination attempt. A concurrent writer can replace `/a.txt` FS-A with FS-B after FS-A was copied; source removal can then delete FS-B while the destination contains only FS-A. Reanchoring to the newer HEAD means the source CAS does not establish copied-object identity. This is confirmed by source inspection; no deterministic runtime reproduction is claimed here.
 
 A separate fix should retain the successfully copied source identity and require current source entry fs_id equality before deletion, returning conflict or an explicitly defined no-op on mismatch. Keep the existing destination-first partial-success semantics separate from that identity check. No fix or closure is included in E1-09.
+
+
+## ISSUE-FILEFROMBLOCKS-WORKER-FANOUT-01
+
+**Status:** OPEN. **Severity:** P2 / GENERAL follow-up, pre-existing; not introduced by #258 and not a blocker of E1-09.
+
+`verifyManifestBlocks` and `ensureCommitBlockOwnLiveness` in file_from_blocks.go create a goroutine per distinct block before their semaphore admission. A supported manifest can contain 131,072 blocks. Query concurrency is bounded but worker creation is not. PR #258 bounds its source capture and shared final validator only; these two earlier phases remain unchanged. A separate resource-bound fix should admit workers before goroutine creation, preserving cancellation and fail-closed publication outcomes. Confirmed by source inspection; no closure is claimed here.

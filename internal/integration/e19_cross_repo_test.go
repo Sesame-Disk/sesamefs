@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -125,6 +126,7 @@ func e19Task(t *testing.T, fx *w2CreateFileFixture, h *v2pkg.BatchOperationHandl
 }
 func TestE19CrossRepoPublication(t *testing.T) {
 	requireCassandra(t)
+	e19RequireNoBackgroundGC(t)
 	for _, op := range []string{"copy", "move"} {
 		for _, phase := range e19Phases {
 			t.Run(op+"/"+phase, func(t *testing.T) {
@@ -249,6 +251,9 @@ func TestE19CrossRepoPublication(t *testing.T) {
 						}
 					}
 				}
+				if phase == "committed" || phase == "captured-committed" {
+					e19AssertCommitted(t, fx, authority)
+				}
 				resume()
 				progress := e19Task(t, fx, h, task["task_id"])
 				dstHead := borrowedFSReadHead(t, database, fx.orgID, dst)
@@ -273,6 +278,10 @@ func TestE19CrossRepoPublication(t *testing.T) {
 						t.Fatalf("rejected attempt left repair: %+v", rows)
 					}
 					x1AssertCanonicalAbsent(t, gcpkg.NewCassandraStore(database), fx.orgUUID, fx.blockID)
+					if phase == "committed" || phase == "captured-committed" {
+						e19AssertCommitted(t, fx, authority)
+						e19RequireNoBackgroundGC(t)
+					}
 					e17Recover(t, fx, authority)
 					e19Evidence[op+"/"+phase] = true
 					return
@@ -473,4 +482,90 @@ func e19AssertDownload(t *testing.T, fx *w2CreateFileFixture, dst string) {
 	if status != http.StatusOK || body != string(fx.content) {
 		t.Fatalf("destination HTTP download: status=%d body=%q", status, body)
 	}
+}
+
+// Validate every daemon in the standard three-node Compose evidence fleet.
+// Unknown/missing configuration is not an isolation certificate.
+func e19RequireNoBackgroundGC(t *testing.T) {
+	t.Helper()
+	if os.Getenv("SESAMEFS_TEST_IN_CONTAINER") != "1" {
+		t.Fatal("E1-09 requires the controlled Docker evidence fleet")
+	}
+	for _, endpoint := range []string{superadminClient.baseURL, envOrDefault("SESAMEFS_URL_2", "http://sesamefs-node-2:8080"), envOrDefault("SESAMEFS_URL_3", "http://sesamefs-node-3:8080")} {
+		if err := e19CheckGCDisabled(newTestClient(endpoint, superadminClient.token)); err != nil {
+			t.Fatalf("E1-09 background GC isolation: %v", err)
+		}
+	}
+}
+func e19CheckGCDisabled(c *testClient) error {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v2.1/admin/gc/status", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Token "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var status struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s GC status HTTP %d", c.baseURL, resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return err
+	}
+	if status.Enabled == nil || *status.Enabled {
+		return fmt.Errorf("%s must explicitly report enabled=false", c.baseURL)
+	}
+	return nil
+}
+func TestE19IsolationFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		code int
+		pass bool
+	}{
+		{`{"enabled":false}`, 200, true}, {`{"enabled":true}`, 200, false},
+		{`{}`, 200, false}, {`{"enabled":"false"}`, 200, false},
+		{`not JSON`, 200, false}, {`{"enabled":false}`, 503, false},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Token owner" {
+					t.Error("missing GC status authentication")
+				}
+				w.WriteHeader(tc.code)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+			if err := e19CheckGCDisabled(newTestClient(server.URL, "owner")); (err == nil) != tc.pass {
+				t.Fatalf("pass=%v err=%v", tc.pass, err)
+			}
+		})
+	}
+}
+
+// Retain and re-certify the exact D through writer completion. Never accept
+// TERMINAL in a COMMITTED leg or rely only on a pre-resume observation.
+func e19AssertCommitted(t *testing.T, fx *w2CreateFileFixture, expected gcpkg.BlockDeleteAuthority) {
+	t.Helper()
+	var observed gcpkg.BlockDeleteAuthority
+	var phase string
+	err := fx.database.Session().Query(`SELECT claim_id, claimed_at, storage_class, storage_key, phase FROM gc_block_delete_lifecycles WHERE org_id = ? AND block_id = ?`, fx.orgID, fx.blockID).Consistency(gocql.EachQuorum).Scan(&observed.ClaimID, &observed.ClaimedAt, &observed.Target.StorageClass, &observed.Target.StorageKey, &phase)
+	if err != nil || phase != gcpkg.BlockDeleteLifecyclePhasePublished || observed.ClaimID != expected.ClaimID || !observed.ClaimedAt.Equal(expected.ClaimedAt) || observed.Target != expected.Target {
+		t.Fatalf("COMMITTED exact D changed through writer: got=%+v phase=%s err=%v want=%+v", observed, phase, err, expected)
+	}
+	store := gcpkg.NewCassandraStore(fx.database)
+	orphan, found, err := store.GetS3OrphanExact(fx.orgUUID, fx.blockID, expected)
+	if err != nil || !found || orphan.RecoveryState != gcpkg.S3OrphanRecoveryStateCommitted || orphan.StorageClass != expected.Target.StorageClass || orphan.StorageKey != expected.Target.StorageKey {
+		t.Fatalf("COMMITTED orphan changed: %+v found=%v err=%v", orphan, found, err)
+	}
+	if _, found, err := store.GetS3OrphanRecoveryRootExact(fx.orgUUID, fx.blockID, expected); err != nil || !found {
+		t.Fatalf("COMMITTED exact recovery root absent: %v %v", found, err)
+	}
+	x1AssertCanonicalAbsent(t, store, fx.orgUUID, fx.blockID)
+	w2AssertBytes(t, fx)
 }

@@ -1,5 +1,12 @@
 # Open Work Index
 
+## PR #258 resource follow-up (2026-10-05)
+
+[ISSUE-FILEFROMBLOCKS-WORKER-FANOUT-01](./KNOWN_ISSUES.md#issue-filefromblocks-worker-fanout-01)
+is P2 GENERAL / OPEN, pre-existing: verifyManifestBlocks and
+ensureCommitBlockOwnLiveness still create workers before semaphore admission.
+Separate from the capture/final-validator bounds in #258.
+
 ## PR #258 source-removal identity follow-up (2026-10-05)
 
 [ISSUE-CROSSREPO-MOVE-SOURCE-IDENTITY-RACE-01](./KNOWN_ISSUES.md#issue-crossrepo-move-source-identity-race-01)
