@@ -8,6 +8,24 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-05 - E1-10 RestoreTrashItem retained-history characterization
+
+Plan frozen before instrumentation at b823f11de, based on merged #258.
+Single-file/one-block/plaintext actual restore retains historical fs_id/P/K/bytes.
+With only historical fs: remaining, the real block worker settles its controlled
+candidate before claim/global proof/D. A real competing HEAD causes restore CAS
+retry and preserves both entries. No speculative runtime fence; two no-op-normal/
+integration scheduling seams and a required three-leg gate in both Docker suites.
+Narrow retained-history evidence only: COMMITTED/TERMINAL unexecuted, W2-10/E1-10,
+R31, E1 and X1 remain OPEN. Production GC OFF and shared dev GC unchanged.
+Initial active-daemon race failure is retained; owned-worker evidence now uses
+the existing manual-GC keyspace, preserving subtest filters and child mandatory
+evidence. Five final race repetitions PASS (15/15 legs); rejection/omission
+controls fail as intended. Final actual go-all-test PASS: integration 862.293s,
+API 20/20, OIDC 25/25, all daemon controls 14/14, zero disabled-GC skips. Final
+vet/style/hash checks and scoped audit found no introduced blockers.
+[Plan, outcome and validation](./E1-10-RESTORETRASH-RETAINED-HISTORY.md).
+
 ## 2026-10-05 - PR #258 shared test GC restoration
 
 Reject the preceding blanket GC-OFF isolation as P2 THIS-PR / TEST-INFRA:

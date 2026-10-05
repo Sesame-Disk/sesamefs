@@ -283,3 +283,18 @@ Final restored-daemon go-all-test PASS: integration 845.139s, API 20/20, OIDC
 skips. Two pre-existing harness races revealed by restoration were corrected
 without changing runtime or accepting peer activity as the own worker proof.
 The exact native peer-window scratch control and full native matrix PASS.
+
+## E1-10 / RestoreTrashItem retained-history — 2026-10-05
+
+The [frozen plan and evidence](./E1-10-RESTORETRASH-RETAINED-HISTORY.md) measures
+only single-file/one-block/plaintext restore in one repo/org with retained
+history. Real upload/DeleteFile retain the sole permanent fs:. At the actual
+oldEntry read barrier, the real worker observes positive local liveness, settles
+the candidate and stops before claim/global proof/D. Restore reaches the original
+fs_id and retains P/K/bytes without new repair or fs: settlement. Real competing
+HEAD/CAS retry preserves both restored and concurrent entries.
+CLOSED-EVIDENCE applies only to this measured retained-history schedule.
+COMMITTED/TERMINAL legs remain UNEXECUTED because that schedule prevents their
+prerequisite; no refs/D are fabricated. E1-10/W2-10 overall, other resurrection
+funnels, retention/Phase 5/6, R31, E1 and X1 remain OPEN. No runtime fix or
+activation change; production GC OFF. RevertFile's earlier scope is unchanged.
