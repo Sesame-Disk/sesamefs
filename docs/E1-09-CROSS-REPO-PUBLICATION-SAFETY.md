@@ -210,7 +210,11 @@ Corrected source hashes (host and Docker validation runner):
 | internal/api/v2/files_batch_test.go | aea40ef08602c1a9e1a116eb9e642800997e9779736eda1982ed15af9cf3803f |
 
 
-## COMMITTED isolation correction (2026-10-05)
+## COMMITTED isolation correction (2026-10-05, historical ccdebcb72)
+
+**Superseded below:** globally disabling the development daemon lost existing
+coverage and is a P2 THIS-PR / TEST-INFRA blocker. The 14 skips and 555.283s PASS
+do not qualify as the final standard-suite validation.
 
 The crossed audit of cc5a9cc3d correctly identified P2 / THIS-PR TEST-EVIDENCE: an enabled external development recovery worker could move exact D1 from COMMITTED to TERMINAL between the certificate and the resumed writer. A later green rerun did not certify the claimed COMMITTED continuation schedule. Earlier active-background-GC COMMITTED legs are historical evidence and are superseded for that distinction.
 
@@ -241,3 +245,104 @@ Validated Go source hashes (host and final Docker runner):
 | internal/integration/e19_cross_repo_test.go | c69020470040b0d71a3c115ea3550ec175a6521fb960fedb614ba9cb9ca7b5d5 |
 | internal/integration/share_projection_regression_test.go | 979bf8a5707ddf377e9221bd0d2a53e2434220a2fe17ee1f13e994bede273f7f |
 | internal/api/v2/files_batch_test.go | 1eec81af656551309620f7e260a5d9a8ac855d83c6ffaca7c99d8dc9eef6dbac |
+
+## Scoped E1-09 isolation and normal GC restoration (2026-10-05)
+
+The general Compose primary again inherits GC_ENABLED from the selected env
+file, exactly as before #258. Nodes 2/3 retain their existing GC=false setting.
+The share-link scanner test's added requireGCEnabled skip is removed. Production
+GC remains OFF; no production config/runtime/schema change is included here.
+
+Only the test profile adds sesamefs-e19, with GC=false and CASSANDRA_KEYSPACE=
+sesamefs_e19, no host port, and the ordinary real Cassandra/SILO services. Its
+bootstrap creates/grants this separate keyspace using the existing app role,
+after the ordinary bootstrap; it does not rotate shared passwords. The backend
+applies the same normal migrations. This is the measured single-DC harness,
+not a new replication/protocol claim. No background worker uses this keyspace.
+
+Both go-integration-test and go-all-test depend on this backend and supply
+SESAMEFS_E19_ISOLATED_URL. TestE19CrossRepoPublication launches the same test
+binary (preserving -race instrumentation) with a 3-minute test timeout, the
+isolated keyspace/URLs, and only the E1-09 required evidence gate. All other
+mandatory gates still run in the parent on the normal stack. Child TestMain
+must pass all fourteen named legs; nonzero exit/unavailable endpoint/unknown or
+enabled GC fail the parent. Only successful complete child evidence is recorded
+by the parent. Direct controlled E1-09 execution retains its existing guard.
+The endpoint check and strict exact COMMITTED certificates before/after the
+writer remain; TERMINAL is still a separate leg. This isolation is scoped to
+this controlled service/keyspace, not unknown external workers/admin jobs.
+
+Final validation pending: repeated required E1-09 under -race while the general
+daemon is active, and the actual full go-all-test service with daemon-dependent
+coverage restored. Historical blanket-GC-OFF validation above is not substituted.
+
+The first actual go-all-test after restoring GC exposed a pre-existing MaxRetry
+harness race: it failed at the unrelated LastWorkerRun barrier (47.36s), before
+checking its own DLQ row. Cassandra later confirmed that exact synthetic fixture
+in gc_failed_items with retry_count=5 at 21:22:54 UTC, about 64s after creation.
+The trigger is asynchronous; the global timestamp is not fixture completion.
+The focused correction removes only that timestamp barrier and spends the same
+combined 45s+45s budget polling the exact DLQ row, live-queue absence and reconciled
+snapshot. All original field/counter assertions remain. Cleanup is registered
+before insertion so a failed wait no longer leaks the synthetic fixture. No daemon
+skip, runtime timeout or GC implementation change is added. This first failed
+run is retained; it does not count as final go-all-test evidence.
+
+The second actual go-all-test retained normal GC coverage: E1-09 14/14 and all
+14 daemon-dependent tests PASS, zero disabled-GC skips. It nevertheless failed
+integration (886.716s) at pre-existing W2NativeHEADAmbiguity/SyncDirect/
+requestLostUnconfirmed: a peer postponed the discovery row after the manual
+worker's cutoff, so its scoped SELECT found zero. Candidate/P were not retired.
+MaxRetry PASSed in that complete run (3.49s); API/OIDC were not reached.
+
+Correct only w2AssertGCBlocked's discovery observation: enqueue once, then allow
+at most three real dequeues with fresh cutoffs when zero rows were observed
+before its own liveness probe. Every attempt still checks the exact candidate,
+canonical P/key and bytes; success still requires its own productive read and
+n=0/error=nil. A peer's protection is not substituted as evidence. Actual D,
+candidate loss, missing bytes, different errors or absent own probe still fail.
+No daemon toggle, fabricated rows, authority answers or runtime change is used.
+Five focused native-leg -race repeats PASS (35.781s) before final cutoff-only
+adjustment. A scratch-source control inserting a real peer before cutoff did
+not exercise the race and is not counted as branch evidence. Moving the real
+peer between cutoff capture and SELECT reproduced the window, and also exposed
+that a first re-enqueue approach could produce two rows (expected FAIL,
+10.110s). The final read-only retry control then PASSed (10.164s), logged the
+zero-row first attempt and obtained its own actual blocked probe on retry.
+All controls used real Cassandra/SILO/production workers in a /tmp source copy;
+no control injection is included in the final source.
+
+Final audited validation (actual Compose service, not a filtered substitute):
+
+- docker compose --profile test run --rm go-all-test: PASS, exit 0.
+- Go short/coverage PASS; mandatory full integration PASS (845.139s), including
+  E1-09 14/14 and every other configured package evidence gate.
+- All 14 standard daemon-dependent tests PASS, zero disabled-GC skip messages.
+  MaxRetry PASS (5.88s), share projection scanner PASS (4.77s); the whole native
+  HEAD ambiguity matrix PASS (104.73s). Its original own-read/P/candidate/bytes
+  assertions remain. API 20/20 suites PASS; OIDC 25/25 checks PASS, zero OIDC skips.
+- Authenticated status confirms normal primary GC=true, E1-09 backend GC=false.
+  Standard nodes 2/3 and production configurations are unchanged. Optional
+  multi-DC/cgroup scenarios remain unconfigured; gcsoak is a separate unselected
+  tag and is not certified by the standard integration invocation.
+- Final integration vet, gofmt and whitespace checks PASS. Scoped final audit:
+  no unresolved introduced P0/P1/P2. Registered GENERAL P1 source identity and P2
+  FileFromBlocks fan-outs remain OPEN; W2-9/E1/X1/R31/prod-GC scope unchanged.
+
+Logs outside Git: $TEMP/sesamefs-e19-scoped-{race,enabled-red,go-all-final,
+go-all-complete,go-all-audited}.log; $TEMP/sesamefs-e19-maxretry-{observed,final}.log;
+$TEMP/sesamefs-e19-native-{discovery-final,peer-control,peer-window-control,
+peer-window-final}.log. go-all-final and go-all-complete are the retained full
+failures, not PASS evidence; go-all-audited is the actual final complete PASS.
+peer-control did not hit the intended window; peer-window-control records the
+rejected duplicate-enqueue approach. peer-window-final validates the precise
+window with the final read-only retry. Scratch controls are outside Git/source.
+
+Final Go source SHA-256 (host/current Docker test image):
+
+| Source | SHA-256 |
+|---|---|
+| internal/integration/e19_cross_repo_test.go | 977677c72963680d015df6258e11ce35398d7d04058161cda70b7a5654fec274 |
+| internal/integration/gc_integration_test.go | ed7b8bf4610d0281c29328b6e130ea4100fddadcf3eeb68719e47a0c169eb49d |
+| internal/integration/share_projection_regression_test.go | 746994e959a1f5a41d07f7a04ecad89df9d1927097c51f37ec07db34f7c38f0c |
+| internal/integration/w2_wire_crash_closure_test.go | eeb31e4f75e22a567f01851921baa5856d5084323614c47435420f09bc4f0651 |

@@ -8,11 +8,13 @@ services:
     env_file:
       - ${ENV_FILE:-.env}           # All secrets from the selected env file
     environment:
-      # Deterministic GC evidence uses scoped in-process workers/recovery.
-      # No external daemon may consume a COMMITTED fixture before its writer.
-      # Opt in only for separate development/admin-GC exercises; required E1-09
-      # rejects an enabled background participant on any of the three nodes.
-      - GC_ENABLED=${SESAMEFS_DEV_BACKGROUND_GC_ENABLED:-false}
+      # GC_ENABLED is deliberately NOT pinned here: this is the single local node
+      # allowed to run the GC worker/scanner so the suites can exercise them, and it
+      # takes the value from the env file. Nodes 2, 3 and the cgroup probe pin it to
+      # false so the multi-instance lease has exactly one candidate. The fleet-wide
+      # "GC_ENABLED=false on every replica in every DC" rule while X1 remains open is a
+      # PRODUCTION rule and is enforced in docker-compose.prod.yml and
+      # .env.prod.example, not here.
       - PORT=${PORT:-8080}
       - SERVER_URL=${SERVER_URL}
       - BILLING_URL=${BILLING_URL:-https://t-accounts.sesamedisk.com/billing/}
@@ -537,6 +539,42 @@ services:
     profiles:
       - test
 
+  # E1-09 owns COMMITTED recovery timing. Its only backend uses a separate
+  # keyspace, so the normal daemon can keep running without seeing its roots.
+  cassandra-e19-bootstrap:
+    extends:
+      service: cassandra-bootstrap
+    environment:
+      - CASSANDRA_KEYSPACE=sesamefs_e19
+    # Reuse the existing role; never rotate its password a second time.
+    command:
+      - |
+        set -euo pipefail
+        dc="$${CASSANDRA_DC:-$${CASSANDRA_LOCAL_DC:-datacenter1}}"
+        app_user="$${CASSANDRA_USERNAME:?}"
+        [[ "$${dc}" =~ ^[A-Za-z0-9._-]+$$ ]] || exit 1
+        [[ "$${app_user}" =~ ^[A-Za-z0-9_]+$$ ]] || exit 1
+        cqlsh cassandra -u cassandra -p "$${CASSANDRA_SUPERUSER_PASSWORD:?}" -e "CREATE KEYSPACE IF NOT EXISTS sesamefs_e19 WITH replication = {'class': 'NetworkTopologyStrategy', '$${dc}': 1}; GRANT ALL PERMISSIONS ON KEYSPACE sesamefs_e19 TO $${app_user};"
+    depends_on:
+      cassandra-bootstrap:
+        condition: service_completed_successfully
+    profiles:
+      - test
+
+  sesamefs-e19:
+    extends:
+      service: sesamefs
+    ports: !reset []
+    environment:
+      - GC_ENABLED=false
+      - CASSANDRA_KEYSPACE=sesamefs_e19
+      - SERVER_URL=http://sesamefs-e19:8080
+    depends_on:
+      cassandra-e19-bootstrap:
+        condition: service_completed_successfully
+    profiles:
+      - test
+
   go-integration-test:
     build:
       context: .
@@ -548,6 +586,7 @@ services:
       - -c
       - ./scripts/wait-for-http.sh http://sesamefs:8080/health sesamefs; ./scripts/wait-for-http.sh http://sesamefs-node-2:8080/health sesamefs-node-2; ./scripts/wait-for-http.sh http://sesamefs-node-3:8080/health sesamefs-node-3; SESAMEFS_REQUIRE_R3_CHARACTERIZATION=1 SESAMEFS_REQUIRE_X1_NONOVERLAP_CHARACTERIZATION=1 SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE=1 SESAMEFS_REQUIRE_SESSIONUPLOAD_OWN_LIVENESS_EVIDENCE=1 SESAMEFS_REQUIRE_W2_POST_HEAD_EVIDENCE=1 SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE=1 SESAMEFS_REQUIRE_W2_UPLOADFILE_EXACT_P_EVIDENCE=1 SESAMEFS_REQUIRE_W2_CREATEFILE_EXACT_P_EVIDENCE=1 SESAMEFS_REQUIRE_E14_ONLYOFFICE_EVIDENCE=1 SESAMEFS_REQUIRE_E15A_SEAFHTTP_SINGLE_EVIDENCE=1 SESAMEFS_REQUIRE_E15B_SEAFHTTP_STREAMING_EVIDENCE=1 SESAMEFS_REQUIRE_E16_REVERTFILE_CHARACTERIZATION=1 SESAMEFS_REQUIRE_E17_SYNC_RECVFS_CHARACTERIZATION=1 SESAMEFS_REQUIRE_E19_CROSS_REPO_EVIDENCE=1 SESAMEFS_REQUIRE_W2_PUBLICATION_CONTINUITY_EVIDENCE=1 SESAMEFS_REQUIRE_W2_CLOSURE_EVIDENCE=1 SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE=1 ./scripts/go-test-stream.sh -tags integration -v -count=1 -timeout 15m ./internal/integration/...
     environment:
+      - SESAMEFS_E19_ISOLATED_URL=http://sesamefs-e19:8080
       - SESAMEFS_REQUIRE_W24_CHARACTERIZATION=1
       - SESAMEFS_TEST_IN_CONTAINER=1
       - SESAMEFS_URL=http://sesamefs:8080
@@ -582,6 +621,7 @@ services:
       # The documented command passes it explicitly.
       - SESAMEFS_CGROUP_PROBE_URL=${SESAMEFS_CGROUP_PROBE_URL:-}
     depends_on:
+      - sesamefs-e19
       - sesamefs
       - sesamefs-node-2
       - sesamefs-node-3
@@ -600,6 +640,7 @@ services:
       - -c
       - go test ./... -short -cover && ./scripts/wait-for-http.sh http://sesamefs:8080/health sesamefs && ./scripts/wait-for-http.sh http://sesamefs-node-2:8080/health sesamefs-node-2 && ./scripts/wait-for-http.sh http://sesamefs-node-3:8080/health sesamefs-node-3 && SESAMEFS_REQUIRE_R3_CHARACTERIZATION=1 SESAMEFS_REQUIRE_X1_NONOVERLAP_CHARACTERIZATION=1 SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE=1 SESAMEFS_REQUIRE_SESSIONUPLOAD_OWN_LIVENESS_EVIDENCE=1 SESAMEFS_REQUIRE_W2_POST_HEAD_EVIDENCE=1 SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE=1 SESAMEFS_REQUIRE_W2_UPLOADFILE_EXACT_P_EVIDENCE=1 SESAMEFS_REQUIRE_W2_CREATEFILE_EXACT_P_EVIDENCE=1 SESAMEFS_REQUIRE_E14_ONLYOFFICE_EVIDENCE=1 SESAMEFS_REQUIRE_E15A_SEAFHTTP_SINGLE_EVIDENCE=1 SESAMEFS_REQUIRE_E15B_SEAFHTTP_STREAMING_EVIDENCE=1 SESAMEFS_REQUIRE_E16_REVERTFILE_CHARACTERIZATION=1 SESAMEFS_REQUIRE_E17_SYNC_RECVFS_CHARACTERIZATION=1 SESAMEFS_REQUIRE_E19_CROSS_REPO_EVIDENCE=1 SESAMEFS_REQUIRE_W2_PUBLICATION_CONTINUITY_EVIDENCE=1 SESAMEFS_REQUIRE_W2_CLOSURE_EVIDENCE=1 SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE=1 ./scripts/go-test-stream.sh -tags integration -v -count=1 -timeout 15m ./internal/integration/... && ./scripts/test.sh api && ./scripts/test.sh oidc
     environment:
+      - SESAMEFS_E19_ISOLATED_URL=http://sesamefs-e19:8080
       - SESAMEFS_REQUIRE_W24_CHARACTERIZATION=1
       - SESAMEFS_URL=http://sesamefs:8080
       - SESAMEFS_URL_2=http://sesamefs-node-2:8080
@@ -624,6 +665,7 @@ services:
       - SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE=1
 
     depends_on:
+      - sesamefs-e19
       - sesamefs
       - sesamefs-node-2
       - sesamefs-node-3

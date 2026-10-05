@@ -19,18 +19,32 @@ byte downloads, short/coverage and both vet modes PASS at 8d5596f9b.
 Cross-audit confirmed the worker-creation P2, fixed by the shared SetLimit
 scheduler. Direct MoveFile cross-repo returns 501 before publication; its 409
 mapper change is hardening, and the earlier THIS-PR classification is retracted.
-The cc5a9cc3d COMMITTED schedule evidence was not isolated from dev recovery;
-the standard Compose fleet now disables background GC and E1-09 verifies all
-three nodes plus exact COMMITTED certificates through writer completion.
-Isolation validation: 5 consecutive -race matrices / 70 legs PASS (260.270s),
-exact COMMITTED certificates before/after writer, active-fleet and premature
-recovery controls fail closed. Final standard integration command/environment
-PASS (555.283s). Direct 501/mapper tests and integration vet PASS. A share-link
-scanner case now declares its daemon prerequisite; its complete enabled-daemon
-branch independently PASSed, and the fleet is restored to background GC OFF.
-The initial runner marker omission and undeclared scanner prerequisite were
-fixed and their failed standard runs are documented. The pre-existing P1
-source identity and P2 FileFromBlocks fan-outs remain registered / OPEN.
+The cc5a9cc3d COMMITTED schedule needed isolation from external recovery.
+The ccdebcb72 attempt disabled the shared daemon and caused 14 daemon-dependent
+skips. That solution is rejected as P2 THIS-PR / TEST-INFRA and superseded.
+Normal Compose again inherits primary GC_ENABLED from the env file; nodes 2/3
+remain disabled. The added share-link prerequisite/skip is removed.
+Only E1-09 runs in sesamefs_e19, served by a profile-test backend with GC OFF.
+Both standard runners invoke the same test binary in an isolated child process;
+its own TestMain requires all 14 legs before the parent can record evidence.
+The normal daemon cannot discover that keyspace's recovery roots. Strict exact
+COMMITTED certificates and authenticated status checks remain before/after writer.
+Repeated active-daemon E1-09 -race validation: 42/42 legs PASS (139.748s).
+Wrong active-daemon endpoint fails the mandatory child/parent gate (6.812s).
+The first actual go-all-test exposed MaxRetry's pre-existing global-timestamp
+wait race; its exact DLQ row appeared after about 64s. That test now polls its
+own outcome with the original combined 90s budget and registers cleanup early.
+The second complete run restored 14/14 daemon tests and E1-09, with zero
+GC-disabled skips, but exposed a pre-existing native-proof cutoff/discovery race.
+Its helper now retries only the actual dequeue (three attempts), never re-enqueues
+or accepts a peer as proof. Exact candidate/P/bytes and own read remain mandatory.
+A real peer in the precise window PASSes the scratch-source control (10.164s).
+Both full failures are retained. Actual final go-all-test PASS (exit 0): Go
+short/coverage, mandatory integration 845.139s, API 20/20, OIDC 25/25. E1-09 and
+standard daemon cases both 14/14; zero disabled-GC skips. Native ambiguity full
+matrix PASS (104.73s); final integration vet/style checks PASS. Source hashes
+match the current Docker image. No unresolved introduced P0/P1/P2 in final audit.
+The pre-existing P1 source identity and P2 FileFromBlocks fan-outs remain OPEN.
 At 8d5596f9b, the 196 final-run physical keys/blocks, refs and owned expiry
 projections were already absent; earlier owned RED artifacts cleaned.
 [Plan, RED and evidence](docs/E1-09-CROSS-REPO-PUBLICATION-SAFETY.md).

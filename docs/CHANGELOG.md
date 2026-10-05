@@ -8,10 +8,33 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-05 - PR #258 shared test GC restoration
+
+Reject the preceding blanket GC-OFF isolation as P2 THIS-PR / TEST-INFRA:
+it suppressed daemon-dependent coverage. Restore primary GC inheritance and
+remove the new share-link skip. E1-09 alone uses a profile-test backend/keyspace
+(sesamefs_e19), with mandatory child-process evidence in both standard runners.
+The child uses the same binary/race instrumentation and retains the strict
+COMMITTED-through-writer certificate. Normal GC cannot scan its separate keyspace.
+No W2-9 production runtime or production GC configuration changes here.
+Restored coverage exposed MaxRetry's pre-existing global-worker-timestamp wait
+race. Observe its exact DLQ/queue/snapshot outcome with the original combined
+90s budget and preserve every assertion; register cleanup before inserting.
+The first failed go-all-test is retained rather than treated as final evidence.
+The second run restored every daemon-dependent test but exposed the pre-existing
+native-proof queue/cutoff race. Retry only the real dequeue with a fresh cutoff,
+at most three times; preserve candidate/P/bytes and require our own probe. A real
+peer-window control validates this; its rejected duplicate-enqueue approach and
+both complete failed runs are retained. No production runtime changes.
+Final actual go-all-test PASS: integration 845.139s, 20/20 API suites, 25/25 OIDC
+checks; E1-09 and daemon-dependent cases each 14/14, zero GC-disabled skips.
+The native matrix, exact peer-window control and final vet/style checks PASS.
+
 ## 2026-10-05 - PR #258 COMMITTED evidence isolation
 
 Confirm TEST-EVIDENCE P2: active dev background recovery could consume D1 before
-the resumed writer. Standard Compose now disables daemon GC on all three nodes;
+the resumed writer. Historical ccdebcb72 solution (superseded above) disabled
+daemon GC on all three nodes;
 E1-09 rejects enabled/unknown status and strictly checks exact COMMITTED state
 through writer completion before explicit recovery. Terminal legs remain distinct.
 No production runtime change. Retract direct MoveFile 500 as a current runtime

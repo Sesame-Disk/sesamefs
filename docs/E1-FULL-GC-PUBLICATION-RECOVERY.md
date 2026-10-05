@@ -268,11 +268,18 @@ same-org/representation pre-HEAD is CLOSED-FIX. E1-09 PARTIAL, W2-9 overall and
 post-HEAD/R31 OPEN; E1/X1 and production GC OFF unchanged.
 
 
-E1-09 cross-audit stabilization (2026-10-05): COMMITTED continuation is now
-isolated in the standard three-node Docker fleet with daemon GC disabled and
-authenticated node-status checks. The exact D/P/time, COMMITTED orphan/root,
-canonical absence and extant K1 are certified before resume and after writer
-assertions, before explicit recovery; TERMINAL is never accepted in those legs.
-Five consecutive required -race matrices pass (70/70 legs). The earlier
-active-background-GC rerun did not certify that schedule and is superseded.
-Only controlled-fleet evidence is claimed; shared unknown workers are excluded.
+E1-09 cross-audit stabilization (2026-10-05): exact COMMITTED continuation is
+isolated in the profile-test sesamefs-e19 backend/keyspace. The shared primary
+again inherits GC_ENABLED and retains daemon-dependent coverage. The preceding
+blanket-GC-OFF solution at ccdebcb72 is superseded as P2 TEST-INFRA, not accepted
+as final standard-suite evidence. Both standard runners require the complete
+14-leg isolated child test process. Exact D/P/time, COMMITTED orphan/root,
+canonical absence and extant K1 remain certified before/after writer assertions,
+before explicit recovery; TERMINAL is never accepted in those legs. Unknown
+workers sharing the isolated keyspace remain outside the harness certificate.
+
+Final restored-daemon go-all-test PASS: integration 845.139s, API 20/20, OIDC
+25/25; E1-09 14/14 and standard daemon-dependent cases 14/14, zero disabled-GC
+skips. Two pre-existing harness races revealed by restoration were corrected
+without changing runtime or accepting peer activity as the own worker proof.
+The exact native peer-window scratch control and full native matrix PASS.

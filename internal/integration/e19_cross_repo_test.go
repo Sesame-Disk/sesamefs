@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -125,6 +126,10 @@ func e19Task(t *testing.T, fx *w2CreateFileFixture, h *v2pkg.BatchOperationHandl
 	}
 }
 func TestE19CrossRepoPublication(t *testing.T) {
+	if endpoint := os.Getenv("SESAMEFS_E19_ISOLATED_URL"); endpoint != "" && os.Getenv("SESAMEFS_E19_CHILD") != "1" {
+		e19RunIsolated(t, endpoint)
+		return
+	}
 	requireCassandra(t)
 	e19RequireNoBackgroundGC(t)
 	for _, op := range []string{"copy", "move"} {
@@ -484,7 +489,37 @@ func e19AssertDownload(t *testing.T, fx *w2CreateFileFixture, dst string) {
 	}
 }
 
-// Validate every daemon in the standard three-node Compose evidence fleet.
+// Run the same test binary (including -race instrumentation) against the sole
+// E19 backend. Child TestMain must prove all fourteen legs before returning 0.
+// Other mandatory evidence gates remain in the parent, on the normal keyspace.
+func e19RunIsolated(t *testing.T, endpoint string) {
+	t.Helper()
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "-test.run=^TestE19", "-test.v", "-test.count=1", "-test.timeout=3m")
+	for _, entry := range os.Environ() {
+		name := strings.SplitN(entry, "=", 2)[0]
+		if strings.HasPrefix(name, "SESAMEFS_REQUIRE_") || name == "SESAMEFS_URL" || name == "SESAMEFS_URL_2" || name == "SESAMEFS_URL_3" || name == "CASSANDRA_KEYSPACE" || name == "SESAMEFS_E19_CHILD" || name == "SESAMEFS_W2_PROCESS_CHILD" {
+			continue
+		}
+		cmd.Env = append(cmd.Env, entry)
+	}
+	cmd.Env = append(cmd.Env, e19EvidenceEnv+"=1", "SESAMEFS_E19_CHILD=1", "CASSANDRA_KEYSPACE=sesamefs_e19", "SESAMEFS_URL="+endpoint, "SESAMEFS_URL_2="+endpoint, "SESAMEFS_URL_3="+endpoint)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("isolated E1-09 evidence failed: %v", err)
+	}
+	for _, name := range e19Missing(nil) {
+		e19Evidence[name] = true
+	}
+}
+
+// Validate every backend configured for this evidence process. In standard
+// Compose this is the sole isolated E19 backend, never the normal GC fleet.
 // Unknown/missing configuration is not an isolation certificate.
 func e19RequireNoBackgroundGC(t *testing.T) {
 	t.Helper()

@@ -103,19 +103,34 @@ func w2AssertGCBlocked(t *testing.T, fx *w2CreateFileFixture) {
 	t.Helper()
 	store := gcpkg.NewCassandraStore(fx.database)
 	c := w2Candidate(t, store, fx.orgUUID, fx.blockID, fx.target.StorageClass)
-	scope := &w2ClosureOwnedQueue{GCStore: store, org: fx.orgUUID, block: fx.blockID, identity: c.Identity()}
-	if n, err := w2Worker(t, scope, fx.target.StorageClass).ProcessOrgOnce(t.Context(), fx.orgUUID); err != nil || n != 0 {
-		t.Fatalf("GC progressed while publication unresolved: n=%d err=%v", n, err)
+	for attempt := 0; attempt < 3; attempt++ {
+		scope := &w2ClosureOwnedQueue{GCStore: store, org: fx.orgUUID, block: fx.blockID, identity: c.Identity()}
+		n, workerErr := w2Worker(t, scope, fx.target.StorageClass).ProcessOrgOnce(t.Context(), fx.orgUUID)
+		// A daemon already visiting this org can postpone discovery past our
+		// captured dequeue cutoff. Retry the real read with a fresh cutoff only
+		// while the same candidate/P remain protected; do not enqueue a duplicate.
+		// Never count the peer as our proof: success requires our own read.
+		peerConsumed := n == 0 && !scope.visited && workerErr != nil && strings.Contains(workerErr.Error(), "expected exactly one owned real queue row, found 0")
+		if !peerConsumed && (workerErr != nil || n != 0) {
+			t.Fatalf("GC progressed while publication unresolved: n=%d err=%v", n, workerErr)
+		}
+		if _, found, err := store.GetBlockGCCandidateExact(fx.orgUUID, fx.blockID, c.Identity()); err != nil || !found {
+			t.Fatalf("guard lost candidate: found=%v err=%v", found, err)
+		}
+		x1AssertCanonicalPresent(t, store, fx.orgUUID, fx.blockID, fx.target.StorageKey)
+		w2AssertBytes(t, fx)
+		if peerConsumed {
+			t.Logf("peer consumed discovery attempt %d; exact candidate/P intact; require our own real liveness probe", attempt+1)
+			continue
+		}
+		if !scope.visited {
+			t.Fatal("productive worker did not execute the own candidate liveness probe")
+		}
+		return
 	}
-	if !scope.visited {
-		t.Fatal("productive worker did not execute the own candidate liveness probe")
-	}
-	if _, found, err := store.GetBlockGCCandidateExact(fx.orgUUID, fx.blockID, c.Identity()); err != nil || !found {
-		t.Fatalf("guard lost candidate: found=%v err=%v", found, err)
-	}
-	x1AssertCanonicalPresent(t, store, fx.orgUUID, fx.blockID, fx.target.StorageKey)
-	w2AssertBytes(t, fx)
+	t.Fatal("three discovery attempts failed to obtain our own real blocked GC probe")
 }
+
 func w2RecoverApplied(t *testing.T, fx *w2CreateFileFixture) {
 	t.Helper()
 	// Recovery uses a fresh session, never the writer/proxy session.
