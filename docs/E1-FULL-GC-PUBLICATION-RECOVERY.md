@@ -69,7 +69,7 @@ and orphan, absent canonical row, and deleted K1; the race rerun passes.
 | E1-02 losing-target repair replay | PARTIAL; row remains OPEN | `TestW2WorkerRepairLifecycle/lateRepairDoesNotStallCommittedDelete` replays the production repair visitor after terminal D for a commit that lost HEAD. The production resumable classifier returns `unknown` without error, and the actual visitor returns the typed `retained` outcome (operational/renewal failures are rejected); the row and its repair-owned `pub:` liveness remain, HEAD is unchanged, and neither P1 nor K1 returns. This does not exercise a repair whose commit is already reachable from HEAD after D, so it is not evidence closing the master late-publication race or W2-11/12. |
 | E1-01 and E1-03 | UNRUN in this evaluation | Existing G4/G5 tests are controls only; this branch did not repeat the full crash-point or upload/dedup post-D matrix. |
 | E1-04 | PARTIAL; row remains OPEN | The delayed-PUT case above covers only the held physical-write continuation. Sync HEAD, auto-merge and cross-pod retry after D are not evaluated here. |
-| E1-05 through E1-15 | UNRUN; rows remain OPEN | Source tracing below records the current funnel shape, not a post-D integration result. |
+| E1-05 through E1-15 | Historical initial UNRUN snapshot; subsequent scoped evidence below supersedes it; broad rows remain OPEN | E1-7 adds measured direct RecvFS-first fresh/reuse and retirement continuations for E1-05; no full matrix closure. |
 
 Source trace with subsequent scoped dispositions:
 
@@ -82,7 +82,8 @@ Source trace with subsequent scoped dispositions:
 - Sync `RecvFS` stores the authorized fs-object projection but does not itself
   publish HEAD or create block liveness. HEAD publication is a separate Sync
   step; the existing no-GC `RecvFS-before-PutBlock` integration case is not a
-  post-D interleaving. W2-5 stays OPEN.
+  post-D interleaving. E1-7 now supplies the separately scoped direct ordered
+  evidence below; W2-5 overall stays OPEN.
 - `CreateFileFromBlocks`, v2 `UploadFile` and Office-template `CreateFile` use
   staged `pub:`/repair state and exact-placement checks before HEAD in their
   covered paths. Existing pre-HEAD controls are not post-D E1 results, and
@@ -236,3 +237,17 @@ measures only the retained-history schedule; removal of historical metadata
 or references, Phase 5/6, multi-DC visibility and post-HEAD recovery are not
 certified. E1-10 and W2-10 remain OPEN, including all other resurrection funnels.
 The E1-10 hypothesis/exit criteria above are unchanged. X1 remains OPEN.
+
+## E1-7 / W2-5 direct RecvFS-first continuity — 2026-10-04
+
+[Plan and evidence](./E1-7-SYNC-RECVFS-BEFORE-PUTBLOCK.md): six named current
+productive Sync/Cassandra/SILO legs cover fresh metadata with no P/mapping,
+pre-existing web-upload P1, productive COMMITTED/TERMINAL retirement after
+explicit lapse of its temporary pin, early-HEAD rejection and productive
+PutBlock rematerialization to P2. After PutBlock, controlled GC observes real
+up:sync and skips early; HEAD uses existing repair/exact-P machinery and settles
+permanent fs: before deleting repair. Bytes and metadata/replays are verified.
+No runtime fix. Only the measured direct ordered contract is CLOSED-EVIDENCE;
+E1-05 is PARTIAL and W2-5 overall OPEN. Auto-merge, concurrent durable boundaries,
+other orders, multi-block/DC and post-HEAD/R31 are not certified by this slice.
+Production GC remains OFF; E1/X1 are not closed.

@@ -1,6 +1,25 @@
 # Current Work - SesameFS
 
-## Active branch: codex/e1-6-revertfile-publication-safety
+## Active branch: codex/e1-7-sync-recvfs-before-putblock
+
+E1-7 / W2-5 (2026-10-04), base main@42dc3c38 with merged #256.
+Plan frozen in 07848d392. Six named real-Cassandra/SILO legs distinguish fresh
+SHA-1 metadata without P/mapping from pre-existing web-upload P1. RecvFS creates
+no Sync pin; real positive refs block GC early. After explicit source-owned
+pin lapse, real GC commits D and retires P1; HEAD rejects until productive PutBlock
+rematerializes P2. COMMITTED/TERMINAL controls, exact metadata/refs/mapping,
+ordered repair/fs settlement, protocol replays and bytes are included.
+No production runtime change. CLOSED-EVIDENCE only for the measured direct
+PutCommit-object -> RecvFS -> PutBlock -> HEAD contract. W2-5/E1-05 overall,
+W2-10, R31, E1 and X1 remain OPEN; production GC remains OFF.
+Final-source validation: 60 named legs under -race, Go short/coverage and both
+vet modes PASS; independent teardown verifies 80 physical keys/60 blocks and
+owned expiry projections already absent. The full Docker suite rerun passed
+before final harness hardening (integration, 20 API suites, 25 OIDC checks).
+Earlier shared-stack control failures and harness corrections are documented.
+[Plan and evidence](docs/E1-7-SYNC-RECVFS-BEFORE-PUTBLOCK.md).
+
+## Previous merged slice: E1-6 / PR #256
 
 E1-6 / W2-10a (2026-10-04), base main@f2837397 with merged #255.
 Plan frozen in cef35d669 before instrumentation. Productive historical upload,

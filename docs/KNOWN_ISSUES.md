@@ -11229,3 +11229,13 @@ Pick one, in preference order:
 - [TECHNICAL-DEBT.md](TECHNICAL-DEBT.md) - Architectural issues
 - [CURRENT_WORK.md](../CURRENT_WORK.md) - Active priorities
 - [GC-DELETE-CLEANUP-INVESTIGATION.md](GC-DELETE-CLEANUP-INVESTIGATION.md) - Full GC delete-cleanup audit (P1–P10, invariants, branch roadmap; refreshed 2026-07-16 — P10 cross-org deletion fixed through PR-3)
+
+## E1-7 / W2-5 scoped evidence update — 2026-10-04
+
+[RecvFS-first characterization](./E1-7-SYNC-RECVFS-BEFORE-PUTBLOCK.md) is GREEN
+for six named direct ordered legs, including pre-existing P1 and productive
+COMMITTED/TERMINAL retirement before PutBlock. Early HEAD rejects; PutBlock
+creates P2 and publication settles normally. Fresh metadata alone creates no P;
+that absence is not extrapolated to reused content. No runtime fix is added.
+CLOSED-EVIDENCE applies only to that measured ordered contract. W2-5/E1-05
+overall, R31/W2-11..14, W2-10, E1 and X1 remain OPEN; production GC remains OFF.
