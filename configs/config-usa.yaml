@@ -260,6 +260,16 @@ seafhttp:
   # choice, not a value that is self-evidently a mistake. Zero and negative are
   # rejected at boot — an unbounded body is the defect this cap exists to close.
   recv_fs_max_bytes: 134217728 # 128 MiB
+  # recv_fs_max_bytes bounds the compressed body only; zlib inflates up to
+  # ~1029:1. These bound the decompressed side, per object and per request
+  # (ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01). Over either cap is a 413,
+  # never a truncated object. The object cap matches the largest fs object
+  # Cassandra accepts in one request (16 MiB by default); the request cap fits a
+  # stock client batch (1 MiB compressed) plus one object at the object cap.
+  # Overrides: SEAFHTTP_RECV_FS_MAX_OBJECT_BYTES, SEAFHTTP_RECV_FS_MAX_INFLATED_BYTES
+  # Zero and negative are rejected at boot; the request cap must be >= the object cap.
+  recv_fs_max_object_bytes: 16777216 # 16 MiB
+  recv_fs_max_inflated_bytes: 67108864 # 64 MiB
   # Aggregate bound on concurrent block uploads (subcontract B / X10). Without
   # these, sync_block_max_bytes above bounds ONE request while N concurrent
   # uploads still cost N x the cap.

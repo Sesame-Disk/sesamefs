@@ -1855,6 +1855,43 @@ func (h *SyncHandler) syncRecvFSMaxBytes() int64 {
 	return h.config.SeafHTTP.RecvFSMaxBytes
 }
 
+func (h *SyncHandler) syncRecvFSMaxObjectBytes() int64 {
+	if h == nil || h.config == nil || h.config.SeafHTTP.RecvFSMaxObjectBytes <= 0 {
+		return config.DefaultRecvFSMaxObjectBytes
+	}
+	return h.config.SeafHTTP.RecvFSMaxObjectBytes
+}
+
+func (h *SyncHandler) syncRecvFSMaxInflatedBytes() int64 {
+	if h == nil || h.config == nil || h.config.SeafHTTP.RecvFSMaxInflatedBytes <= 0 {
+		return config.DefaultRecvFSMaxInflatedBytes
+	}
+	return h.config.SeafHTTP.RecvFSMaxInflatedBytes
+}
+
+// errRecvFSInflateLimit reports that a packed fs object would decompress past the
+// limit it was given.
+var errRecvFSInflateLimit = errors.New("recv-fs: decompressed object exceeds limit")
+
+// inflateRecvFSObject decompresses one packed fs object without ever producing
+// more than limit+1 bytes. If the object is larger than limit it returns
+// errRecvFSInflateLimit, so a truncated object is never returned as a complete
+// one. On any error the bytes already inflated are still returned so the caller
+// can count them toward the batch total. Without that, a stream that inflates a
+// lot and then fails its checksum would cost work without counting.
+func inflateRecvFSObject(compressed []byte, limit int64) ([]byte, error) {
+	zr, err := zlib.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	data, err := io.ReadAll(io.LimitReader(zr, limit+1))
+	if int64(len(data)) > limit {
+		return data, errRecvFSInflateLimit
+	}
+	return data, err
+}
+
 func (h *SyncHandler) syncBlockAdmittedLifetime() time.Duration {
 	if h == nil || h.config == nil || h.config.SeafHTTP.SyncBlockAdmittedLifetime <= 0 {
 		return config.DefaultSyncBlockAdmittedLifetime
@@ -3157,6 +3194,13 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 	offset := 0
 	objectsStored := 0
 
+	// The body cap above bounds the compressed bytes only. Bound the
+	// decompressed side too: each object, and the batch as a whole
+	// (ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01).
+	maxObjectBytes := h.syncRecvFSMaxObjectBytes()
+	maxInflatedBytes := h.syncRecvFSMaxInflatedBytes()
+	var inflatedBytes int64
+
 	for offset+44 <= len(body) {
 		// Read 40-char hex FS ID
 		fsID := string(body[offset : offset+40])
@@ -3174,14 +3218,27 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 		compressedData := body[offset : offset+int(objSize)]
 		offset += int(objSize)
 
-		// Decompress with zlib
-		zlibReader, err := zlib.NewReader(bytes.NewReader(compressedData))
-		if err != nil {
-			log.Printf("recv-fs: failed to create zlib reader for %s: %v", fsID, err)
-			continue
+		// Decompress with zlib, never past the smaller of the per-object cap
+		// and what is left of the batch cap. Over the limit is rejected, not
+		// truncated: a partial object must not be parsed or stored as whole.
+		limit := maxObjectBytes
+		batchLimited := false
+		if remaining := maxInflatedBytes - inflatedBytes; remaining < limit {
+			limit = remaining
+			batchLimited = true
 		}
-		jsonData, err := io.ReadAll(zlibReader)
-		zlibReader.Close()
+		jsonData, err := inflateRecvFSObject(compressedData, limit)
+		inflatedBytes += int64(len(jsonData))
+		if errors.Is(err, errRecvFSInflateLimit) {
+			if batchLimited {
+				log.Printf("recv-fs: batch exceeds %d decompressed bytes at object %s", maxInflatedBytes, fsID)
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "recv-fs batch too large when decompressed", "max_inflated_bytes": maxInflatedBytes})
+			} else {
+				log.Printf("recv-fs: object %s exceeds %d decompressed bytes", fsID, maxObjectBytes)
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "fs object too large when decompressed", "max_object_bytes": maxObjectBytes})
+			}
+			return
+		}
 		if err != nil {
 			log.Printf("recv-fs: failed to decompress object %s: %v", fsID, err)
 			continue

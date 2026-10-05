@@ -616,6 +616,33 @@ type SeafHTTPConfig struct {
 	// on this route is the defect this field exists to close.
 	RecvFSMaxBytes int64 `yaml:"recv_fs_max_bytes"`
 
+	// RecvFSMaxObjectBytes bounds the decompressed JSON of one packed FS object
+	// in a recv-fs body. recv_fs_max_bytes only bounds the compressed body, and
+	// zlib inflates at up to ~1029:1, so without this a body at that cap could
+	// inflate to ~126 GiB (ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01). An
+	// object over the cap is rejected 413, never truncated.
+	//
+	// The default is anchored on what can be persisted, not on a guess. A
+	// received object is written in one CQL request, and Cassandra's default
+	// limits reject any request over 16 MiB. Measured on Cassandra 5.0.9
+	// (2026-10-05): a 15.9 MiB object was stored, while a 16.1 MiB one failed
+	// with "Request is too big: length 16882132 exceeds maximum allowed length
+	// 16777216". An object over this cap could only be inflated and then fail
+	// to store. Raise this together with the cluster's limits, never alone.
+	RecvFSMaxObjectBytes int64 `yaml:"recv_fs_max_object_bytes"`
+
+	// RecvFSMaxInflatedBytes bounds the decompressed bytes of all objects in one
+	// recv-fs body. The per-object cap alone still lets a body at
+	// recv_fs_max_bytes carry thousands of maximally compressible objects, each
+	// just under that cap. Must be at least recv_fs_max_object_bytes.
+	//
+	// Stock Seafile clients stop packing a recv-fs batch once it reaches 1 MiB
+	// compressed (MAX_OBJECT_PACK_SIZE in seafile's http-tx-mgr.c), so a real
+	// batch is under 1 MiB of compressed objects plus one more object of any
+	// size. The default leaves room for that last object at the per-object cap
+	// plus several times the inflated size of the rest.
+	RecvFSMaxInflatedBytes int64 `yaml:"recv_fs_max_inflated_bytes"`
+
 	// SyncBlockMaxInflightPerNode caps concurrent block uploads that have been
 	// admitted past the gate on this process, and is therefore the term that
 	// turns SyncBlockMaxBytes into an actual memory bound:
@@ -813,6 +840,11 @@ const (
 	// making an informed deployment choice, not restoring a mistake the way an
 	// oversized SyncBlockMaxBytes usually is.
 	DefaultRecvFSMaxBytes int64 = 128 * 1024 * 1024
+
+	// Decompressed-side recv-fs bounds; see the field docs on
+	// RecvFSMaxObjectBytes and RecvFSMaxInflatedBytes for how they are derived.
+	DefaultRecvFSMaxObjectBytes   int64 = 16 * 1024 * 1024
+	DefaultRecvFSMaxInflatedBytes int64 = 64 * 1024 * 1024
 
 	// Download admission sizes are derived from the D6 measurements. Encrypted
 	// prefetch keeps the current and next block plus the encrypted source, so the
@@ -1549,6 +1581,8 @@ func DefaultConfig() *Config {
 			ChunkedStagingMaxBytes: 0,
 			SyncBlockMaxBytes:      DefaultSyncBlockMaxBytes,
 			RecvFSMaxBytes:         DefaultRecvFSMaxBytes,
+			RecvFSMaxObjectBytes:   DefaultRecvFSMaxObjectBytes,
+			RecvFSMaxInflatedBytes: DefaultRecvFSMaxInflatedBytes,
 
 			SyncBlockMaxInflightPerNode: DefaultSyncBlockMaxInflightPerNode,
 			SyncBlockMemoryBudgetBytes:  DefaultSyncBlockMemoryBudgetBytes,
@@ -1957,6 +1991,23 @@ func (c *Config) applyEnvOverrides() {
 			c.addEnvOverrideError("SEAFHTTP_RECV_FS_MAX_BYTES is invalid: %v", err)
 		} else {
 			c.SeafHTTP.RecvFSMaxBytes = i
+		}
+	}
+	// Same rule for the decompressed-side recv-fs caps.
+	if v := os.Getenv("SEAFHTTP_RECV_FS_MAX_OBJECT_BYTES"); v != "" {
+		i, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			c.addEnvOverrideError("SEAFHTTP_RECV_FS_MAX_OBJECT_BYTES is invalid: %v", err)
+		} else {
+			c.SeafHTTP.RecvFSMaxObjectBytes = i
+		}
+	}
+	if v := os.Getenv("SEAFHTTP_RECV_FS_MAX_INFLATED_BYTES"); v != "" {
+		i, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			c.addEnvOverrideError("SEAFHTTP_RECV_FS_MAX_INFLATED_BYTES is invalid: %v", err)
+		} else {
+			c.SeafHTTP.RecvFSMaxInflatedBytes = i
 		}
 	}
 	// Unlike the zip neighbours above, a malformed value is reported rather than
@@ -3273,6 +3324,20 @@ func (c *Config) Validate() error {
 	// self-evidently a mistake, so raising it is an informed operator choice.
 	if c.SeafHTTP.RecvFSMaxBytes <= 0 {
 		return fmt.Errorf("seafhttp.recv_fs_max_bytes must be greater than zero (an unbounded recv-fs body is not a supported configuration)")
+	}
+	// The compressed-body cap does not bound what the body inflates to, so the
+	// decompressed caps are required for the same reason it is.
+	if c.SeafHTTP.RecvFSMaxObjectBytes <= 0 {
+		return fmt.Errorf("seafhttp.recv_fs_max_object_bytes must be greater than zero (an unbounded recv-fs inflate is not a supported configuration)")
+	}
+	if c.SeafHTTP.RecvFSMaxInflatedBytes <= 0 {
+		return fmt.Errorf("seafhttp.recv_fs_max_inflated_bytes must be greater than zero (an unbounded recv-fs inflate is not a supported configuration)")
+	}
+	// A batch cap below the object cap would reject a single object the object
+	// cap allows, so the object cap would never be the one that applies.
+	if c.SeafHTTP.RecvFSMaxInflatedBytes < c.SeafHTTP.RecvFSMaxObjectBytes {
+		return fmt.Errorf("seafhttp.recv_fs_max_inflated_bytes (%d) must be at least seafhttp.recv_fs_max_object_bytes (%d)",
+			c.SeafHTTP.RecvFSMaxInflatedBytes, c.SeafHTTP.RecvFSMaxObjectBytes)
 	}
 	// The in-flight caps are what make sync_block_max_bytes an aggregate bound.
 	// Zero is accepted here — unlike the body cap — because disabling the
