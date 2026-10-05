@@ -8,6 +8,17 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-04 - E1-7 Sync RecvFS-before-PutBlock characterization
+
+Six named productive Sync/Cassandra/SILO legs distinguish fresh metadata from
+reused physical lives. Real GC after source-owned temporary pin lapse reaches
+COMMITTED/TERMINAL; early HEAD rejects and real PutBlock creates P2. Normal,
+post-PutBlock GC, mapping/layout, exact refs, settlement order, replays and
+bytes are checked. Mandatory named evidence is wired into standard Docker
+commands. No runtime change; only the measured direct ordered contract is
+CLOSED-EVIDENCE. Broader W2-5/E1-05, R31, E1/X1 and activation remain OPEN.
+[Evidence](./E1-7-SYNC-RECVFS-BEFORE-PUTBLOCK.md).
+
 ## 2026-10-04 - E1-6 RevertFile retained-history characterization
 
 Productive upload/delete/revert evidence distinguishes leaving HEAD from losing
