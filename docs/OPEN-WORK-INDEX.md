@@ -139,10 +139,11 @@ Three gates, kept separate on purpose:
   (`ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01`) and then by the PRE-GC / A1 gate ([X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §6);
   X1 closure alone does not authorize activation. X2 closed 2026-08-14.
   See the GC section below.
-- **Single-node go-live** — blocked by the resource-amplification findings
-  below (`ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01`,
-  `ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01`) and the API-key mutation-scope bypass
-  (`ISSUE-APIKEY-READ-SCOPE-UPLOADLINK-FILESHARE-01`). Nothing about GC gates
+- **Single-node go-live** — blocked by the resource-amplification finding
+  below (`ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01`) and the API-key mutation-scope
+  bypass (`ISSUE-APIKEY-READ-SCOPE-UPLOADLINK-FILESHARE-01`).
+  `ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01` was fixed 2026-10-05 (see
+  Recently closed). Nothing about GC gates
   these, and closing X1 does not close them. `ISSUE-ZIP-STREAM-LATEFAIL-01` is
   Medium per the registry, not a go-live blocker.
 - **Multi-instance operation** — additionally blocked by the two node-local
@@ -172,6 +173,13 @@ Kept briefly so a reader who arrives with the old blocker list can see it moved
 rather than vanished. Drop rows once they stop being recent; status of record
 stays in [KNOWN_ISSUES.md](./KNOWN_ISSUES.md).
 
+- `ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01` — **Fixed 2026-10-05** (HIGH,
+  single-node). `recv-fs` now bounds the decompressed side: 16 MiB per object (the
+  largest fs object Cassandra accepts in one request, measured) and 64 MiB per
+  request (a stock client's 1 MiB batch plus one object at the cap). Over either
+  cap is a 413, never a truncated object. One ~1 MiB request inflating to 256 MiB
+  cost 1950.6 MiB of allocation before and 102.9 MiB after. The aggregate across
+  concurrent requests remains `ISSUE-SYNC-METADATA-CONCURRENCY-01`.
 - `ISSUE-SESSION-COOKIE-NOT-HTTPONLY-01` — **Fixed 2026-08-12** (readiness SEC-3 /
   NF-3). The `sesamefs_auth` cookie is `httpOnly=true` on every OIDC login and
   logout writer, funneled through one `setAuthCookie` helper per package. Verified
@@ -310,7 +318,6 @@ logical-block PK replacement, and X1 remain open.
 | `ISSUE-GC-LOGICAL-MAPPING-RETENTION-01` | LOW/MEDIUM | R11a intentionally preserves SHA-1 → SHA-256 mappings after physical GC; without a separate logical-death reaper, stale rows accumulate and may resolve to a 404 until rematerialization | R11a/B.3 accepted tradeoff · [known issue](./KNOWN_ISSUES.md) |
 | `ISSUE-GC-MANUAL-TRIGGER-NOT-GATED-01` | ✅ Closed 2026-08-22 | The superadmin GC surfaces did not check `GC.Enabled`: manual triggers answered `{"started":true}` on nodes where nothing ran, and the DLQ requeue/delete path *claimed the GC lease* from a disabled replica. All are now explicitly lifecycle-gated; manual triggers additionally require current leadership | Found re-verifying the kill switch post-#181; defence in depth, never a live bypass |
 | `ISSUE-GC-DRYRUN-OVERRIDE-STICKY-01` | MEDIUM | The `dry_run` field of `POST /admin/gc/run` is not scoped to the run it accompanies: an accepted trigger replaces the node's runtime mode for the life of the process, so one superadmin call can lower a configured `GC_DRY_RUN=true` — the rung directly below `GC_ENABLED` — and it stays lowered, unaudited. Unreachable while GC is disabled fleet-wide; live from the moment destructive GC is activated | Verified preexisting 2026-08-23 (inherited from `main`, not the 2026-08-22 branch, which only stopped a *refused* trigger from committing the override). See [known issue](./KNOWN_ISSUES.md) |
-| `ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01` | HIGH | `recv-fs` inflates each object unbounded; 128 MiB body → ~126 GiB at DEFLATE's measured 1029:1 | Found auditing X9; the body cap does not bound this |
 | `ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01` | HIGH | `pack-fs` materializes the whole response: ~409k repeats of one valid id, `PermissionR` only. `check-fs` shares the fan-out | Found auditing X9; the fs-id equivalent of the closed X11 |
 | `ISSUE-SYNC-RECVFS-NOT-WRITE-ONCE-01` | HIGH (P1) ✅ Fixed by merged PR #208 | `RecvFS` validates lowercase `fs_id`, compares logical SHA-1 identity across legacy/canonical layouts, completes pre-existing placeholders, rejects semantic conflicts, fails closed on storage errors, and avoids new child upserts/Paxos | [known issue](./KNOWN_ISSUES.md#issue-sync-recvfs-not-write-once-01) · PR #208 merged; #206 is being revalidated on main |
 | `ISSUE-ZIP-STREAM-LATEFAIL-01` | MEDIUM | ZIP download can truncate after `200 OK` | Readiness DL-2. Severity corrected 2026-08-22 to match [KNOWN_ISSUES.md](./KNOWN_ISSUES.md), which has rated it Medium since the 2026-05-27 preflight narrowing — truncated/retryable download, not corruption |

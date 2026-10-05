@@ -69,6 +69,26 @@ Final go-all-test PASS: integration 857.566s, API 20/20, OIDC 25/25; directory
 P0/P1/P2 in the scoped audit.
 [Plan and validation](./E1-10B-RESTORETRASH-DIRECTORY-HISTORY.md).
 
+## 2026-10-05 - Bound recv-fs decompression (ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01)
+
+`recv_fs_max_bytes` bounded only the compressed body; each packed object was then
+inflated with an unbounded `io.ReadAll`. One ~1 MiB request whose single valid
+directory object inflated to 256 MiB was stored with 200 after allocating 1950.6
+MiB in a unit test. On the live two-DC cluster it raised the API node's memory
+peak from 109 to 815 MiB, then failed at storage. Two new required caps,
+`seafhttp.recv_fs_max_object_bytes` (16 MiB) and
+`seafhttp.recv_fs_max_inflated_bytes` (64 MiB per request), are enforced through
+a `limit+1` read. Over either cap is a 413; nothing is truncated, and bytes
+inflated by objects that fail to decompress still count. Both defaults are
+measured. The object cap equals the largest fs object Cassandra 5.0.9 accepts in
+one request: 15.9 MiB stored, 16.1 MiB rejected on the real route. The request
+cap fits a stock Seafile client's 1 MiB batch plus one object at the cap. No
+GC/X1 code is touched. The aggregate across concurrent requests remains
+`ISSUE-SYNC-METADATA-CONCURRENCY-01`.
+Files: `internal/api/sync.go`, `internal/api/sync_recvfs_inflate_test.go`,
+`internal/config/config.go`, `internal/config/config_test.go`, `configs/*.yaml`
+(7), `docs/KNOWN_ISSUES.md`, `docs/OPEN-WORK-INDEX.md`, `CURRENT_WORK.md`.
+
 ## 2026-10-05 - E1-10 RestoreTrashItem retained-history characterization
 
 Plan frozen before instrumentation at b823f11de, based on merged #258.

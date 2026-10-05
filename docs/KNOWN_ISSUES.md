@@ -10151,7 +10151,7 @@ are derived to be unreachable by well-formed bodies precisely so they never do t
 
 ### ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01: `recv-fs` inflates each packed object unbounded
 
-**Status**: 🟡 Open — found 2026-08-12 while auditing the X9 caps
+**Status**: ✅ Fixed 2026-10-05 (`fix/sync-recvfs-decompression-bound`) — found 2026-08-12 while auditing the X9 caps
 **Severity**: High — one authenticated request can exhaust process memory; the body cap does not bound it
 **Affected**: `RecvFS` in `internal/api/sync.go` (the `io.ReadAll(zlibReader)` inside the per-object loop)
 **Source of record**: opened 2026-08-12; pre-existing, **not** introduced by `ISSUE-SYNC-UNBOUNDED-BODIES-01`
@@ -10203,6 +10203,69 @@ that the reason is *not* "the stored body would no longer hash to its `fs_id`":
 whether that equality holds at all is exactly what
 `ISSUE-RECVFS-FSID-UNVERIFIED-01` leaves open, so this fix must not be justified by
 an invariant this repository has not established.
+
+#### Resolution (2026-10-05)
+
+Two new caps bound the decompressed side, both configurable and both required
+(zero or negative fails at boot, like `recv_fs_max_bytes`):
+
+- `seafhttp.recv_fs_max_object_bytes` (`SEAFHTTP_RECV_FS_MAX_OBJECT_BYTES`),
+  default **16 MiB**: the decompressed JSON of one packed object.
+- `seafhttp.recv_fs_max_inflated_bytes` (`SEAFHTTP_RECV_FS_MAX_INFLATED_BYTES`),
+  default **64 MiB**: the decompressed bytes of the whole request. It must be at
+  least the object cap.
+
+`inflateRecvFSObject` reads through `io.LimitReader(zr, limit+1)`, where `limit` is
+the smaller of the object cap and what remains of the request cap. A `limit+1`-th
+byte means the object is over: the request is rejected **413** and the object is
+neither parsed nor stored. Nothing is truncated. The two 413 bodies are
+`{"error":"fs object too large when decompressed","max_object_bytes":N}` and
+`{"error":"recv-fs batch too large when decompressed","max_inflated_bytes":N}`.
+Objects earlier in the same body were already stored, as with every other
+mid-batch rejection in this handler. Bytes inflated by an object that then fails
+to decompress (a bad adler32 trailer, say) still count toward the request cap. The
+object is skipped as before, but it can no longer buy uncounted inflate work.
+
+The caps are measured, as this entry asked, not guessed:
+
+- **Object cap = what Cassandra can store.** A received object is written in one
+  CQL request, and Cassandra 5.0.9's defaults reject requests over 16 MiB.
+  Measured on the two-DC `docker-compose.mr-cluster.yaml` stack through the real
+  `recv-fs` route on unmodified `main`: directory objects of 4/8/12/15/15.9 MiB
+  JSON stored (200), while 16.1/17/24 MiB failed 500 with "Request is too big:
+  length 16882132 exceeds maximum allowed length 16777216". Anything over the cap
+  could only be inflated and then fail to store. That is about 380k block ids per
+  file object, a ~2 TiB file at the stock client's 6 MiB minimum CDC block.
+- **Request cap = a stock client batch plus headroom.** Seafile's
+  `send_fs_objects` (daemon/http-tx-mgr.c) stops packing a batch once it reaches
+  `MAX_OBJECT_PACK_SIZE` (1 MiB) compressed. A real batch is therefore under 1 MiB of
+  compressed objects plus one more object of any size. 64 MiB covers that last
+  object at the 16 MiB cap plus 48 MiB for the rest. Real fs JSON (random hex ids)
+  compresses about 2:1, so that is far beyond a real batch.
+
+Measured effect of one ~1 MiB request whose single valid, correctly addressed
+directory object inflates to 256 MiB:
+
+| | Before (unmodified `main`) | After |
+|---|---|---|
+| Unit (`TestRecvFSRejectsOversizedObjectBeforeMaterializing`) | 200, object stored, 1950.6 MiB allocated | 413, not stored, 102.9 MiB allocated |
+| Live two-DC cluster, USA node cgroup `memory.peak` | 109 → 815 MiB, 7.5 s, then 500 at storage | not measured live; the unit row above is the after evidence |
+
+Tests: `internal/api/sync_recvfs_inflate_test.go` (exact object-cap boundary,
+request-cap boundary and mid-batch crossing, failed objects counted, a stock-shaped
+~5 MB batch of 333 objects stored byte-for-byte under the defaults, the allocation
+canary) and `TestEnvOverrideRecvFSInflateCaps`. Omission controls were run on the
+fix: not counting failed objects, dropping the request cap, truncating instead
+of rejecting, and dropping the read limit each turn at least one test RED.
+
+Correction to the Fix Direction above: `RecvFS` has checked
+`fs_id == SHA-1(decompressed JSON)` since 433d5910f (2026-09-07). That predates
+this fix and is not what it relies on: the cap rejects on size alone, before the
+hash is computed.
+
+Still open: this bounds one request. N concurrent requests still cost N times the
+caps plus N buffered bodies; that aggregate term is
+`ISSUE-SYNC-METADATA-CONCURRENCY-01`.
 
 #### Related Docs
 
