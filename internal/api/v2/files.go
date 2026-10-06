@@ -4692,6 +4692,8 @@ func (h *FileHandler) RevertDirectory(c *gin.Context) {
 		return
 	}
 
+	revertDirectoryAfterHistoricalEntryBarrier(repoID, oldEntry.ID)
+
 	dirName := path.Base(dirPath)
 	parentDir := path.Dir(dirPath)
 	if parentDir == "." {
@@ -4785,6 +4787,7 @@ func (h *FileHandler) RevertDirectory(c *gin.Context) {
 			return fmt.Errorf("failed to create commit: %w", err)
 		}
 
+		revertDirectoryBeforeHeadBarrier(repoID)
 		if err := fsHelper.UpdateLibraryHeadFromSnapshot(snapshot, repoID, newCommitID, snapshot.HeadCommitID); err != nil {
 			return err
 		}

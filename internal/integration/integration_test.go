@@ -30,7 +30,11 @@ var (
 // be deleted by the stale-library cleanup path.
 var liveRepoIDs sync.Map
 
+// Include interrupted API cross-library fixtures: they share the integration
+// owners and quota, while liveRepoIDs still protects this run's active repos.
 var ephemeralLibraryPrefixes = []string{
+	"cross-lib-src-",
+	"cross-lib-dst-",
 	"inttest-",
 	"smoke-",
 }
@@ -64,6 +68,7 @@ func TestMain(m *testing.M) {
 		os.Getenv("SESAMEFS_REQUIRE_E16_REVERTFILE_CHARACTERIZATION") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E110_RESTORETRASH_CHARACTERIZATION") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E110B_RESTORETRASH_DIR_CHARACTERIZATION") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_E110C_REVERTDIR_CHARACTERIZATION") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E17_SYNC_RECVFS_CHARACTERIZATION") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E19_CROSS_REPO_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P2_EVIDENCE") == "1" ||
@@ -185,6 +190,12 @@ func TestMain(m *testing.M) {
 	if os.Getenv(e17EvidenceEnv) == "1" {
 		if missing := e17Missing(e17Evidence); len(missing) > 0 {
 			fmt.Printf("%s=1 requires all named RecvFS-before-PutBlock legs; missing=%s (check -run filters)\n", e17EvidenceEnv, strings.Join(missing, ","))
+			code = 1
+		}
+	}
+	if os.Getenv(e110cEvidenceEnv) == "1" {
+		if missing := e110cMissing(e110cEvidence); len(missing) > 0 {
+			fmt.Printf("%s=1 requires all named RevertDirectory legs; missing=%s (check -run filters)\n", e110cEvidenceEnv, strings.Join(missing, ","))
 			code = 1
 		}
 	}
@@ -984,5 +995,20 @@ func expectStatus(t *testing.T, resp *http.Response, expected int) {
 	t.Helper()
 	if resp.StatusCode != expected {
 		t.Errorf("expected status %d, got %d", expected, resp.StatusCode)
+	}
+}
+
+func TestInterruptedCrossLibraryFixtureCleanupNames(t *testing.T) {
+	for name, want := range map[string]bool{
+		"cross-lib-src-1791297781":    true,
+		"cross-lib-dst-1791297781":    true,
+		"cross-lib-src":               false,
+		"cross-lib-dst":               false,
+		"my-cross-lib-src-1791297781": false,
+		"customer-library":            false,
+	} {
+		if got := isEphemeralLibraryName(name); got != want {
+			t.Errorf("cleanup eligibility for %q = %v, want %v", name, got, want)
+		}
 	}
 }

@@ -1,6 +1,23 @@
 # Current Work
 
-## Active slice: E1-10b / RestoreTrashItem directory retained-history
+## Active slice: E1-10c / RevertDirectory retained-history
+
+Base main@a7548d2c0a75a89ad273ed714bfc86a93ad0266b (#260 merged).
+Plan frozen in 76faebb54. Real directory create/upload/delete/revert measures
+full named historical/winning HEAD/root/DIR1/FILE_FS1/P/K/bytes. Three initial
+legs PASS: normal, positive retained-fs GC skip and real HEAD conflict/retry.
+Own hooks are integration-only with normal no-ops; no new publication protocol.
+Independent gate/selector/child preserve #259/#260 contracts and dev daemon.
+No fabricated D; narrow retained-history evidence, W2-10/E1-10/E1/X1 OPEN.
+Production GC OFF. Final Docker go-all-test exit 0: integration 814.242s,
+API 20/20 suites, OIDC 25/25. New matrix 3/3, race repetitions 15/15; all 13
+standard daemon controls PASS with no GC-disabled skips (gcsoak is separately
+tagged). Interrupted cross-lib API fixtures are recognized by stale cleanup;
+quota unchanged. Final owned test repos absent on both backends. Scoped audit:
+no unresolved introduced P0/P1/P2.
+[Plan and evidence](docs/E1-10C-REVERTDIRECTORY-RETAINED-HISTORY.md).
+
+## Previous merged slice: E1-10b / PR #260
 
 Base main@2f5635621f1a0dafafd24e0916fcdf88e8d0f149 (#259 merged).
 Plan frozen in 265268ce3. Productive creation, parent-bound upload, directory
