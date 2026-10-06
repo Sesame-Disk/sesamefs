@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -27,7 +28,16 @@ import (
 // the existing W2-0 tests. Neither HEAD nor D is injected by the harness.
 // The safety expectations are RED on the PR #244 runtime baseline.
 func TestW2SyncNoPutBlock(t *testing.T) {
+	if endpoint := os.Getenv("SESAMEFS_W24_ISOLATED_URL"); endpoint != "" && os.Getenv("SESAMEFS_W24_CHILD") != "1" {
+		w24RunIsolated(t, endpoint)
+		return
+	}
 	requireCassandra(t)
+	for _, endpoint := range []string{superadminClient.baseURL, envOrDefault("SESAMEFS_URL_2", "http://sesamefs-node-2:8080"), envOrDefault("SESAMEFS_URL_3", "http://sesamefs-node-3:8080")} {
+		if err := e19CheckGCDisabled(newTestClient(endpoint, superadminClient.token)); err != nil {
+			t.Fatalf("W2-4 controlled COMMITTED isolation: %v", err)
+		}
+	}
 	database := shareProjectionDBForTest(t)
 	store := gcpkg.NewCassandraStore(database)
 	class := x1StorageClass(t)
@@ -41,6 +51,18 @@ func TestW2SyncNoPutBlock(t *testing.T) {
 				w24Observe(t)
 				web := newSessionUploadHeadFixture(t, database, newBorrowedFSHeadHandler(t, database, class))
 				fx := &w2CreateFileFixture{w2UploadFileFixture: &w2UploadFileFixture{borrowedFSHeadFixture: web.borrowedFSHeadFixture}}
+				// Retain exact K even if COMMITTED cleanup removes canonical metadata.
+				cleanupStore, cleanupKey := newVerificationS3Store(t), fx.target.StorageKey
+				t.Cleanup(func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					if err := cleanupStore.Delete(ctx, cleanupKey); err != nil {
+						t.Errorf("W2-4 exact K cleanup: %v", err)
+					}
+					if found, err := cleanupStore.Exists(ctx, cleanupKey); err != nil || found {
+						t.Errorf("W2-4 exact K remains: %v %v", found, err)
+					}
+				})
 				x1Cleanup(t, database, fx.orgUUID, fx.blockID)
 				t.Cleanup(func() {
 					for b := 0; b < dbpkg.PublishedBlockReferenceRepairBuckets; b++ {
