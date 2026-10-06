@@ -313,3 +313,18 @@ dev GC availability. CLOSED-EVIDENCE only for the measured retained-history slic
 COMMITTED/TERMINAL unexecuted. W2-10/E1-10 overall, other funnels/broader shapes,
 retention/Phase5/6, R31, E1/X1 remain OPEN. Production GC OFF. RevertFile prior
 evidence is not reclassified, and no exclusively Phase5/6 residual is inferred.
+
+## E1-10c / RevertDirectory retained-history — 2026-10-06
+
+[Directory revert evidence](./E1-10C-REVERTDIRECTORY-RETAINED-HISTORY.md)
+measures one absent historical directory/child/plaintext block in one DC.
+Actual handler captures DIR1 outside retry; inherited child fs: blocks real GC
+before claim/D, settling candidate. Revert publishes full named subtree with
+original exact P/K/bytes and no new publication liveness. Real competitor forces
+CAS retry (historical=1, HEAD=2), preserves both and becomes winning parent.
+Separate integration hooks, gate/selector/child leave #259/#260 contracts and
+standard GC intact. CLOSED-EVIDENCE only for this retained-history subset;
+COMMITTED/TERMINAL unexecuted. W2-10/E1-10 overall, RevertDirents, broader cases,
+retention/Phase5/6, R31 and E1/X1 remain OPEN. Production GC OFF. No speculative
+fence or retroactive RevertFile reclassification; residual risk is not declared
+exclusively Phase5/6.

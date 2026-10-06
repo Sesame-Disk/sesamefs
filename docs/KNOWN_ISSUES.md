@@ -6913,6 +6913,13 @@ No production fix; separate gate and isolated child leave #259's contract intact
 Only the measured retained-history subset is covered. This P1 remains OPEN for
 broader resurrection shapes and retention/Phase5/6/R31 interactions.
 
+**E1-10c RevertDirectory update (2026-10-06)**: [retained-directory evidence](./E1-10C-REVERTDIRECTORY-RETAINED-HISTORY.md)
+measures one child/plaintext block with historical DIR1 captured outside retry.
+Inherited child fs: prevents real worker claim/D; actual revert preserves named
+HEAD/root/DIR1/FILE_FS1/P/K/bytes, with real HEAD conflict/retry preserving both.
+Only integration scheduling seams added; no new liveness/fence. This P1 remains
+OPEN for RevertDirents, broader shapes/policies and retention/Phase5/6/R31.
+
 #### Problem
 
 PC-0 originally listed these four handlers among the tree mutations that
