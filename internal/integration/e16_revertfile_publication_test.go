@@ -338,12 +338,17 @@ func e16FileRequest(fx *w2CreateFileFixture, method, query string, form url.Valu
 
 func e16UploadHistory(t *testing.T, fx *w2CreateFileFixture, content []byte, chunked bool) {
 	t.Helper()
+	e16UploadHistoryAt(t, fx, content, chunked, "/")
+}
+
+func e16UploadHistoryAt(t *testing.T, fx *w2CreateFileFixture, content []byte, chunked bool, parent string) {
+	t.Helper()
 	s3 := newVerificationS3Store(t)
 	manager := storage.NewManager()
 	manager.SetDefaultClass(x1StorageClass(t))
 	manager.RegisterBackend(x1StorageClass(t), s3, "")
 	tokens := dbpkg.NewTokenStore(fx.database, time.Hour)
-	token, err := tokens.CreateUploadToken(fx.orgID, fx.repoID, "/", fx.userID)
+	token, err := tokens.CreateUploadToken(fx.orgID, fx.repoID, parent, fx.userID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +363,7 @@ func e16UploadHistory(t *testing.T, fx *w2CreateFileFixture, content []byte, chu
 	handler.RegisterSeafHTTPRoutes(router)
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
-	if err := form.WriteField("parent_dir", "/"); err != nil {
+	if err := form.WriteField("parent_dir", parent); err != nil {
 		t.Fatal(err)
 	}
 	if chunked {

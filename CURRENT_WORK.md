@@ -1,6 +1,22 @@
 # Current Work
 
-## Active slice: E1-10 / RestoreTrashItem retained-history
+## Active slice: E1-10b / RestoreTrashItem directory retained-history
+
+Base main@2f5635621f1a0dafafd24e0916fcdf88e8d0f149 (#259 merged).
+Plan frozen in 265268ce3. Productive creation, parent-bound upload, directory
+DeleteDirectory and actual restore preserve full HEAD/root/DIR1/FILE_FS1/P/K/bytes.
+Normal/positive-GC/real HEAD-conflict controls PASS. Sole child fs: blocks
+real worker before claim/D; inherited refs, no repair/settlement. Async deletion
+housekeeping is synchronized by observed final real tag/counter queries.
+No production changes. Independent directory gate/selector/child reuse existing
+manual-GC keyspace; #259's contract unchanged, normal dev GC remains active.
+Narrow retained-history evidence only; W2-10/E1-10 overall, E1/X1/R31 and
+retention/Phase5/6 remain OPEN. Production GC OFF. Final go-all-test exit 0: integration 857.566s, API 20/20,
+OIDC 25/25. Directory 3/3 and 15/15 race legs; 14/14 daemon controls with no
+GC-disabled skips. Scoped audit: no introduced P0/P1/P2.
+[Plan and evidence](docs/E1-10B-RESTORETRASH-DIRECTORY-HISTORY.md).
+
+## Previous merged slice: E1-10 / PR #259
 
 Base main@53298f7af4a1efc51039291146adc5f6e1204c43 (#258 merged).
 Plan frozen in b823f11de. Actual single-file/one-block/plaintext upload/delete/

@@ -8,6 +8,21 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-05 - E1-10b directory trash retained-history characterization
+
+Plan frozen in 265268ce3 against merged #259. Productive directory create/upload/
+delete/restore preserves the named historical directory and child file, exact
+block P/K/bytes. Sole child fs: causes the real worker's early positive-reference
+exit before claim/D. A real competing HEAD forces CAS retry preserving both.
+Async deletion work is observed before restore. No production changes; separate
+three-leg gate/selector/child reuse manual-GC keyspace without changing #259's
+contract or normal dev daemon. Narrow retained-history evidence only; W2-10/E1-10,
+E1/X1/R31 and broader/retention cases remain OPEN. Production GC OFF.
+Final go-all-test PASS: integration 857.566s, API 20/20, OIDC 25/25; directory
+3/3, race 15/15, daemon controls 14/14 without GC-disabled skips. No introduced
+P0/P1/P2 in the scoped audit.
+[Plan and validation](./E1-10B-RESTORETRASH-DIRECTORY-HISTORY.md).
+
 ## 2026-10-05 - E1-10 RestoreTrashItem retained-history characterization
 
 Plan frozen before instrumentation at b823f11de, based on merged #258.

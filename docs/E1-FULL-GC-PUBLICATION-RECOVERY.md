@@ -298,3 +298,18 @@ COMMITTED/TERMINAL legs remain UNEXECUTED because that schedule prevents their
 prerequisite; no refs/D are fabricated. E1-10/W2-10 overall, other resurrection
 funnels, retention/Phase 5/6, R31, E1 and X1 remain OPEN. No runtime fix or
 activation change; production GC OFF. RevertFile's earlier scope is unchanged.
+
+## E1-10b / RestoreTrashItem directory retained-history — 2026-10-05
+
+[Directory evidence](./E1-10B-RESTORETRASH-DIRECTORY-HISTORY.md) uses productive
+CreateDirectory, parent-bound HandleUpload, DeleteDirectory and actual restore.
+A single directory/child/plaintext block retains sole child fs: while absent from
+current HEAD. Real worker settles the exact candidate before claim/global proof/D.
+Restore publishes the named full subtree with original exact P/K/bytes; a real
+competing HEAD forces retry and survives. No repair/fs: settlement or runtime fix.
+Own async deletion housekeeping is synchronized through real observed queries.
+Separate three-leg gate/selector/child preserve #259's evidence contract and normal
+dev GC availability. CLOSED-EVIDENCE only for the measured retained-history slice;
+COMMITTED/TERMINAL unexecuted. W2-10/E1-10 overall, other funnels/broader shapes,
+retention/Phase5/6, R31, E1/X1 remain OPEN. Production GC OFF. RevertFile prior
+evidence is not reclassified, and no exclusively Phase5/6 residual is inferred.
