@@ -23,3 +23,18 @@ race 30/30 (73.548s), filtered/unavailable/active-GC negatives and standard full
 Docker validation. This branch carries only that extracted infrastructure.
 Independent-source verification and the final dependent full run are recorded
 below before marking this prerequisite ready. Do not merge automatically.
+
+
+## Independent-source verification (PR #265)
+
+The extracted image contains main's production sources and no E1-10e
+resurrection_admission.go. Required ten-leg W2-4 matrix passed three serial
+same-binary race repetitions: 30/30, 76.527s. Filtered direct/writerFirst,
+unavailable endpoint and active-GC endpoint all exited nonzero; no partial
+child certificate is accepted. Exact-K teardown passed in every certified leg.
+
+PR #264 is stacked on this independent prerequisite. Its diff excludes both
+W2-4 test files and the W24 URL wiring; only the dependency supplies those
+already-tested changes. Final standard Docker go-all-test against the updated
+runtime is reported in each PR body before readiness. No automatic merge;
+merge this prerequisite first, then retarget/rebase #264 onto main.
