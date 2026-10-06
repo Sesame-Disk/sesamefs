@@ -13,13 +13,16 @@ import (
 // are insufficient. This does not certify commit ancestry or protect against
 // Phase5/6 metadata destruction; those remain separate open prerequisites.
 func (h *FSHelper) captureRetainedHistoricalFile(orgID, repoID string, entry FSEntry) ([]commitBlockPlacement, error) {
-	var kind string
-	var ids []string
-	var size int64
-	if err := h.db.Session().Query(`SELECT obj_type, block_ids, size_bytes FROM fs_objects WHERE library_id = ? AND fs_id = ?`, repoID, entry.ID).Scan(&kind, &ids, &size); err != nil {
+	// Use the shared immutable-source reader so admission cannot inherit ONE
+	// and mistake a stale replica's absence for missing historical metadata.
+	row, err := db.ReadFSObjectIdentitySourceRow(context.Background(), h.db.Session(), repoID, entry.ID)
+	if err != nil {
 		return nil, fmt.Errorf("read historical file: %w", err)
 	}
-	if kind != "file" || size < 0 || size != entry.Size || (size > 0 && len(ids) == 0) {
+	kind, _ := row["obj_type"].(string)
+	ids, _ := row["block_ids"].([]string)
+	size, hasSize := row["size_bytes"].(int64)
+	if kind != "file" || !hasSize || size < 0 || size != entry.Size || (size > 0 && len(ids) == 0) {
 		return nil, fmt.Errorf("historical file layout is incomplete")
 	}
 	resolved, err := h.resolveStoredBlockIDs(orgID, repoID, ids)

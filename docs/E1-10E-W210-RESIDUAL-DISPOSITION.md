@@ -305,3 +305,40 @@ this documentation-only update. No runtime/test changes or new validation
 claims; the final Docker go-all-test and cleanup results above still apply.
 W2-4 files and URL wiring are excluded from the final #264 diff. The earlier
 stacked merge instructions are superseded by this completed prerequisite.
+
+
+### Historical file source-layout quorum follow-up (2026-10-06)
+
+The new captureRetainedHistoricalFile source-layout query still inherited the
+session consistency even after the permanent fs: read was pinned. With a valid
+ONE configuration, a stale replica could report a missing file row after the
+historical directory entry was found, causing a new RevertDirents failed item.
+
+Admission now calls db.ReadFSObjectIdentitySourceRow, whose actual fs_objects
+SELECT pins LOCAL_QUORUM. It extracts the same obj_type, block_ids and size_bytes
+fields and preserves the existing block resolution, reference and exact-P
+checks. An absent size_bytes remains absent and is rejected, rather than being
+interpreted as an empty file. This is the same local quorum intersection scope;
+it adds no SERIAL, EACH_QUORUM, ancestry or cross-DC visibility guarantee.
+
+The source contract now verifies both the shared fs_objects reader and the
+permanent block_references SELECT->Scan chains. Each independently rejects
+omission, explicit ONE and a later ONE override. Function-scoped mutations
+support multiline call chains and are checked for valid Go syntax. A separate
+caller contract rejects bypassing the shared source reader or adding direct
+queries to historical source capture.
+
+Follow-up validation on the changed runtime/test source:
+- Focused historical admission contracts and all six consistency mutations PASS.
+- Native full internal/api/v2 suite and API/DB go vet PASS.
+- Dockerfile.gotest isolated source: go test -short ./... PASS, followed by
+  go vet ./... and go vet -tags integration ./... PASS (combined exit 0).
+- Native DB repository-wide inventories encounter preexisting ignored Go copies
+  under tmp/; Docker's existing .dockerignore excludes those copies and the DB
+  suite passes there. No local evidence files were removed or guardrails weakened.
+- gofmt and git diff --check PASS.
+
+The Docker run used the changed runtime source and the final contract test file
+mounted read-only. Log: TEMP/sesamefs-264-source-quorum-docker.log. The preceding
+full productive validation remains evidence for its recorded source version;
+this follow-up does not claim a repeated full daemon matrix or new 3-DC test.
