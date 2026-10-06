@@ -295,3 +295,13 @@ sesamefs-264-review-core-race.log, sesamefs-264-review-w24-independent-race.log,
 sesamefs-264-review-w24-{filtered,active-gc,unavailable}.log,
 sesamefs-264-review-{vet,contracts,cleanup,quota}.log,
 sesamefs-264-reviewed-go-all.log.
+
+### Prerequisite merged / main retarget
+
+PR #265 merged at main@79c5e2d2d74ec4775f834f87100cf5c1a1c92f15.
+Rebased the three scoped #264 commits onto that main and retargeted #264 to
+main. The rebased tree matched validated b18d3c980 byte-for-byte in Git before
+this documentation-only update. No runtime/test changes or new validation
+claims; the final Docker go-all-test and cleanup results above still apply.
+W2-4 files and URL wiring are excluded from the final #264 diff. The earlier
+stacked merge instructions are superseded by this completed prerequisite.
