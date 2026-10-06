@@ -6905,6 +6905,14 @@ This is positive evidence only for that retained schedule; no retirement RED,
 new fence or general W2-10 closure. The existing P1 remains OPEN, including
 concurrent retention/cleanup and the other resurrection funnels.
 
+**E1-10b directory update (2026-10-05)**: [single-directory retained-history evidence](./E1-10B-RESTORETRASH-DIRECTORY-HISTORY.md)
+measures one child/plaintext block. Real directory deletion retains the child fs:
+and productive GC stops before claim/D. Actual restore preserves full named
+HEAD/root/DIR1/FILE_FS1/P/K/bytes; competing HEAD forces retry preserving both.
+No production fix; separate gate and isolated child leave #259's contract intact.
+Only the measured retained-history subset is covered. This P1 remains OPEN for
+broader resurrection shapes and retention/Phase5/6/R31 interactions.
+
 #### Problem
 
 PC-0 originally listed these four handlers among the tree mutations that

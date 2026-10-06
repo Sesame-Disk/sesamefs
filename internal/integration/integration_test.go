@@ -63,6 +63,7 @@ func TestMain(m *testing.M) {
 		os.Getenv("SESAMEFS_REQUIRE_E15B_SEAFHTTP_STREAMING_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E16_REVERTFILE_CHARACTERIZATION") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E110_RESTORETRASH_CHARACTERIZATION") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_E110B_RESTORETRASH_DIR_CHARACTERIZATION") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E17_SYNC_RECVFS_CHARACTERIZATION") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E19_CROSS_REPO_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_P2_EVIDENCE") == "1" ||
@@ -184,6 +185,12 @@ func TestMain(m *testing.M) {
 	if os.Getenv(e17EvidenceEnv) == "1" {
 		if missing := e17Missing(e17Evidence); len(missing) > 0 {
 			fmt.Printf("%s=1 requires all named RecvFS-before-PutBlock legs; missing=%s (check -run filters)\n", e17EvidenceEnv, strings.Join(missing, ","))
+			code = 1
+		}
+	}
+	if os.Getenv(e110bEvidenceEnv) == "1" {
+		if missing := e110bMissing(e110bEvidence); len(missing) > 0 {
+			fmt.Printf("%s=1 requires all named directory RestoreTrashItem legs; missing=%s (check -run filters)\n", e110bEvidenceEnv, strings.Join(missing, ","))
 			code = 1
 		}
 	}
