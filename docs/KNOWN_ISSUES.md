@@ -6920,6 +6920,14 @@ HEAD/root/DIR1/FILE_FS1/P/K/bytes, with real HEAD conflict/retry preserving both
 Only integration scheduling seams added; no new liveness/fence. This P1 remains
 OPEN for RevertDirents, broader shapes/policies and retention/Phase5/6/R31.
 
+**E1-10d RevertDirents update (2026-10-06)**: [single-dirent evidence](./E1-10D-REVERTDIRENTS-RETAINED-HISTORY.md)
+measures one root file/path/plaintext block with retained history. Real local
+positive fs: read settles candidate before claim/D. Actual form handler reuses
+FILE_FS1/P/K/bytes; competing HEAD causes per-item retry preserving both files.
+No runtime liveness/fence fix. Only the measured retained-history subset is
+covered; this P1 remains OPEN for broader batch/shapes/policies, retention,
+Phase5/6 and R31. Prior RevertFile disposition is unchanged.
+
 #### Problem
 
 PC-0 originally listed these four handlers among the tree mutations that

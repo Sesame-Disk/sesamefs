@@ -1,6 +1,23 @@
 # Current Work
 
-## Active slice: E1-10c / RevertDirectory retained-history
+## Active slice: E1-10d / RevertDirents retained-history
+
+Base main@f465d1405d147dc34e69c894c08c21b435df5c1d (#262 merged).
+Plan frozen in 1339cb4c7. Single root file/path/plaintext block, retained
+history, absent target. Actual form handler plus Cassandra/SILO; independent
+item-path hooks/gate/selector, normal-build no-ops. No new publication protocol.
+Productive GC positive-reference early skip; real per-item HEAD conflict/retry.
+Cleanup registered early, productive DeleteFile async completion observed.
+Narrow measured subset only; W2-10/E1-10/E1/X1/R31 remain OPEN. No automatic
+RevertFile reclassification or Phase5/6 residual inference. Final go-all-test
+exit 0: integration 592.182s, API 20/20 suites, OIDC 25/25 tests. New matrix
+3/3, five race repetitions 15/15; prior selectors intact, all 13 standard daemon
+controls PASS with no GC-disabled skips. Final owned test repos absent on both
+backends, quota unchanged. Scoped audit: no unresolved introduced P0/P1/P2.
+Production GC OFF, standard dev daemon unchanged.
+[Plan and evidence](docs/E1-10D-REVERTDIRENTS-RETAINED-HISTORY.md).
+
+## Previous merged slice: E1-10c / PR #262
 
 Base main@a7548d2c0a75a89ad273ed714bfc86a93ad0266b (#260 merged).
 Plan frozen in 76faebb54. Real directory create/upload/delete/revert measures
