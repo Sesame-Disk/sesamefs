@@ -741,6 +741,7 @@ func (h *TrashHandler) RevertDirents(c *gin.Context) {
 		}
 
 		oldEntry := *oldResult.TargetEntry
+		revertDirentsAfterHistoricalEntryBarrier(repoID, filePath, oldEntry.ID)
 		isDir := oldEntry.Mode == ModeDir || oldEntry.Mode&0170000 == 040000
 
 		// Determine parent directory path
@@ -801,6 +802,7 @@ func (h *TrashHandler) RevertDirents(c *gin.Context) {
 				return err
 			}
 
+			revertDirentsBeforeHeadBarrier(repoID, filePath)
 			if err := fsHelper.UpdateLibraryHeadFromSnapshot(snapshot, repoID, newCommitID, snapshot.HeadCommitID); err != nil {
 				return err
 			}

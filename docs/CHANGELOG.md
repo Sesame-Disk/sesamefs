@@ -8,6 +8,23 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-06 - E1-10d single-dirent retained-history characterization
+
+Plan frozen in 1339cb4c7 against merged #262. One root file/path/block on
+retained history; actual RevertDirents form handler preserves original
+FILE_FS1/P/K/bytes. Integration hooks carry normalized itemPath and certify
+capture outside retry, plus real per-item HEAD conflict/retry. Productive
+DeleteFile async housekeeping is observed before revert/cleanup. No new
+pin/pub:/repair/fence, schema, quota or GC setting change. Independent
+contract leaves earlier evidence selectors intact. Final go-all-test exit 0:
+integration 592.182s, API 20/20 suites and OIDC 25/25; new matrix 3/3, race
+15/15. All 13 standard daemon controls PASS with zero GC-disabled skips;
+optional gcsoak excluded. Final owned test repos absent on both backends;
+quota unchanged, scoped audit has no unresolved introduced P0/P1/P2.
+Narrow retained-history
+subset only; broader batch/shapes/retention, W2-10/E1-10/E1/X1/R31 remain OPEN.
+[Plan and validation](./E1-10D-REVERTDIRENTS-RETAINED-HISTORY.md).
+
 ## 2026-10-06 - E1-10c retained-history directory revert characterization
 
 Plan frozen in 76faebb54 against merged #260. Productive directory create/upload/

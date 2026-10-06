@@ -328,3 +328,19 @@ COMMITTED/TERMINAL unexecuted. W2-10/E1-10 overall, RevertDirents, broader cases
 retention/Phase5/6, R31 and E1/X1 remain OPEN. Production GC OFF. No speculative
 fence or retroactive RevertFile reclassification; residual risk is not declared
 exclusively Phase5/6.
+
+## E1-10d / RevertDirents single-file retained-history — 2026-10-06
+
+[Dirent evidence](./E1-10D-REVERTDIRENTS-RETAINED-HISTORY.md) measures a single
+root file/path/plaintext block, absent current target, retained historical
+commit in one DC. Actual form handler captures oldEntry outside per-item retry.
+Inherited sole fs: blocks real worker before claim/global proof/D and settles
+controlled exact candidate. HEAD reaches original named FILE_FS1/P/K/bytes;
+real competitor causes two CAS attempts, capture once, winning parent equals
+competing HEAD and both files survive. No new pub:/repair/fs: promotion.
+Independent hooks/gate/selector/child preserve old contracts and standard GC.
+CLOSED-EVIDENCE only for this measured schedule; COMMITTED/TERMINAL unexecuted.
+W2-10/E1-10 overall, broader RevertDirents batch/shapes, retention/Phase5/6,
+R31 and E1/X1 remain OPEN. RevertFile prior disposition unchanged. Reevaluate
+remaining publication risks separately before any PRE-GC reclassification;
+no inference that all remaining risks belong to Phase5/6. Production GC OFF.
