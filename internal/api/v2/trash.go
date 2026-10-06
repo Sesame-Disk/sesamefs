@@ -743,6 +743,14 @@ func (h *TrashHandler) RevertDirents(c *gin.Context) {
 		oldEntry := *oldResult.TargetEntry
 		revertDirentsAfterHistoricalEntryBarrier(repoID, filePath, oldEntry.ID)
 		isDir := oldEntry.Mode == ModeDir || oldEntry.Mode&0170000 == 040000
+		var retainedBlocks []commitBlockPlacement
+		if !isDir {
+			retainedBlocks, err = fsHelper.captureRetainedHistoricalFile(orgID, repoID, oldEntry)
+			if err != nil {
+				failedItems = append(failedItems, revertResult{Path: filePath, IsDir: false})
+				continue
+			}
+		}
 
 		// Determine parent directory path
 		parentPath := path.Dir(filePath)
@@ -803,6 +811,11 @@ func (h *TrashHandler) RevertDirents(c *gin.Context) {
 			}
 
 			revertDirentsBeforeHeadBarrier(repoID, filePath)
+			if !isDir {
+				if err := fsHelper.validateRetainedHistoricalFile(orgID, repoID, oldEntry.ID, retainedBlocks); err != nil {
+					return err
+				}
+			}
 			if err := fsHelper.UpdateLibraryHeadFromSnapshot(snapshot, repoID, newCommitID, snapshot.HeadCommitID); err != nil {
 				return err
 			}

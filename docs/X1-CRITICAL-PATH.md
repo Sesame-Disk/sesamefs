@@ -347,3 +347,30 @@ Characterize physical resurrection/leak at E1/PRE-X1. The separate greenfield
 evaluation of empty-state legacy recovery remains recorded in
 GC-G4-IMPLEMENTATION-PLAN.md. The G4 plan contains the confirmed source chain
 and the current integration/monitoring corrections.
+
+
+### E1-10e: unpublished source counterexample and scoped fix (2026-10-06)
+
+Base main@5071d1701624b291a95db9ade8b5ff6abdbd63d7. Productive web upload
+followed by Sync PutCommit/RecvFS persists an unpublished commit/tree/file with
+SHA-1 block IDs and a canonical mapping, but no permanent fs: or repair.
+Only the owned temporary upload reference exists. After its controlled lapse,
+real GC reaches COMMITTED or TERMINAL for exact P1 without removing history.
+The original RevertDirents handler then successfully publishes HEAD depending
+on that retired P1. This is a source-admission counterexample outside Phase5/6;
+metadata existence does not prove retained permanent liveness.
+
+RevertDirents non-directory items now require their own settled
+fs:<repo>:<historical-file> for every canonical block, capture original exact P,
+and recheck those references plus existing exact-P authority immediately before
+each HEAD CAS. Missing/malformed/unknown evidence fails the item with HEAD intact.
+Live unpublished metadata is deliberately rejected too; normal Sync publication
+followed by deletion and restoration remains supported. No pin/pub:/repair is
+acquired, no bytes are rematerialized and commit ancestry is not certified.
+
+Measured one root file/path/plaintext block, same repo/org and one DC:
+RevertDirents source-admission subset = CLOSED-FIX. Directories, other handlers,
+broader batches/layouts, concurrent retention/cleanup, Phase5/6 and R31 remain
+OPEN. Foreign settled fs: is not a continuous own-pin proof through HEAD.
+W2-10/E1/X1 remain OPEN; production GC OFF, shared development GC unchanged.
+See [frozen plan and evidence](./E1-10E-W210-RESIDUAL-DISPOSITION.md).

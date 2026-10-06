@@ -1,6 +1,21 @@
 # Current Work
 
-## Active slice: E1-10d / RevertDirents retained-history
+## Active slice: E1-10e / unpublished resurrection source admission
+
+Plan c167aa947, base #263/main@5071d170. Real PutCommit/RecvFS unpublished
+metadata counterexample: original RevertDirents publishes retired P1 after real
+COMMITTED/TERMINAL. Scoped non-directory source-admission correction requires
+settled own historical fs: and original exact-P validation before each HEAD CAS.
+Four directed legs PASS; race five repetitions 20/20. Final audit also isolated
+legacy W2-4 controlled COMMITTED proof after observed peer-daemon recovery;
+its unchanged ten-leg matrix passed serial race 30/30 with strict cleanup.
+Final Docker go-all-test exit 0: integration 628.223s, API 20/20 suites,
+OIDC 25/25 tests, all 13 daemon controls PASS. Both backend cleanup audits
+clean, free/hard quotas unchanged. Scoped audit: no unresolved introduced
+P0/P1/P2. No broad W2-10 closure; production GC OFF.
+[Plan/evidence](docs/E1-10E-W210-RESIDUAL-DISPOSITION.md).
+
+## Previous merged slice: E1-10d / RevertDirents retained-history
 
 Base main@f465d1405d147dc34e69c894c08c21b435df5c1d (#262 merged).
 Plan frozen in 1339cb4c7. Single root file/path/plaintext block, retained

@@ -346,23 +346,23 @@ production code on the real 3-DC fixture.
 | R1 | `v2.RevertFile` | file fs_object taken from a historical commit | BORROWED (historical `fs:`) | none | none | none |
 | R2 | `v2.RevertDirectory` | directory subtree from a historical commit | BORROWED | none | none | none |
 | R3 | `v2.RestoreTrashItem` | deleted entry taken from the commit that still had it | BORROWED (trash) | none | none | none |
-| R4 | `v2.RevertDirents` | batch of R3 | BORROWED (trash) | none | none | none |
+| R4 | `v2.RevertDirents` | batch of historical entries | BORROWED | none | none | E1-10e files: settled historical fs: admission + original exact-P before each HEAD; directories unchanged |
 
 Each reads an old commit, lifts an `oldEntry`/fs_object out of it, inserts
 it into the current tree, creates a new commit, and CASes HEAD. No bytes move,
 but the new HEAD **newly lives on** every block under that fs_object — a
-positive `LogicalPositiveBlockDelta` by PC-0's own definition (§2). The only
-liveness those blocks have is the historical `fs:<library>:<fs_id>` reference,
+positive `LogicalPositiveBlockDelta` by PC-0's own definition (§2). When previously settled, their
+existing liveness is the historical `fs:<library>:<fs_id>` reference,
 which GC retention (trash / version TTL) is entitled to remove concurrently.
 Today these paths are weaker than cross-repo (F4), which at least stages
 `pub:` and queues repair. They are inventoried as
 `pc0HeadContentResurrection`; `TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams`
-freezes the observed absence of seams and forces reclassification as a
+checks direct seams only, without tracing admission helpers, and requires reclassification as a
 block-publication funnel when one of them is migrated. Recorded as
 `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` (§15); the target coordinator
 must treat them as `BORROWED` adapters that acquire a durable own pin on the
-resurrected fs_object's blocks (and `ExpectedP`) before staging. Not fixed
-here.
+resurrected fs_object's blocks (and `ExpectedP`) before staging. E1-10e adds only file source admission and indirect exact-P validation to R4;
+full continuous own-liveness migration remains OPEN.
 
 ---
 
@@ -701,7 +701,7 @@ error paths do not queue repair or attempt HEAD.
 | ID | Universal in today's code? | Notes |
 |---|---|---|
 | PUBL-1 Proven/publishable input | **No** | Classification exists in some adapters; Sync unprovenanced blocks and cross-repo borrowed `fs:` still enter `stage pub:`; content-resurrection paths (§3.5) publish borrowed historical `fs:` without any pin, stage, or repair. `UNPROVENANCED` and `ERROR` are not publishable. `BORROWED` is not publishable until the adapter acquires durable own liveness; observing/revalidating foreign `fs:` is the W1 TOCTOU. The coordinator may accept only `PublishableInput`. Classifying those states inside the coordinator and then staging them would centralize the W2 hole (Sync without PutBlock still has no liveness attributable to the commit). `PublishableInput` as defined is scoped to dependencies newly live on the HEAD being published, not to dependencies inherited unchanged from the old HEAD (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`). PC-D1 resolves the responsibility boundary with a certified baseline frontier: newly-live is incremental only when its durable witness is valid; otherwise baseline certification is required. |
-| PUBL-2 Publication authority / continuity | **No** | Exact-P before HEAD exists for F1 Office placements (#238), F2 materialized placements (#237), F3 placements and Sync-provenanced blocks. Empty F1 has no block dependencies. OnlyOffice (E1-4) and SeafHTTP single-shot (E1-5a) now validate their original materialized exact P after durable repair, before HEAD; SeafHTTP streaming (E1-5b) now validates all retained original P; cross-repo lacks an equivalent final exact-P check. Authority checks do not establish continuous own-pin liveness through HEAD: W2-0 and W2-6a remain OPEN under the 48h up:/35d pub: TTLs. BorrowedFS/late pin needs authority validation because the pin may arrive after GC won; cross-repo also lacks a proven destination own pin, and content-resurrection paths have neither pin nor exact-P (§3.5). |
+| PUBL-2 Publication authority / continuity | **No** | Exact-P before HEAD exists for F1 Office placements (#238), F2 materialized placements (#237), F3 placements and Sync-provenanced blocks. Empty F1 has no block dependencies. OnlyOffice (E1-4) and SeafHTTP single-shot (E1-5a) now validate their original materialized exact P after durable repair, before HEAD; SeafHTTP streaming (E1-5b) now validates all retained original P; cross-repo lacks an equivalent final exact-P check. Authority checks do not establish continuous own-pin liveness through HEAD: W2-0 and W2-6a remain OPEN under the 48h up:/35d pub: TTLs. BorrowedFS/late pin needs authority validation because the pin may arrive after GC won; cross-repo also lacks a proven destination own pin, and content-resurrection paths lack own pins; E1-10e adds exact-P only to RevertDirents files (§3.5). |
 | PUBL-3 No liveness gap | **Unproven (W2-0 and R31)** | Ordering aims at overlap; 48h up: and 35d pub: TTLs leave pre-HEAD validator-to-HEAD continuity unresolved as well as post-HEAD continuity. |
 | PUBL-4 Durable ambiguity | **Mostly** | UNKNOWN does not take known-loser cleanup. Repair row is the durable witness. Finite `pub:` TTL remains R31 (`ISSUE-GC-PUB-REF-ZERO-REF-01`). |
 | PUBL-5 Known loser ≠ unknown | **Yes in request-local paths; no durable loser** | Classified differently; crash before cleanup collapses to UNKNOWN retain. |
@@ -742,7 +742,7 @@ publication authority; current HEAD writers already refuse that inheritance.
 | Repair reachability | no | **no** | each ancestry chunk ≤1024 sequential EACH_QUORUM parent reads under a 30-second context; SERIAL HEAD when creating/replacing the anchor; a clean-genesis re-anchor visit may do a second HEAD and a second 1024-node chunk | positive reachability promotes; missing/error/timeout/cycle/bound/unavailable ⇒ UNKNOWN and retain (`ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed for the shared classifier; `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` closed for moving-HEAD resume; broader R31 remains open) |
 | Known-loser cleanup | request-local | n/a | must not run on UNKNOWN | crash ⇒ retain as UNKNOWN |
 | HEAD initialization (`GET /commit/HEAD` → `createInitialCommit`; `InitializeLibraryFS`) | n/a | **no (since 2026-09-11)** — a session-CL `""` read only *proposes* initialization; the CAS decides | Paxos (HEAD serial domain) | blind DC's proposal is rejected and the real HEAD is returned (`scripts/h1-initial-head-multidc-validation.sh`); before the fix a `""` read authorized an unconditional overwrite (reproduced 2026-09-10, `scripts/pc0-initial-head-xdc-probe.sh` bug mode) |
-| Content resurrection (R1–R4) | n/a (no liveness read at all) | n/a | none | borrowed historical `fs:` can be removed by GC retention in any DC; no pin, no fence |
+| Content resurrection (R1–R4) | R4 files require settled historical fs: (E1-10e); other paths unchanged | R4 original exact P before each HEAD | no own pin | concurrent retention/cleanup remains OPEN; single-DC admission evidence is not multi-DC continuity |
 
 **Never:** `LOCAL_QUORUM miss` ⇒ globally absent. At audit time exactly one
 productive path violated this — HEAD initialization (§3.4), which treated a
@@ -980,7 +980,7 @@ than stay "tree-only".
 | OnlyOffice | callback download, pending-block row |
 | Cross-repo | copy fs_objects, conflict policy, source HEAD |
 | CreateFile | template materialize / empty file |
-| Content resurrection (R1–R4) | history/trash lookup, resurrected fs_object → durable own pin on its blocks + `ExpectedP` before stage (today: nothing) |
+| Content resurrection (R1–R4) | history/trash lookup, resurrected fs_object → durable own pin on its blocks + `ExpectedP` before stage (E1-10e R4 files: retained-source admission/exact-P only, no own pin) |
 
 Rejected coordinator shape:
 
@@ -1086,7 +1086,7 @@ FOLLOW-UP); not optimized here.
 | Sync provenanced subset (P candidates) | remaining readiness/renewal for P after scope gate | LQ/EQ scope gate + funnel-specific readiness | repair cold SERIAL/EQ; HEAD | HEAD only |
 | Sync unprovenanced subset (U global misses) | stage/repair/HEAD, no Sync readiness for those blocks | LQ/EQ scope gate still paid | no per-block readiness; HEAD | HEAD |
 | Sync HEAD step (any subset) | 2·O(D) stats walks before the CAS | session reads | HEAD | HEAD |
-| Content resurrection R1–R4 | history/trash read + O(1) tree + O(D) stats walk + HEAD; **no** liveness work | tree reads | HEAD | HEAD |
+| Content resurrection R1–R4 | history/trash read + O(1) tree + O(D) stats walk + HEAD; E1-10e R4 files additionally resolve/check references/physical placements | tree reads | HEAD | HEAD |
 
 The CreateFileFromBlocks row has two useful scopes. Before HEAD, the path
 pays one session-claim LWT and one HEAD LWT, in addition to its bounded
@@ -1488,7 +1488,7 @@ W2, R31, and X1 remain OPEN.
 | `TestPC0TreeMutationsDoNotCallBlockPublicationStageSeams` | tree-only HEAD callers do not invoke the known block-publication stage seams |
 | `TestPC0StoredUploadRevalidatesMaterializedExactPlacement` | UploadFile passes its materialized exact placement so the exact-P fence runs before HEAD (W2-6; inverted from the former `...IsNoOpWhenCommitBlocksNil` characterization) |
 | `TestPC0RawHeadColumnWritersAreInventoried` | every production string literal (internal/, cmd/) writing `libraries.head_commit_id` is inventoried with its shape (`cas` / `insert-create` / `update-unconditional`); closes the raw-CQL blind spot; flipping an initializer to CAS must flip its shape |
-| `TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams` | R1–R4 are inventoried as content resurrection and today call no stage/repair/fence seam; migrating one forces reclassification |
+| `TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams` | R1–R4 direct stage/repair/fence seam inventory; does not trace E1-10e indirect admission/fence helpers or certify their absence |
 | gc `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` | executable counterexample for PUBL-10 / `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`; freezes the observed unsafe cascade and must be inverted when Phase 5 becomes sharing-aware |
 | `scripts/pc0-initial-head-xdc-probe.sh` | real 3-DC probe of §3.4 with two fail-closed modes: bug mode runs the pre-fix unconditional shape from a blind DC and requires HEAD reverted (the record of the bug); `--expect-cas-fix` runs the production conditional shape (`IF head_commit_id = null AND created_at != null`) from the same blind DC and requires it rejected and HEAD survived; the CAS control leg asserts `[applied]=False` and the real HEAD. CQL-shape level |
 | `scripts/h1-initial-head-multidc-validation.sh` + `TestH1InitialHead*3DC` | real 3-DC, handler-level, one dc-eu stop/restart cycle per initializer on its own library: `InitializeLibraryFS` and Sync `createInitialCommit`, each driven from a DC asserted blind immediately before it runs, keep and return the HEAD another DC published, and that HEAD's commit is servable locally at the consistency `GET /commit/:id` uses; gate `SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1`; RED against the pre-fix production files |
@@ -1531,3 +1531,30 @@ HEAD-conflict and omission evidence are in [E1-5b](./E1-5B-SEAFHTTP-STREAMING-PU
 Only measured streaming pre-HEAD and same-process retry are CLOSED-FIX. Dated
 snapshots of F7 lacking exact-P are superseded, not broader continuity claims.
 Post-HEAD/R31, W2-11..14, E1/X1 and cross-repo remain OPEN; production GC OFF.
+
+
+### E1-10e: unpublished source counterexample and scoped fix (2026-10-06)
+
+Base main@5071d1701624b291a95db9ade8b5ff6abdbd63d7. Productive web upload
+followed by Sync PutCommit/RecvFS persists an unpublished commit/tree/file with
+SHA-1 block IDs and a canonical mapping, but no permanent fs: or repair.
+Only the owned temporary upload reference exists. After its controlled lapse,
+real GC reaches COMMITTED or TERMINAL for exact P1 without removing history.
+The original RevertDirents handler then successfully publishes HEAD depending
+on that retired P1. This is a source-admission counterexample outside Phase5/6;
+metadata existence does not prove retained permanent liveness.
+
+RevertDirents non-directory items now require their own settled
+fs:<repo>:<historical-file> for every canonical block, capture original exact P,
+and recheck those references plus existing exact-P authority immediately before
+each HEAD CAS. Missing/malformed/unknown evidence fails the item with HEAD intact.
+Live unpublished metadata is deliberately rejected too; normal Sync publication
+followed by deletion and restoration remains supported. No pin/pub:/repair is
+acquired, no bytes are rematerialized and commit ancestry is not certified.
+
+Measured one root file/path/plaintext block, same repo/org and one DC:
+RevertDirents source-admission subset = CLOSED-FIX. Directories, other handlers,
+broader batches/layouts, concurrent retention/cleanup, Phase5/6 and R31 remain
+OPEN. Foreign settled fs: is not a continuous own-pin proof through HEAD.
+W2-10/E1/X1 remain OPEN; production GC OFF, shared development GC unchanged.
+See [frozen plan and evidence](./E1-10E-W210-RESIDUAL-DISPOSITION.md).

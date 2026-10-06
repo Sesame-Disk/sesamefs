@@ -8,6 +8,16 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-10-06 — RevertDirents unpublished file source admission
+
+Require settled historical permanent references and validate original physical
+placement before publishing restored file HEAD. Reject unpublished Sync metadata
+whose borrowed upload liveness may lapse; settled Sync history remains supported.
+Cassandra/SILO evidence reproduces COMMITTED/TERMINAL unsafe publication before
+the scoped fix. The full audit also isolates the existing W2-4 COMMITTED matrix
+from peer daemon recovery, preserving its assertions and the shared active GC.
+No general W2-10/Phase5/6 closure or GC activation.
+
 ## 2026-10-06 - E1-10d single-dirent retained-history characterization
 
 Plan frozen in 1339cb4c7 against merged #262. One root file/path/block on

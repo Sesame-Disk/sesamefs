@@ -6882,9 +6882,9 @@ separate issue from `ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01` (stale lease
 owner) and from the global SERIAL pin of the lease itself, which #234 closed.
 `GC_ENABLED=false` keeps it unreachable today; it must close before activation.
 
-### ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01: Revert/restore paths publish borrowed block dependencies with no pin, `pub:`, repair, or fence
+### ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01: Revert/restore paths lack continuous own publication liveness (RevertDirents file admission partially fixed)
 
-**Status**: 🔴 Open — characterized by the PC-0 audit (2026-09-10); reclassified, not fixed in the characterization PR
+**Status**: 🔴 Open — PC-0 characterization; E1-10e partially fixes RevertDirents file source admission, continuous publication liveness and other shapes/handlers remain open
 **Severity**: High (P1) — W2 writer protocol completeness / funnel migration
 **Affected**: `RevertFile`, `RevertDirectory` (`internal/api/v2/files.go`), `RestoreTrashItem`, `RevertDirents` (`internal/api/v2/trash.go`)
 **Registered**: 2026-09-10, PC-0 publication-protocol characterization audit
@@ -6953,8 +6953,9 @@ That is a positive block-dependency delta (PC-0's own
 `LogicalPositiveBlockDelta` definition) with `BORROWED` provenance: the only
 liveness those blocks have is the historical `fs:<library>:<fs_id>`
 reference, which trash retention / version TTL GC is entitled to remove
-concurrently. No `up:` pin, no `pub:`, no durable repair intent, no exact-P
-fence. This is weaker than cross-repo copy, which at least stages `pub:` and
+concurrently. No `up:` pin, no `pub:`, no durable repair intent. E1-10e adds scoped
+source admission and exact-P validation to RevertDirents files; the other
+handlers still lack this fence. This is weaker than cross-repo copy, which at least stages `pub:` and
 queues repair.
 
 #### Scope / disposition
@@ -11301,3 +11302,30 @@ A separate fix should retain the successfully copied source identity and require
 **Status:** OPEN. **Severity:** P2 / GENERAL follow-up, pre-existing; not introduced by #258 and not a blocker of E1-09.
 
 `verifyManifestBlocks` and `ensureCommitBlockOwnLiveness` in file_from_blocks.go create a goroutine per distinct block before their semaphore admission. A supported manifest can contain 131,072 blocks. Query concurrency is bounded but worker creation is not. PR #258 bounds its source capture and shared final validator only; these two earlier phases remain unchanged. A separate resource-bound fix should admit workers before goroutine creation, preserving cancellation and fail-closed publication outcomes. Confirmed by source inspection; no closure is claimed here.
+
+
+### E1-10e: unpublished source counterexample and scoped fix (2026-10-06)
+
+Base main@5071d1701624b291a95db9ade8b5ff6abdbd63d7. Productive web upload
+followed by Sync PutCommit/RecvFS persists an unpublished commit/tree/file with
+SHA-1 block IDs and a canonical mapping, but no permanent fs: or repair.
+Only the owned temporary upload reference exists. After its controlled lapse,
+real GC reaches COMMITTED or TERMINAL for exact P1 without removing history.
+The original RevertDirents handler then successfully publishes HEAD depending
+on that retired P1. This is a source-admission counterexample outside Phase5/6;
+metadata existence does not prove retained permanent liveness.
+
+RevertDirents non-directory items now require their own settled
+fs:<repo>:<historical-file> for every canonical block, capture original exact P,
+and recheck those references plus existing exact-P authority immediately before
+each HEAD CAS. Missing/malformed/unknown evidence fails the item with HEAD intact.
+Live unpublished metadata is deliberately rejected too; normal Sync publication
+followed by deletion and restoration remains supported. No pin/pub:/repair is
+acquired, no bytes are rematerialized and commit ancestry is not certified.
+
+Measured one root file/path/plaintext block, same repo/org and one DC:
+RevertDirents source-admission subset = CLOSED-FIX. Directories, other handlers,
+broader batches/layouts, concurrent retention/cleanup, Phase5/6 and R31 remain
+OPEN. Foreign settled fs: is not a continuous own-pin proof through HEAD.
+W2-10/E1/X1 remain OPEN; production GC OFF, shared development GC unchanged.
+See [frozen plan and evidence](./E1-10E-W210-RESIDUAL-DISPOSITION.md).

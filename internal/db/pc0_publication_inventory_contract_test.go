@@ -1118,13 +1118,11 @@ func TestPC0NoUnconditionalHeadUpdateRemains(t *testing.T) {
 	}
 }
 
-// TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams freezes the
-// observed gap: RevertFile, RevertDirectory, RestoreTrashItem, and
-// RevertDirents publish a HEAD that newly depends on historical fs_objects
-// without staging pub:, queueing durable repair, or fencing exact P. When a
-// later PC migrates one of them, it must be reclassified as block-publication
-// and mapped in pc0BlockPublicationFunnels rather than silently keeping this
-// observed-gap classification.
+// TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams inventories
+// direct stage/repair/fence seams only; it does not trace helper calls. E1-10e
+// adds a retained-source admission/exact-P helper to RevertDirents files without
+// acquiring own liveness or migrating the four funnels to publication adapters.
+// Passing this guard must not be interpreted as absence of indirect fencing.
 func TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams(t *testing.T) {
 	functions := pc0ParseProductionFuncs(t)
 	seams := append([]string{}, pc0BlockPublicationStageSeams...)

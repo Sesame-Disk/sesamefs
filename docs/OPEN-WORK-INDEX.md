@@ -292,7 +292,7 @@ logical-block PK replacement, and X1 remain open.
 | `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01` | MEDIUM ✅ **Resolved 2026-09-11** | Durable `library_rollback_pending` marker (effective no TTL, 32 recovery buckets) is written before the HEAD LWT; a Server-owned bounded fair reaper re-enters `deleteUnpublishedLibraryRow` then idempotent derived cleanup. Marker is discovery only — never cleanup authority. Fault-injection: authority applied → crash → `RecoverPendingLibraryRollbacks` clears ghosts | [known issue](./KNOWN_ISSUES.md#issue-library-rollback-ghost-projections-01) |
 | `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01` | MEDIUM — follow-up, not an H1 blocker | A group-library creation preserved on an UNKNOWN HEAD publish, a share write error past publication, or a rollback refused because another initializer already published, is durable and cannot be resumed by repeating the POST (which mints another library); its group share is `not_attempted` or `unconfirmed` depending on the failure phase. Worked design — single-owner LWT claim keyed by org/owner/group/name, ownership-checked release, fixed share identity, no TTL — parked on `feat/group-library-creation-claims` with its audit's 10-test evidence list | [known issue](./KNOWN_ISSUES.md#issue-group-library-creation-resumability-01) |
 | `ISSUE-LIBRARY-HEAD-ADOPTED-TREE-VISIBILITY-01` | MEDIUM/HIGH — follow-up, not an H1 blocker | Adopting a blind-DC HEAD only proves its own `commits` row is locally servable, not the root/subtree `fs_objects` behind it; the 3-DC suite doesn't catch this because every initial HEAD is the same deterministic empty root, which the losing initializer already wrote locally itself | [known issue](./KNOWN_ISSUES.md#issue-library-head-adopted-tree-visibility-01) · [PC-0 §3.4](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md) |
-| `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | HIGH (P1) | `RevertFile`/`RevertDirectory`/`RestoreTrashItem`/`RevertDirents` publish a positive borrowed block-dependency delta with no pin, `pub:`, repair, or fence; reclassified from "tree-only" by PC-0; E1-6 measures retained historical fs: blocking GC before claim for RevertFile; no COMMITTED/TERMINAL reproduction or runtime fix; W2-10 stays OPEN; fix belongs to W2 / funnel migration | [known issue](./KNOWN_ISSUES.md#issue-pc0-content-resurrection-publication-01) · [E1-6 evidence](./E1-6-REVERTFILE-PUBLICATION-SAFETY.md) · [PC-0 §3.5](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md) |
+| `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | HIGH (P1) | `RevertFile`/`RevertDirectory`/`RestoreTrashItem`/`RevertDirents` publish borrowed dependencies without own pin/pub:/repair; E1-10e fixes RevertDirents file source admission with exact-P validation, broader W2-10 remains OPEN; reclassified from "tree-only" by PC-0; E1-6 measures retained historical fs: blocking GC before claim for RevertFile; no COMMITTED/TERMINAL reproduction or runtime fix; W2-10 stays OPEN; fix belongs to W2 / funnel migration | [known issue](./KNOWN_ISSUES.md#issue-pc0-content-resurrection-publication-01) · [E1-6 evidence](./E1-6-REVERTFILE-PUBLICATION-SAFETY.md) · [PC-0 §3.5](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md) |
 | `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` | **P0 latent** — PRE-GC, mandatory before any `GC_ENABLED=true` with `version_ttl_days > 0` | Phase 5's expired-version cascade deletes content-addressed fs_objects still reachable from HEAD (no keep-set); executable counterexample in `internal/gc`; refutes "ordinary GC protects inherited dependencies" as-is | [known issue](./KNOWN_ISSUES.md#issue-gc-phase5-cascade-shared-fsobjects-01) · [PC-0 §6 PUBL-10](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md) |
 | `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` | HIGH (P1) ✅ **Resolved 2026-09-12** — PRE-X1 / R31 convergence | Resumable SERIAL-anchored walk with durable next-unread cursor; later HEAD movement does not restart in-flight work; clean genesis is persisted as exhausted before re-observing HEAD and may re-anchor (second 1024-node chunk in the same 30s context); a re-anchor CAS loser does not replay an exhausted snapshot; missing repair row is a no-op; UNKNOWN still retains; per-row `pub:<repo:commit:fsID>` is renewed after classify while unresolved; Sync success does not pay per-block repair-owned DELETE | [known issue](./KNOWN_ISSUES.md#issue-publish-repair-reachability-convergence-01) |
 | `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` | MEDIUM (P2) — follow-up, not an R31-C1 blocker | Concurrent renewal of the same repair row can re-create its `pub:` after the worker removes it and before the row is deleted; leftover `pub:` is TTL-bounded over-retention. Ordinary Sync success does not attempt this cleanup | [known issue](./KNOWN_ISSUES.md#issue-publish-repair-owned-pub-cleanup-race-01) |
@@ -500,3 +500,30 @@ Async task progress also had a reproduced data race; fields are now snapshotted
 under the TaskStore lock. Move source disappearance after safe destination
 publication remains existing partial-operation semantics, not rollback.
 [Evidence and limits](./E1-09-CROSS-REPO-PUBLICATION-SAFETY.md).
+
+
+### E1-10e: unpublished source counterexample and scoped fix (2026-10-06)
+
+Base main@5071d1701624b291a95db9ade8b5ff6abdbd63d7. Productive web upload
+followed by Sync PutCommit/RecvFS persists an unpublished commit/tree/file with
+SHA-1 block IDs and a canonical mapping, but no permanent fs: or repair.
+Only the owned temporary upload reference exists. After its controlled lapse,
+real GC reaches COMMITTED or TERMINAL for exact P1 without removing history.
+The original RevertDirents handler then successfully publishes HEAD depending
+on that retired P1. This is a source-admission counterexample outside Phase5/6;
+metadata existence does not prove retained permanent liveness.
+
+RevertDirents non-directory items now require their own settled
+fs:<repo>:<historical-file> for every canonical block, capture original exact P,
+and recheck those references plus existing exact-P authority immediately before
+each HEAD CAS. Missing/malformed/unknown evidence fails the item with HEAD intact.
+Live unpublished metadata is deliberately rejected too; normal Sync publication
+followed by deletion and restoration remains supported. No pin/pub:/repair is
+acquired, no bytes are rematerialized and commit ancestry is not certified.
+
+Measured one root file/path/plaintext block, same repo/org and one DC:
+RevertDirents source-admission subset = CLOSED-FIX. Directories, other handlers,
+broader batches/layouts, concurrent retention/cleanup, Phase5/6 and R31 remain
+OPEN. Foreign settled fs: is not a continuous own-pin proof through HEAD.
+W2-10/E1/X1 remain OPEN; production GC OFF, shared development GC unchanged.
+See [frozen plan and evidence](./E1-10E-W210-RESIDUAL-DISPOSITION.md).
