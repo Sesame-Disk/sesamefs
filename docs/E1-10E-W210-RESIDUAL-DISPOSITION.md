@@ -105,7 +105,7 @@ admission = CLOSED-FIX. W2-10 overall, other handlers/directories/batches,
 concurrent cleanup/retention, W2-11..14/R31, E1/X1 remain OPEN. Production GC
 remains OFF; shared dev daemon and quota settings are unchanged.
 
-### Source snapshot
+### Original #264@6f0855984 source snapshot (superseded below)
 
 - `internal/api/v2/resurrection_admission.go` SHA-256 `79a4d3b531fee6b03d979452a4da9f2933d4af68fba1f5e2530320d22547ed3a`
 - `internal/api/v2/trash.go` SHA-256 `7bd009f7e9686fe3d7571965358bcfeeca3dd4932d7056be3743f6a7cd724d76`
@@ -182,7 +182,7 @@ sources are unchanged by this integration-only correction; their verified
 runtime binary hashes above remain the final production snapshot.
 
 
-## Final audited result
+## Original #264@6f0855984 validation result (superseded review below)
 
 Final standard Docker go-all-test container sesamefs-e110e-audited-go-all
 exited 0 against refreshed HTTP backends and final integration sources:
@@ -205,3 +205,93 @@ unresolved introduced P0/P1/P2 in this scoped correction. The known broader
 W2-10 P1, retained-reference TOCTOU, other resurrection handlers/directories,
 Phase5/6, R31 and E1/X1 remain OPEN. No broad closure or activation is inferred.
 Evidence logs retained outside Git under $TEMP/sesamefs-e110e-*.
+
+
+## Cross-audit correction / final scope
+
+Reviewed report against #264@6f0855984 and main@5071d170. Three P2 findings
+are supported. The productive RED and source-admission policy remain valid;
+no own up:/pub:/repair or broader resurrection protocol is added.
+
+1. Config permits database.consistency=ONE, while permanent block references
+   are inserted at LOCAL_QUORUM (db.BlockReferenceWriteConsistency). The new
+   exact historical fs: read previously inherited the session and could miss
+   a valid quorum-written reference. It now explicitly pins gocql.LocalQuorum.
+   The source contract inspects that actual SELECT->Scan chain and rejects
+   omission, ONE, or a later ONE override. This is a local quorum intersection
+   guarantee, not a new SERIAL/EACH_QUORUM or multi-DC claim.
+2. Updated the live W2-10 row/index, R3 resurrection summary and E1 subsequent
+   dispositions, rather than only appending new status. They now distinguish
+   executed COMMITTED/TERMINAL RED + measured RevertDirents file admission
+   CLOSED-FIX from continuous liveness, directory/batch, other-handler,
+   retention/Phase5/6, R31 and overall W2-10 OPEN. Historical dated retained-
+   history evidence remains unchanged; its lack of retirement does not describe
+   the later unpublished-source schedule.
+3. Extracted preexisting W2-4 controlled-COMMITTED isolation into independent
+   [PR #265](https://github.com/Sesame-Disk/sesamefs/pull/265), base main.
+   #264 is stacked on codex/w24-controlled-committed-isolation; its diff excludes
+   w24_isolated_evidence_test.go, w2_sync_no_putblock_test.go and W24 URL wiring.
+   Merge #265 first, then retarget/rebase #264 onto main. No automatic merge.
+   Original full-run discovery/combined validation above remains historical
+   evidence, not a claim that W2-4 implementation belongs to this scoped PR.
+
+### Preexisting source-supported follow-ups, not fixes in this PR
+
+- Other resurrection handlers/directory shapes still need their own unpublished
+  source characterization; this is already in the OPEN W2-10 disposition.
+- RevertDirents parent traversal errors fall back to root; replacing by basename
+  there can overwrite a different root entry. Dedicated path/overwrite test and
+  fix belong to a separate GENERAL P1 follow-up.
+- RestoreTrashItem/RevertDirents request coarse PermissionRW. Custom flags map
+  upload OR modify OR delete to RW; these handlers do not additionally enforce
+  granular modify. Register the AUTH P1 follow-up separately; no router/custom-
+  share exploit test is claimed by the owner-context E1-10e fixture.
+- After successful HEAD, RevertDirents only logs counter-adjustment failure then
+  reports success. The multi-scope loop may have already updated earlier scopes.
+  This source-supported GENERAL quota P2 needs separate failure/reconciliation
+  evidence and fix; no counter semantics are changed here.
+- Preexisting cross-repo characterization wording drift is independent of the
+  new W2-10 disposition and remains a documentation follow-up.
+
+Updated-source tests and final standard Docker go-all-test are recorded below
+before ready status. Original frozen plan prefix remains byte-for-byte intact.
+
+### Updated-source final validation and scoped audit
+
+- New reference read contract: PASS on actual production source, plus omission,
+  explicit ONE and later ONE override mutations all rejected. Pinning is proven
+  by the source contract; this RF=1 fixture does not claim a three-replica stale
+  read reproduction or multi-DC evidence.
+- Updated E1-10e matrix: 20/20 named legs across five race repetitions PASS,
+  134.913s. All original rejection and published-history assertions retained.
+- Independent #265 source (main production without resurrection admission):
+  W2-4 race 30/30 PASS, 76.527s; filtered, unavailable and GC-active required
+  child controls exit 1. This isolation implementation is excluded from #264.
+- Normal and integration go vet PASS; PC-0, PC-D1B4, identity-writer and permanent-
+  reference writer consistency source contracts PASS. Formatting/whitespace PASS.
+- FINAL standard Docker go-all-test exit 0: integration 829.290s, API 20/20 suites,
+  OIDC 25/25 tests. Includes the complete required E1-10e and W2-4 matrices.
+  All 13 compiled daemon-dependent controls PASS; no GC-disabled skips. Existing
+  legacy physical-delete skips and optional multi-DC/soak/cgroup suites are not
+  certified by this run.
+- Rebuilt four backend images; all running binaries share SHA-256
+  cc7a7c6de4649a413342b90b4dc6f75596048fa29686e7a14df4132b50ca62a5.
+  Admission source and source-contract test hashes match the immutable test
+  container. Standard development GC behavior remains unchanged.
+- check-test-cleanup.sh: CLEAN on main and manual-GC backends; no active/deleted
+  test organizations, test libraries or groups remain. Both default orgs remain
+  free/hard; the configured free-plan library limit is unchanged. Exact-K
+  cleanup assertions passed in the named legs; no quota increase or volume reset.
+- Preserved original frozen plan prefix byte-for-byte. The live summaries now
+  distinguish scoped source-admission CLOSED-FIX from broader OPEN work.
+
+Scoped verdict: all three supported THIS-PR P2 are corrected; no unresolved
+introduced P0/P1/P2 found. Merge prerequisite #265 first, then retarget/rebase
+#264 onto main. This is not closure of continuous liveness, other handlers or
+shapes, W2-10 overall, E1, X1, R31, or Phase5/6. Production GC remains OFF.
+
+Logs on this workstation (TEMP, not tracked):
+sesamefs-264-review-core-race.log, sesamefs-264-review-w24-independent-race.log,
+sesamefs-264-review-w24-{filtered,active-gc,unavailable}.log,
+sesamefs-264-review-{vet,contracts,cleanup,quota}.log,
+sesamefs-264-reviewed-go-all.log.

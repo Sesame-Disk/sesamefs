@@ -2,17 +2,25 @@
 
 ## Active slice: E1-10e / unpublished resurrection source admission
 
-Plan c167aa947, base #263/main@5071d170. Real PutCommit/RecvFS unpublished
-metadata counterexample: original RevertDirents publishes retired P1 after real
-COMMITTED/TERMINAL. Scoped non-directory source-admission correction requires
-settled own historical fs: and original exact-P validation before each HEAD CAS.
-Four directed legs PASS; race five repetitions 20/20. Final audit also isolated
-legacy W2-4 controlled COMMITTED proof after observed peer-daemon recovery;
-its unchanged ten-leg matrix passed serial race 30/30 with strict cleanup.
-Final Docker go-all-test exit 0: integration 628.223s, API 20/20 suites,
-OIDC 25/25 tests, all 13 daemon controls PASS. Both backend cleanup audits
-clean, free/hard quotas unchanged. Scoped audit: no unresolved introduced
-P0/P1/P2. No broad W2-10 closure; production GC OFF.
+Original frozen plan c167aa947, base #263/main@5071d170. Cross-audit correction:
+permanent fs: admission read explicitly pins LOCAL_QUORUM, with a source contract
+rejecting inherited/ONE consistency. Live W2/E1 summaries distinguish measured
+RevertDirents file source-admission CLOSED-FIX from continuous liveness OPEN.
+
+W2-4 isolation is extracted into [PR #265](https://github.com/Sesame-Disk/sesamefs/pull/265),
+base main, independent source race 30/30. #264 is stacked on that prerequisite;
+its diff contains no W2-4 test-file or W24 URL changes. Merge #265 first, then
+retarget/rebase #264 to main. No automatic merge.
+
+Original 6f085 validation: new matrix 4/4, race 20/20; full Docker integration
+628.223s, API 20/20 suites, OIDC 25/25 tests, 13 daemon controls PASS and both
+backends clean. Updated-source validation: reference consistency contract and
+three mutations PASS, inventory/writer contracts and both vets PASS, race
+20/20 (134.913s). Final Docker go-all-test exit 0: integration 829.290s, API
+20/20 suites, OIDC 25/25 tests; all 13 daemon controls PASS, no GC-disabled
+skips. Both backends clean, free/hard quotas unchanged. Scoped review:
+three introduced P2 corrected; no unresolved introduced P0/P1/P2. W2-10
+overall/E1/X1 remain OPEN; production GC OFF.
 [Plan/evidence](docs/E1-10E-W210-RESIDUAL-DISPOSITION.md).
 
 ## Previous merged slice: E1-10d / RevertDirents retained-history

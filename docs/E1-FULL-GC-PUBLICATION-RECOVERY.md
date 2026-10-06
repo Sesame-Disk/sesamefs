@@ -97,11 +97,16 @@ Source trace with subsequent scoped dispositions:
   repair before HEAD, then promotes after HEAD. E1-09 now adds source exact-P
   capture per attempt and final validation after repair: the measured productive
   source-purge retirement schedule is CLOSED-FIX; W2-9 overall stays OPEN.
-- `RevertFile`, `RevertDirectory`, `RestoreTrashItem` and `RevertDirents`
-  rebuild a tree from historical fs objects and update HEAD directly, without
-  the pending-publish `pub:`/repair sequence or an exact-placement check. No
-  race was run, and source inspection alone does not establish whether the
-  required historical object can coexist with retired P1; W2-10 stays OPEN.
+- Content-resurrection handlers rebuild a tree from historical fs objects without
+  own up:/pub:/repair. Retained-history subsets block GC before D. E1-10e runs
+  a different real schedule: unpublished PutCommit/RecvFS metadata persists while
+  owned temporary liveness lapses, GC retires exact P1 at COMMITTED/TERMINAL,
+  and the original RevertDirents publishes HEAD depending on that retired P1.
+  The measured non-directory file source-admission subset is now CLOSED-FIX:
+  settled historical fs: at LOCAL_QUORUM, original exact-P capture and recheck
+  immediately before every HEAD CAS. This is not continuous own liveness through
+  HEAD; directories/batches, other resurrection handlers, retention/Phase5/6,
+  R31 and W2-10 overall remain OPEN. [E1-10e](./E1-10E-W210-RESIDUAL-DISPOSITION.md).
 - The Sync idempotent-repair path can enqueue a repair for an already-current
   HEAD and intentionally has no retroactive exact-P rejection. This branch did
   not construct that state through a supported current flow after D; W2-3 and

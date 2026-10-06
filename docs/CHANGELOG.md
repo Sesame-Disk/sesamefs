@@ -14,8 +14,8 @@ Require settled historical permanent references and validate original physical
 placement before publishing restored file HEAD. Reject unpublished Sync metadata
 whose borrowed upload liveness may lapse; settled Sync history remains supported.
 Cassandra/SILO evidence reproduces COMMITTED/TERMINAL unsafe publication before
-the scoped fix. The full audit also isolates the existing W2-4 COMMITTED matrix
-from peer daemon recovery, preserving its assertions and the shared active GC.
+the scoped fix. The new permanent-fs read pins LOCAL_QUORUM even under a ONE session.
+The preexisting W2-4 harness isolation is a separate prerequisite PR #265.
 No general W2-10/Phase5/6 closure or GC activation.
 
 ## 2026-10-06 - E1-10d single-dirent retained-history characterization

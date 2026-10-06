@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
 // captureRetainedHistoricalFile admits only a file whose own permanent fs:
@@ -39,10 +40,12 @@ func (h *FSHelper) captureRetainedHistoricalFile(orgID, repoID string, entry FSE
 }
 
 func (h *FSHelper) requireHistoricalFileReferences(orgID, repoID, fsID string, placements []commitBlockPlacement) error {
+	// Intersect permanent reference writes at LOCAL_QUORUM even if the session
+	// is configured at ONE. A weak false absence would reject settled history.
 	ref := db.BlockReferrerForFSObject(repoID, fsID)
 	return runBoundedPublicationChecks(len(placements), func(ctx context.Context, i int) error {
 		var observed string
-		if err := h.db.Session().Query(`SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?`, orgID, placements[i].blockID, ref).WithContext(ctx).Scan(&observed); err != nil {
+		if err := h.db.Session().Query(`SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?`, orgID, placements[i].blockID, ref).WithContext(ctx).Consistency(gocql.LocalQuorum).Scan(&observed); err != nil {
 			return fmt.Errorf("historical file lacks settled permanent liveness: %w", err)
 		}
 		if observed != ref {
