@@ -243,3 +243,19 @@ file/wiring changes in #266's diff against its prerequisite. The full standard
 go-all-test result remains the earlier accepted identical-code run; no full
 rerun is claimed here. Scope objection is resolved by separation, not by a
 production fix. Merge order: #267, retarget #266 to main, then review/merge #266.
+
+### Merge readiness after #267 — 2026-10-07
+
+The user merged prerequisite #267 as main@308d77df68afc2090d1a090528642950b028f4e3.
+PR #266 is now aligned with that main and targets main directly; the temporary
+stacked-base/merge-order instructions above are historical. Its diff contains
+no G5 isolation files, G5 control script, G5 documentation or new G5 wiring.
+No published history was rewritten and no PR was merged by this readiness step.
+
+Git verifies effective internal Go sources and Compose still exactly match the
+accepted c9a4eb23b snapshot; alignment introduced no code change. Prior full
+Docker go-all-test PASS and the post-extraction race/negative-control results
+remain the tested evidence, not a newly claimed test run. Final diff/scope,
+current versus historical W2-11 status, residual claims and whitespace were
+rechecked. No unresolved introduced P0/P1/P2 was found. W2-11 closure remains
+covered pre-D only; W2-12..14/E1/X1/activation remain OPEN, production GC OFF.

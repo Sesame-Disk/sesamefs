@@ -2,7 +2,8 @@
 
 ## Active slice: E1-11 / W2-11 current-runtime repair liveness
 
-Base main@4f7c29923fb6022c4b7e48996b50918011781679 (#264 merged).
+Current PR base main@308d77df68afc2090d1a090528642950b028f4e3 (#267 merged).
+Original frozen-plan base main@4f7c29923fb6022c4b7e48996b50918011781679 (#264).
 Frozen plan 3dc849fbb. Real Office writer/repair visitor, isolated e19 keyspace,
 actual up:/pub: TTL expiry, productive scoped GC and native Cassandra wire loss.
 Six legs cover normal, during-classifier, post-REACHABLE, clean UNKNOWN from a
@@ -31,13 +32,13 @@ Markdown only, runtime/test/Compose snapshot unchanged. Prior full Docker PASS
 is retained as prior execution; this correction does not claim a new test run.
 
 Scope reaudit: G5 harness isolation and its own gate controls are extracted
-to prerequisite PR #267; #266 targets that branch pending its merge. Effective
+to prerequisite PR #267, now merged into main. #266 targets main. Effective
 combined Go/Compose match c9a4eb23b. Three E1-11 controls stay in this PR;
-two G5 controls belong to #267. No PR merged or published history rewritten.
+two G5 controls belong to merged #267. Published #266 history is preserved.
 Post-extraction Docker E1-11 6/6 race (49.586s) and three own negatives PASS;
 standalone G5 9/9 race and two negatives/vets PASS. Both backends CLEAN,
-storage quota_usage 0, hard policy/limits unchanged. Merge #267 first, then
-retarget #266 to main; earlier full go-all-test is not claimed as rerun.
+storage quota_usage 0, hard policy/limits unchanged. After user merge of #267,
+#266 is aligned with main; earlier full go-all-test is not claimed as rerun.
 
 Updated scoped audit: no unresolved introduced P0/P1/P2. W2-11 CLOSED-EVIDENCE
 for covered current-version pre-D safety only. W2-12..14, W2-10 overall,
