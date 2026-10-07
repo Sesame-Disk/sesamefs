@@ -44,7 +44,7 @@ parallelism, health gate, bucket-count/TTL or standard dev GC configuration chan
 
 ## Validation
 
-Pending implementation and productive evidence. No result is inferred from plan.
+Accepted corrected-source results are recorded below. Initial and rejected runs are historical; no result is inferred from the plan.
 
 ## Harness and initial evidence
 
@@ -121,7 +121,7 @@ policy and limits are unchanged. This does not repair unrelated historical tests
   95096721dc25f5995bac67b55d2fe156aafe4b51b4fc3cbe0e9311b1252d168e.
 - First standard Docker go-all-test exit 0: integration 668.529s, API 20/20
   and OIDC 25/25. This is historical, before pending-owner correction.
-  Corrected-source race/gates/mutation/full regression and final audit are pending.
+  At that historical snapshot, corrected-source checks were still pending; accepted results follow below.
 
 ## Safety disposition
 
@@ -179,3 +179,40 @@ Normal release callbacks and Cassandra/SILO authority remain unchanged.
 The source extraction is only to share that existing body with the test's scoped
 eligibility observation; it is not a repair scheduler fix. Final race/gates/full
 regression must use this corrected source. All prior runs are historical.
+
+## Corrected-source accepted checks (63747ec1a)
+
+- Final dedicated pipeline exit 0, persisted in the Docker container.
+- Race matrix: 15/15 named legs across three fresh isolated children PASS,
+  160.321s including parent/child teardown; ordinary/integration vets, completeness
+  and mandatory-gate inventory PASS. Each backlog has at least three real earlier
+  repairs; target progress remains absent at the controlled pause.
+- Three own filtered/unavailable/filtered-child negative controls PASS.
+- Guard omission PASS (16.053s): unvisited target, zero real refs, exact productive
+  COMMITTED, own TERMINAL recovery and independent metadata/K1/expiry/pending-owner
+  canonical+projection teardown for every fixture.
+- Four W2 negative controls PASS again. Existing E1-11 three and G5 two negatives
+  passed earlier; full standard regression exercises their productive gates.
+- E1-13 Go file SHA-256:
+  35f9bd87417d61c6b4fe065082c07b16b56e27068a040c623a0cc6ea9273e5d2.
+- All six changed Go files in the final standard Docker runner match host bytes.
+  Default worker scheduling still passes its original UTC clock to the same body.
+- Final standard Docker go-all-test retry exited 0: integration 705.954s, API
+  20/20 suites and OIDC 25/25 tests. All 13 standard daemon-dependent controls
+  PASS; existing optional topology/Phase6 skips are not claimed as execution.
+- All 17 E1-13 fixture owner-teardown checks passed in that standard run.
+  Both backends report CLEAN and quota_usage 0, with hard quota policy and
+  storage_quota 2000000000 unchanged. Earlier full-suite exit 0 is historical.
+- Final source/docs audit found no unresolved introduced P0/P1/P2 within this
+  measured scope. W2-13 overall, the frozen reachable/post-D row and X1 remain OPEN.
+
+## Interrupted standard run
+
+The standard runner started at 19:59 UTC on 2026-10-07 was interrupted at
+20:16:01 UTC with Docker exit 255. The diagnostic container also exited 255 at
+the same restart, while backend services restarted and recovered. Docker logs
+for the interrupted container were unavailable afterward; the partial saved log
+is not accepted as full-suite evidence. The unchanged final image was restarted
+with the default go-all-test service command at 20:23 UTC; its result must be
+recorded separately. No timeout, gate, GC configuration or test assertion was
+relaxed for this retry.

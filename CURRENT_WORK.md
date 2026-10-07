@@ -9,8 +9,13 @@ bucket repairs and fresh-process observers. Audit corrected pending-fs owner
 cleanup/projections, a weak backlog-count check and shared-daemon schedule
 contamination. Real future leases isolate the target; only sweep eligibility time
 is controlled, with the same productive body and native classifier/GC clocks.
-Final race/gates/full regression/audit pending; prior results historical. Every
-fixture verifies metadata/repair/bytes/expiry/owner cleanup. Existing e19 only.
+Final Docker race 15/15 PASS (160.321s), vets and own/W2 negatives PASS.
+Guard omission reaches exact COMMITTED and own TERMINAL with teardown (16.053s).
+Standard go-all-test retry exit 0: integration 705.954s, API 20/20, OIDC 25/25;
+all 13 daemon controls PASS. First final run interrupted by Docker restart,
+exit 255, not accepted. Both backends CLEAN, quota_usage 0, hard limits unchanged.
+Every fixture verifies metadata/repair/bytes/expiry/owner cleanup. Existing e19 only.
+Final audit: no unresolved introduced P0/P1/P2 in measured scope; ready for review.
 W2-13 overall OPEN for discovery/convergence/scale; only measured pre-D safety
 may close. W2-12/14, E1/X1 and activation remain OPEN. Standard dev GC unchanged.
 [Plan/evidence](docs/E1-13-REPAIR-DISCOVERY-DELAY-SAFETY.md).
