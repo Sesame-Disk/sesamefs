@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 )
@@ -124,4 +125,11 @@ func ReapPublishedBlockReferenceRepairProgressOnlyRowForIntegration(database *db
 // sweep lists.
 func PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID string) int {
 	return newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil).Bucket
+}
+
+// RunPublishedBlockReferenceRepairSweepAtForIntegration supplies only eligibility
+// time to the same productive sweep body. It does not replace listing, classifier,
+// liveness, settlement or GC outcomes and does not override process-global clocks.
+func RunPublishedBlockReferenceRepairSweepAtForIntegration(database *db.DB, now time.Time) error {
+	return runPublishedBlockReferenceRepairSweepAt(database, now.UTC())
 }

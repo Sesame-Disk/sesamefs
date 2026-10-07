@@ -1721,7 +1721,15 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 	if database == nil {
 		return nil
 	}
-	now := publishedBlockReferenceRepairNowFn().UTC()
+	return runPublishedBlockReferenceRepairSweepAt(database, publishedBlockReferenceRepairNowFn().UTC())
+}
+
+// The caller supplies only the scheduling observation. Classification, durable
+// authority, liveness renewal and destructive GC keep their own normal clocks.
+func runPublishedBlockReferenceRepairSweepAt(database *db.DB, now time.Time) error {
+	if database == nil {
+		return nil
+	}
 	sweepStarted := time.Now()
 	metrics.PublishRepairLastSweepStart.Set(float64(now.Unix()))
 	defer func() { metrics.PublishRepairSweepDuration.Observe(time.Since(sweepStarted).Seconds()) }()
@@ -1787,6 +1795,7 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 				metrics.PublishRepairSweepRowsTotal.WithLabelValues("skipped_lease").Inc()
 				continue
 			}
+			repairBeforeVisitBarrier(database, repair.RepoID, repair.CommitID, repair.FSID)
 			metrics.PublishRepairSweepRowsTotal.WithLabelValues("visited").Inc()
 			if err := repairPublishedBlockReferenceRepair(database, repair); err != nil {
 				nextRetryAt := now.Add(publishedBlockReferenceRepairRetryDelay(now, repair.CreatedAt))

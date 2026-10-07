@@ -1,6 +1,26 @@
 # Current Work
 
-## Active slice: E1-12 / W2-12 definitive-loser crash safety
+## Active slice: E1-13 / W2-13 pending repair safety during discovery delay
+
+Base main@fc50e168db91212cdb6d74b78f3f7db8756c6310 (#268 merged).
+Branch codex/e1-13-repair-discovery-delay-safety; frozen plan cf2cf6c36.
+Five productive Office/Cassandra/SILO legs with at least three actual earlier-
+bucket repairs and fresh-process observers. Audit corrected pending-fs owner
+cleanup/projections, a weak backlog-count check and shared-daemon schedule
+contamination. Real future leases isolate the target; only sweep eligibility time
+is controlled, with the same productive body and native classifier/GC clocks.
+Final Docker race 15/15 PASS (160.321s), vets and own/W2 negatives PASS.
+Guard omission reaches exact COMMITTED and own TERMINAL with teardown (16.053s).
+Standard go-all-test retry exit 0: integration 705.954s, API 20/20, OIDC 25/25;
+all 13 daemon controls PASS. First final run interrupted by Docker restart,
+exit 255, not accepted. Both backends CLEAN, quota_usage 0, hard limits unchanged.
+Every fixture verifies metadata/repair/bytes/expiry/owner cleanup. Existing e19 only.
+Final audit: no unresolved introduced P0/P1/P2 in measured scope; ready for review.
+W2-13 overall OPEN for discovery/convergence/scale; only measured pre-D safety
+may close. W2-12/14, E1/X1 and activation remain OPEN. Standard dev GC unchanged.
+[Plan/evidence](docs/E1-13-REPAIR-DISCOVERY-DELAY-SAFETY.md).
+
+## Previous merged slice: E1-12 / W2-12 definitive-loser crash safety (PR #268)
 
 Base main@2a6eb32fd1a5a6a0e71ddd18ddc0a2fedfaad0eb (#266 merged).
 Frozen plan fb9911edd. Scope: one Office/CreateFile block, actual negative HEAD
