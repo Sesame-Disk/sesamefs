@@ -30,6 +30,11 @@ Corrected historical OPEN/P1 labels and separated discovery/cleanup residuals;
 Markdown only, runtime/test/Compose snapshot unchanged. Prior full Docker PASS
 is retained as prior execution; this correction does not claim a new test run.
 
+Scope reaudit: G5 harness isolation and its own gate controls are extracted
+to prerequisite PR #267; #266 targets that branch pending its merge. Effective
+combined Go/Compose match c9a4eb23b. Three E1-11 controls stay in this PR;
+two G5 controls belong to #267. No PR merged or published history rewritten.
+
 Updated scoped audit: no unresolved introduced P0/P1/P2. W2-11 CLOSED-EVIDENCE
 for covered current-version pre-D safety only. W2-12..14, W2-10 overall,
 cleanup/discovery/Paxos residuals, E1/X1, Phase5/6 and activation remain OPEN.

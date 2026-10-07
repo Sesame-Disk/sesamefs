@@ -214,3 +214,21 @@ go-all-test result is retained, not presented as a new run. Documentation
 consistency, linked evidence, diff scope and whitespace were rechecked; no new
 runtime fix or broader closure is justified by the report. The G5 daemon/manual
 race predates this PR and the existing scoped harness isolation remains.
+
+### Scope extraction — PR #267
+
+Reaudit at c9a4eb23b found no new E1-11 safety defect. Its remaining objection
+concerns bundling a pre-existing G5 harness fix. That fix, its TestMain/Compose
+wiring and independent negative controls now belong to prerequisite
+[PR #267](https://github.com/Sesame-Disk/sesamefs/pull/267), based directly on
+main@4f7c2992. PR #266 targets that prerequisite branch until it is merged;
+merge #267 first, then retarget #266 to main. Neither PR was merged here.
+The dependency was integrated without rewriting published #266 history.
+
+The effective combined Go sources and Compose are identical to c9a4eb23b;
+only gate-script ownership and documentation differ. E1-11's gate script now
+contains its three own controls; the two G5 controls live in the prerequisite's
+scripts/g5-coexistence-gates.sh. Existing standard integration budget 18m stays
+in E1-11, where its additional mandatory matrix requires it. Prior accepted
+combined go-all-test evidence remains applicable to the identical compiled
+source/Compose; it is not represented as a new run on either split PR.
