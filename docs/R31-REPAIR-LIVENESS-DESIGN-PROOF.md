@@ -6,7 +6,9 @@
 > fan-out or a health gate to obtain that evidence closure. Broader R31 is OPEN.
 
 **Status:** CLOSED — **OUTCOME B: HYPOTHESIS REJECTED** (candidate V0 falsified by D7/D3; see D12). Documentation / characterization only.
-**Issue:** `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` — OPEN, P1, PRE-X1 / PRE-GC.
+**Historical issue status at this record's parent:** `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` — OPEN, P1, PRE-X1 / PRE-GC.
+**Current issue disposition:** CLOSED-EVIDENCE for the covered current-version pre-D safety contract; see [E1-11](./E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md).
+Unqualified `main` and issue-status statements below describe the pinned parent 7bac9c125, not the current runtime. W2-12..14 and broader R31 remain OPEN.
 **Parent:** `7bac9c125` (`main` containing #223).
 **Branch:** `docs/r31-repair-liveness-design-proof`.
 **Prerequisite (source of record):** [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) — the two invariants, the design gate (§6), the operational model of `main` (§8) and the open questions (§8.8). This file does not restate them; it answers them.
@@ -283,7 +285,7 @@ the sequence, write it up, and go to D12 with outcome B. *(This is what
 happened: step 3 produced the counterexample; step 4 formalized outcome B
 in D3; steps 5 onward were not performed.)*
 
-## Merge criteria (conditional on the outcome)
+## Historical merge criteria for #224 (conditional on the outcome)
 
 ```text
 Common
@@ -694,8 +696,9 @@ wall-clock time for every block it fails to cover and can delay that
 block's next owner past the instant main would have installed it. A continue-on-error refresh and a promote-first order do not
 repair it and are recorded only so they are not re-proposed.
 
-No runtime is written. ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01
-remains OPEN (P1, PRE-X1 / PRE-GC). ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-
+Historical outcome at main@7bac9c125:
+No runtime was written. ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01
+remained OPEN (P1, PRE-X1 / PRE-GC). ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-
 AUTHORITY-01 remains OPEN. X1, W2/R31 for this residual and GC activation
 are unchanged.
 ```

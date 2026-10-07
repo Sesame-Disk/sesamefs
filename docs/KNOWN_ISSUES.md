@@ -7199,7 +7199,7 @@ The diagnosis and rejected designs below describe the pre-#239 premise. Pub: can
 **Affected**: `repairPublishedBlockReferenceRepair`, `classifyPublishedBlockReferenceRepairCommitResumable`, `renewPublishedBlockReferenceRepairLivenessIfPending`
 **Rejected approaches**: PR #220 (`fix/r31-publish-repair-renew-before-classify`, closed 2026-09-17), PR #222 (`fix/r31-renew-before-classify-minimal`, last head `eeb2eba7e`, closed 2026-09-18). Nothing from either is in `main`
 
-#### Problem
+#### Historical problem (pre-#239)
 
 The current visit order is hydrate → classify (SERIAL HEAD, up to 30s of
 EACH_QUORUM parent reads, progress LWTs) → then, on UNKNOWN/error, call
@@ -7209,8 +7209,11 @@ while the repair row is pending. REACHABLE likewise promotes `fs:` only after
 the walk.
 
 If prior liveness expires before that write, a zero-ref interval exists even
-when the later renewal succeeds. Once GC is destructive, that gap can become
-a delete. Recreating `pub:` afterwards does not close the interval.
+when the later renewal succeeds. Under the pre-#239 premise, that gap could
+become a delete once GC was destructive; recreating `pub:` afterwards did not
+close the interval. E1-11 supersedes that destructive-gap claim for the covered
+current-version contract: zero real refs do not authorize a new D while the
+matching non-expiring repair survives.
 
 This is not a regression versus `main` (main had no UNKNOWN renewal) and does
 not invalidate the resumable walk. R31-C1 closed moving-HEAD **convergence**,
@@ -7267,7 +7270,8 @@ session-consistency read and then removed the repair-owned pin. The fix now
 treats that absence as non-authoritative and lets the pin expire under its
 existing TTL.
 
-Operational model (canonical record §8): the 35d `pub:` TTL is a
+Historical operational model at the design-record parent (canonical record §8):
+the 35d `pub:` TTL is a
 crash/recovery backstop — every content funnel attempts `stage pub: → queue
 repair → HEAD → request-local fs: promotion attempt → clear repair on success` inside the request,
 so the durable repair covers only the abnormal post-HEAD interval; the row
@@ -7280,10 +7284,16 @@ classifier) was **rejected** by the design proof of PR #224
 ([R31-REPAIR-LIVENESS-DESIGN-PROOF.md](./R31-REPAIR-LIVENESS-DESIGN-PROOF.md)):
 a failable pre-step ahead of `main`'s handoff delays the blocks it fails
 to cover unless an independent owner or a proven temporal invariant covers
-them — V0 and #222 had neither. Still no runtime; still OPEN.
+them — V0 and #222 had neither. At that point no runtime redesign existed and
+this issue remained OPEN. E1-11 later established that renewal-before-classify
+is not required for the covered current-version pre-D safety contract.
 
-Keep continuity-if-discovery-arrives-after-expiry explicitly PRE-GC. Do not
-treat this issue as a reason to reopen the reachability classifier.
+Discovery/completion bounds (W2-13), candidate creation at the last `pub:` expiry
+(W2-14), known-loser durability (W2-12), and the registered cleanup/retention
+follow-ups remain separate OPEN contracts. Discovery after TTL expiry does not
+by itself authorize a new D while the matching durable repair survives. This
+evidence does not cover an unadopted funnel or a repair acquired after COMMITTED
+D. Broader PRE-GC requirements remain; no classifier redesign is prescribed.
 
 #### Related
 

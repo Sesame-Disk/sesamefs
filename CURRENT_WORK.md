@@ -25,7 +25,12 @@ is isolated to the existing e19 child; original assertions and dev daemon remain
 Standard integration budget 18m accommodates mandatory matrix/child overhead.
 The first contaminated/timeout run is recorded, not accepted as GREEN.
 
-Final scoped audit: no unresolved introduced P0/P1/P2. W2-11 CLOSED-EVIDENCE
+Cross-audit of 1656de975 confirmed one P2 documentation/status contradiction.
+Corrected historical OPEN/P1 labels and separated discovery/cleanup residuals;
+Markdown only, runtime/test/Compose snapshot unchanged. Prior full Docker PASS
+is retained as prior execution; this correction does not claim a new test run.
+
+Updated scoped audit: no unresolved introduced P0/P1/P2. W2-11 CLOSED-EVIDENCE
 for covered current-version pre-D safety only. W2-12..14, W2-10 overall,
 cleanup/discovery/Paxos residuals, E1/X1, Phase5/6 and activation remain OPEN.
 Production GC OFF; standard dev daemon configuration unchanged. No new TTL

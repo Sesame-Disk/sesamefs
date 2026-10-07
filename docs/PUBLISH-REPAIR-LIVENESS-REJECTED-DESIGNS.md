@@ -6,7 +6,9 @@
 > gate below remain unchanged; W2-12..14 and broader R31 remain OPEN.
 
 **Status:** decision record. Documentation only.
-**Issue:** `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` — **OPEN**, P1, PRE-X1 / PRE-GC.
+**Historical issue status at this record's parent:** `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` — OPEN, P1, PRE-X1 / PRE-GC.
+**Current issue disposition:** CLOSED-EVIDENCE for the covered current-version pre-D safety contract; see [E1-11](./E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md).
+Unqualified `main` and issue-status statements below describe the pinned parent d6936323b, not the current runtime. W2-12..14 and broader R31 remain OPEN.
 **Parent:** `d6936323b` (`main` containing #221).
 **Branch:** `docs/r31-publish-repair-liveness-lessons`.
 **Rejected, closed without merge:** PR #220 (`fix/r31-publish-repair-renew-before-classify`, last head `21ad59719`, closed 2026-09-17) and PR #222 (`fix/r31-renew-before-classify-minimal`, last head `eeb2eba7e`, closed 2026-09-18).
@@ -992,8 +994,10 @@ stable-owner handoff. Because that handoff has no unconditional duration
 bound, schedules exist in which main maintains continuous liveness while
 the added pre-pass creates a zero-reference interval.
 
-Therefore ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01 remains OPEN
-(P1, PRE-X1 / PRE-GC).
+At the pinned main@d6936323b, ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01
+therefore remained OPEN (P1, PRE-X1 / PRE-GC). The later E1-11 disposition
+closes only covered current-version pre-D safety; it does not adopt either
+rejected design or close the separate discovery/cleanup contracts.
 
 The next attempt must begin as a design proof, starting from the
 operational model and the open questions of §8 (liveness maintenance

@@ -197,3 +197,20 @@ The observed test-infrastructure races were corrected without changing the
 production protocol, GC daemon configuration or any existing safety assertion.
 The standard budget/harness adjustment is explicit above. No runtime RED was
 observed without the guard omission; no new fence/health gate was justified.
+
+### Cross-audit correction — 2026-10-07
+
+Audit of PR HEAD 1656de975 confirmed one introduced P2 documentation defect:
+the current scoped CLOSED-EVIDENCE status coexisted with unqualified OPEN/P1
+statements in the issue body and historical #220/#222/#224 records. These are
+now explicitly historical at their pinned parents. The old destructive-gap
+diagnosis is distinguished from the current pending-repair veto; discovery,
+last-pub: candidate creation, known-loser and cleanup residuals stay in their
+separate W2-12/13/14 and registered follow-up contracts.
+
+Only Markdown changes in this correction. Runtime, test sources, scripts and
+Compose remain identical to the accepted tested snapshot. The recorded Docker
+go-all-test result is retained, not presented as a new run. Documentation
+consistency, linked evidence, diff scope and whitespace were rechecked; no new
+runtime fix or broader closure is justified by the report. The G5 daemon/manual
+race predates this PR and the existing scoped harness isolation remains.
