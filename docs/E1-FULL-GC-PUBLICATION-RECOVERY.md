@@ -416,6 +416,10 @@ A fresh-process restart rediscovers backlog. Guard-only omission reaches exact
 COMMITTED and completes owned TERMINAL recovery. Every fixture requires independent
 metadata/bytes/expiry/pending-owner canonical+projection cleanup.
 Only the measured Office delayed-discovery pre-D subset is CLOSED-EVIDENCE.
+The frozen E1-13 attack row above asks for a reachable repair under backlog and
+post-D continuation. This slice uses an unpublished/native UNKNOWN target and
+measures a pre-D veto; it does not execute or close that broader reachable/post-D
+row. E1-11's reachable evidence is separate, not a substituted backlog schedule.
 W2-13 overall discovery/convergence/scale remains OPEN; no arbitrary delay, SLA,
 fairness, completion or same-org GC scan scale bound. W2-12/14, concurrent cleanup,
 broader E1/X1 and activation remain OPEN. Final validation belongs to linked evidence.

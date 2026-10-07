@@ -4,10 +4,13 @@
 
 Base main@fc50e168db91212cdb6d74b78f3f7db8756c6310 (#268 merged).
 Branch codex/e1-13-repair-discovery-delay-safety; frozen plan cf2cf6c36.
-Five productive Office/Cassandra/SILO legs with real earlier-bucket repairs and
-fresh-process sweep observers. Initial matrix PASS; strengthened race, mutation,
-negative gates, standard go-all-test and final audit pending. All fixtures require
-independent metadata/repair/bytes/expiry cleanup. Existing e19 isolation only.
+Five productive Office/Cassandra/SILO legs with at least three actual earlier-
+bucket repairs and fresh-process observers. Audit corrected pending-fs owner
+cleanup/projections, a weak backlog-count check and shared-daemon schedule
+contamination. Real future leases isolate the target; only sweep eligibility time
+is controlled, with the same productive body and native classifier/GC clocks.
+Final race/gates/full regression/audit pending; prior results historical. Every
+fixture verifies metadata/repair/bytes/expiry/owner cleanup. Existing e19 only.
 W2-13 overall OPEN for discovery/convergence/scale; only measured pre-D safety
 may close. W2-12/14, E1/X1 and activation remain OPEN. Standard dev GC unchanged.
 [Plan/evidence](docs/E1-13-REPAIR-DISCOVERY-DELAY-SAFETY.md).

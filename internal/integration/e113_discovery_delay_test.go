@@ -95,7 +95,7 @@ func TestE113ProcessChild(t *testing.T) {
 			outcomes[row.Repo] = outcome
 		}))
 	}
-	err := v2pkg.RunPublishedBlockReferenceRepairSweepForIntegration(database)
+	err := v2pkg.RunPublishedBlockReferenceRepairSweepAtForIntegration(database, time.Now().Add(2*time.Hour))
 	if err == nil || !strings.Contains(err.Error(), "unknown; retain queued repair") {
 		t.Fatalf("native UNKNOWN sweep result: %v", err)
 	}
@@ -210,8 +210,9 @@ func (f *e113Fixture) retained(t *testing.T) {
 }
 func (f *e113Fixture) eligible(t *testing.T) {
 	t.Helper()
-	// Age only the actual row. This is eligibility, never row order or authority.
-	if err := f.fx.database.Session().Query(`UPDATE published_block_reference_repairs SET created_at=?,lease_expires_at=? WHERE bucket=? AND org_id=? AND repo_id=? AND commit_id=? AND fs_id=?`, time.Now().Add(-time.Hour), time.Now().Add(-time.Hour), f.repair.bucket, f.fx.orgID, f.fx.repoID, f.repair.commitID, f.repair.fsID).Consistency(gocql.LocalQuorum).Exec(); err != nil {
+	// Keep the real lease ahead of the shared daemon. The dedicated sweep advances
+	// only eligibility time; this is neither row order nor publication authority.
+	if err := f.fx.database.Session().Query(`UPDATE published_block_reference_repairs SET created_at=?,lease_expires_at=? WHERE bucket=? AND org_id=? AND repo_id=? AND commit_id=? AND fs_id=?`, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), f.repair.bucket, f.fx.orgID, f.fx.repoID, f.repair.commitID, f.repair.fsID).Consistency(gocql.LocalQuorum).Exec(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -285,8 +286,11 @@ func TestRepairDiscoveryDelaySafety(t *testing.T) {
 			target := fixtures[len(fixtures)-1]
 			rows := []e113Coordinate{}
 			for _, f := range fixtures {
-				// Any equal-bucket extras remain leased and cannot execute in this sweep.
+				// Equal-bucket extras stay ahead even of the controlled eligibility time.
 				if f != target && f.repair.bucket >= target.repair.bucket {
+					if err := f.fx.database.Session().Query(`UPDATE published_block_reference_repairs SET lease_expires_at=? WHERE bucket=? AND org_id=? AND repo_id=? AND commit_id=? AND fs_id=?`, time.Now().Add(3*time.Hour), f.repair.bucket, f.fx.orgID, f.fx.repoID, f.repair.commitID, f.repair.fsID).Consistency(gocql.LocalQuorum).Exec(); err != nil {
+						t.Fatal(err)
+					}
 					continue
 				}
 				f.eligible(t)
