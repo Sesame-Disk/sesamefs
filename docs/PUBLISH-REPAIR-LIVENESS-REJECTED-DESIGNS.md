@@ -1,5 +1,10 @@
 # Publish-repair liveness — rejected designs (#220, #222) and the design gate for the next attempt
 
+> Current-version update: [E1-11](./E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md)
+> closes covered pre-D renewal-after-classify safety through the existing durable
+> repair guard. The historical rejected designs and their future runtime design
+> gate below remain unchanged; W2-12..14 and broader R31 remain OPEN.
+
 **Status:** decision record. Documentation only.
 **Issue:** `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` — **OPEN**, P1, PRE-X1 / PRE-GC.
 **Parent:** `d6936323b` (`main` containing #221).

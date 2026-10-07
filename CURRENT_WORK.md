@@ -10,16 +10,28 @@ real interrupted loser, post-HEAD classifier failure and destructive guard failu
 No classification substitution or fabricated repair/P/HEAD/D. Production callback
 is a no-op; only test-tagged session/library observation pauses the visitor.
 
-Initial matrix 6/6 PASS. Exact COMMITTED omission RED observed, then completed
-through productive recovery; teardown verifies owned rows/repairs/K1 absent.
-Independent filtered/unavailable/child-filtered gate controls PASS. Final race,
-vet and standard Docker go-all-test verification in progress.
+Final matrix race 30/30 PASS (140.593s); after the G5 harness correction,
+parent/child race repeats 18/18 E1-11 and 3/3 original G5 PASS (280.932s).
+Exact COMMITTED guard-omission RED observed; productive recovery completes
+TERMINAL before independently verified teardown (final script PASS, 26.231s).
+Five filtered/unavailable child-gate controls and existing W2 negatives PASS;
+ordinary/integration vets PASS. Test code/harness pinned to 73d083425.
 
-Proposed disposition: W2-11 CLOSED-EVIDENCE for covered current-version pre-D
-safety only. W2-12..14, W2-10 overall, cleanup/discovery/Paxos residuals, E1/X1,
-Phase5/6 and activation remain OPEN. Production GC OFF; standard dev daemon
-configuration unchanged. No new TTL policy, renewal mechanism or health gate.
+Final standard Docker go-all-test exit 0: integration 956.708s, API 20/20 suites,
+OIDC 25/25 tests; all 13 daemon controls PASS without GC-disabled skips.
+Both backends CLEAN, storage quota_usage 0 and hard policy/limits unchanged.
+Real traffic counters increase normally. A pre-existing manual G5 recovery race
+is isolated to the existing e19 child; original assertions and dev daemon remain.
+Standard integration budget 18m accommodates mandatory matrix/child overhead.
+The first contaminated/timeout run is recorded, not accepted as GREEN.
+
+Final scoped audit: no unresolved introduced P0/P1/P2. W2-11 CLOSED-EVIDENCE
+for covered current-version pre-D safety only. W2-12..14, W2-10 overall,
+cleanup/discovery/Paxos residuals, E1/X1, Phase5/6 and activation remain OPEN.
+Production GC OFF; standard dev daemon configuration unchanged. No new TTL
+policy, renewal mechanism, production queries/writes or health gate.
 [Plan/evidence](docs/E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md).
+
 ## Previous merged slice: E1-10e / PR #264
 
 PR #264 targets main@79c5e2d2d (#265 merged); frozen plan c167aa947.
