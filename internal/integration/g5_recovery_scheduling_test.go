@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,15 @@ var g5CoexistenceObserved, g5PaginationObserved, g5GraceObserved bool
 // Real Cassandra INSTALL, exact handoff and fresh-worker MinIO continuation.
 // Both physical objects coexist until recovery, including P2's live reference.
 func TestG5CassandraMinIOOldLifeWithoutDayScheduling(t *testing.T) {
+	if endpoint := os.Getenv("SESAMEFS_G5_ISOLATED_URL"); endpoint != "" && os.Getenv("SESAMEFS_G5_COEXISTENCE_CHILD") != "1" {
+		g5RunCoexistenceIsolated(t, endpoint)
+		return
+	}
+	if os.Getenv("SESAMEFS_G5_COEXISTENCE_CHILD") == "1" {
+		if err := e19CheckGCDisabled(superadminClient); err != nil {
+			t.Fatalf("G5 owned-worker isolation: %v", err)
+		}
+	}
 	requireCassandra(t)
 	ctx := context.Background()
 	database := shareProjectionDBForTest(t)

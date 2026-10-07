@@ -591,6 +591,7 @@ services:
       - SESAMEFS_E110B_ISOLATED_URL=http://sesamefs-e19:8080
       - SESAMEFS_E110C_ISOLATED_URL=http://sesamefs-e19:8080
       - SESAMEFS_E110D_ISOLATED_URL=http://sesamefs-e19:8080
+      - SESAMEFS_G5_ISOLATED_URL=http://sesamefs-e19:8080
       - SESAMEFS_E110E_ISOLATED_URL=http://sesamefs-e19:8080
       - SESAMEFS_W24_ISOLATED_URL=http://sesamefs-e19:8080
       - SESAMEFS_REQUIRE_W24_CHARACTERIZATION=1
@@ -651,6 +652,7 @@ services:
       - SESAMEFS_E110B_ISOLATED_URL=http://sesamefs-e19:8080
       - SESAMEFS_E110C_ISOLATED_URL=http://sesamefs-e19:8080
       - SESAMEFS_E110D_ISOLATED_URL=http://sesamefs-e19:8080
+      - SESAMEFS_G5_ISOLATED_URL=http://sesamefs-e19:8080
       - SESAMEFS_E110E_ISOLATED_URL=http://sesamefs-e19:8080
       - SESAMEFS_W24_ISOLATED_URL=http://sesamefs-e19:8080
       - SESAMEFS_REQUIRE_W24_CHARACTERIZATION=1
