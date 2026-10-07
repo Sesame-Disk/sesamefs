@@ -17,7 +17,7 @@ grep -q 'E1-14 projection mutation' "$file" || { echo 'mutation did not apply'; 
 rc=0
 go test -tags integration -v -count=1 -timeout=3m -run '^TestPubZeroRefTransition$/^final-pub-expiry-no-repair$' ./internal/integration > /tmp/e114-mutation.log 2>&1 || rc=$?
 cat /tmp/e114-mutation.log
-[ "$rc" -ne 0 ] && grep -q 'E1-14 DISCOVERED (Phase 0 after final pub: expiry): productive zero-ref candidate' /tmp/e114-mutation.log || { echo 'mutation did not make final pub: expiry discoverable'; exit 1; }
+[ "$rc" -ne 0 ] && grep -q 'E1-14 DISCOVERED (Phase 0 after final pub: expiry): productive zero-ref candidate exactP1=true' /tmp/e114-mutation.log || { echo 'mutation did not make final pub: expiry discoverable'; exit 1; }
 grep -q 'E1-14 up: expired by TTL; Phase 0 resolved its projection; pub-only' /tmp/e114-mutation.log || exit 1
 ! grep -Eq 'build failed|syntax error|panic:|E1-14 teardown (candidates|candidate projection|queue|moved projection)|E1-11 teardown (blocks|block_references|gc_block_delete_lifecycles|gc_s3_orphans|commits|fs_objects|libraries_by_id|repairs|K1)|E1-12 expiry teardown (read|delete|canonical|projection)|E1-13 owner teardown (fs read|read|identity|delete|canonical|projection)|fixture.*teardown:' /tmp/e114-mutation.log || exit 1
 grep -q 'E1-14 teardown verified' /tmp/e114-mutation.log || exit 1

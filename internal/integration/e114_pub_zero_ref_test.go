@@ -249,7 +249,7 @@ func (f *e114Fixture) assertUndiscovered(t *testing.T, label string) {
 	t.Helper()
 	if candidates := gcCandidateIdentitiesForTest(t, f.fx.orgID, f.fx.blockID); len(candidates) != 0 {
 		f.candidates = append(f.candidates, candidates...)
-		t.Fatalf("E1-14 DISCOVERED (%s): productive zero-ref candidate %+v", label, candidates)
+		t.Fatalf("E1-14 DISCOVERED (%s): productive zero-ref candidate exactP1=%t %+v", label, len(candidates) == 1 && candidates[0].Target == f.fx.target, candidates)
 	}
 	if queued, err := e114Queued(f.fx.database, f); err != nil || queued != 0 {
 		t.Fatalf("E1-14 %s: queue rows=%d err=%v", label, queued, err)
