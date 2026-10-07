@@ -31,6 +31,7 @@ type w2WireProxy struct {
 	armed            bool
 	beforeServer     bool
 	hideConfirmation bool
+	dropQuery        string // E1-11: native loss of one SELECT family on this session only.
 	blackout         bool
 	dropped          int
 	reached          chan struct{}
@@ -203,7 +204,7 @@ func (p *w2WireProxy) serve(client net.Conn) {
 			mu.Unlock()
 			p.mu.Lock()
 			blackout := p.blackout
-			target := p.armed && !req.prepare && w2IsHeadCAS(req.stmt)
+			target := p.armed && !req.prepare && (w2IsHeadCAS(req.stmt) || (p.dropQuery != "" && strings.Contains(strings.ToLower(req.stmt), p.dropQuery)))
 			before := p.beforeServer
 			hold := p.hold != "" && !req.prepare && strings.Contains(strings.ToLower(req.stmt), p.hold)
 			p.mu.Unlock()

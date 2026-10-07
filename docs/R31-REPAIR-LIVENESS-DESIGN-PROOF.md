@@ -1,4 +1,9 @@
 # R31 publish-repair liveness — design proof (independent liveness maintenance)
+> Current-version disposition: [E1-11](./E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md)
+> separately closes the covered pre-D renewal-after-classify safety contract using
+> the existing non-expiring repair guard. This pre-#239 V0 design proof remains
+> historical, rejected outcome B; it does not require implementing stable-pin
+> fan-out or a health gate to obtain that evidence closure. Broader R31 is OPEN.
 
 **Status:** CLOSED — **OUTCOME B: HYPOTHESIS REJECTED** (candidate V0 falsified by D7/D3; see D12). Documentation / characterization only.
 **Issue:** `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` — OPEN, P1, PRE-X1 / PRE-GC.

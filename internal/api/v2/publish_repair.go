@@ -1567,6 +1567,7 @@ func repairPublishedBlockReferenceRepairVisit(database *db.DB, repair publishedB
 	}
 	repair = hydrated
 	commitOutcome, classifyErr := publishedBlockReferenceRepairClassifyFn(database, &repair)
+	repairAfterClassifyBarrier(database, repair.RepoID, commitOutcome, classifyErr)
 	if errors.Is(classifyErr, errPublishedBlockReferenceRepairGone) || commitOutcome == publishedBlockReferenceRepairCommitNoLongerPending {
 		return nil
 	}

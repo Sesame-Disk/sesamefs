@@ -1,6 +1,26 @@
 # Current Work
 
-## Active slice: E1-10e / unpublished resurrection source admission
+## Active slice: E1-11 / W2-11 current-runtime repair liveness
+
+Base main@4f7c29923fb6022c4b7e48996b50918011781679 (#264 merged).
+Frozen plan 3dc849fbb. Real Office writer/repair visitor, isolated e19 keyspace,
+actual up:/pub: TTL expiry, productive scoped GC and native Cassandra wire loss.
+Six legs cover normal, during-classifier, post-REACHABLE, clean UNKNOWN from a
+real interrupted loser, post-HEAD classifier failure and destructive guard failure.
+No classification substitution or fabricated repair/P/HEAD/D. Production callback
+is a no-op; only test-tagged session/library observation pauses the visitor.
+
+Initial matrix 6/6 PASS. Exact COMMITTED omission RED observed, then completed
+through productive recovery; teardown verifies owned rows/repairs/K1 absent.
+Independent filtered/unavailable/child-filtered gate controls PASS. Final race,
+vet and standard Docker go-all-test verification in progress.
+
+Proposed disposition: W2-11 CLOSED-EVIDENCE for covered current-version pre-D
+safety only. W2-12..14, W2-10 overall, cleanup/discovery/Paxos residuals, E1/X1,
+Phase5/6 and activation remain OPEN. Production GC OFF; standard dev daemon
+configuration unchanged. No new TTL policy, renewal mechanism or health gate.
+[Plan/evidence](docs/E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md).
+## Previous merged slice: E1-10e / PR #264
 
 PR #264 targets main@79c5e2d2d (#265 merged); frozen plan c167aa947.
 New cross-audit confirms three P2: serving-DC false misses across the new

@@ -7191,9 +7191,11 @@ not a widening of the reachability classifier.
 
 ### ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01: Repair-owned `pub:` is renewed after the bounded classifier, not before it
 
-**Status**: **OPEN** (2026-09-13; re-confirmed 2026-09-18 after PR #220 and PR #222 were closed without merge) — PRE-X1 / PRE-GC; not an R31-C1 blocker. The next attempt must pass the design gate in [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) before any runtime is written
-**Severity**: High (P1) — a visit can lose `pub:` during the walk and later recreate it; the hazard is the zero-ref interval, not inability to renew; not a regression versus `main`
-**Scope**: PRE-X1 / PRE-GC
+**Status**: **CLOSED-EVIDENCE — covered current-version pre-D safety contract** (E1-11). Non-expiring repair acquired by the covered writer before final exact-P/HEAD vetoes a new D through the destructive EACH_QUORUM scan, even after real up:/pub: expiry during/after classification. REACHABLE promotes fs: before clearing the guard; UNKNOWN/classifier errors retain it; destructive scan errors fail closed. See [plan and evidence](./E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md).
+**Severity**: Historical P1 destructive-gap claim superseded for this covered mechanism; no claim for a repair acquired after COMMITTED D or an unadopted funnel.
+**Scope**: Current-version pre-D safety only. W2-12/13/14, concurrent cleanup/over-retention, discovery/convergence bounds and broader R31 remain OPEN. No health gate or renewal-before-classify runtime is added.
+
+The diagnosis and rejected designs below describe the pre-#239 premise. Pub: can still expire and be recreated; zero real refs alone no longer authorize a new D while the matching durable repair survives. #220/#222/#224 remain rejected historical designs. Their design gate still applies to any future runtime redesign, not to this evidence-only rebaseline.
 **Affected**: `repairPublishedBlockReferenceRepair`, `classifyPublishedBlockReferenceRepairCommitResumable`, `renewPublishedBlockReferenceRepairLivenessIfPending`
 **Rejected approaches**: PR #220 (`fix/r31-publish-repair-renew-before-classify`, closed 2026-09-17), PR #222 (`fix/r31-renew-before-classify-minimal`, last head `eeb2eba7e`, closed 2026-09-18). Nothing from either is in `main`
 
