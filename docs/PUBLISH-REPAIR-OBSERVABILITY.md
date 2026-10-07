@@ -63,11 +63,15 @@ for any row is the same: classify reachability of the commit and settle
 normal case works and why its
 expected cadence is not a proven bound are recorded in
 [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md)
-§8; these metrics are the observability that record asked for (§8.8 H) and
-the prerequisite of the fail-closed GC health gate it leaves as a design
-question (§8.8 G,
-[R31-REPAIR-LIVENESS-DESIGN-PROOF.md](./R31-REPAIR-LIVENESS-DESIGN-PROOF.md)
-D12). **They report; they gate nothing.** No protocol, schema or scheduling
+§8. These metrics supply repair-health/backlog/operations measurements. The
+fail-closed GC health gate discussed by those historical records (§8.8 G/H,
+R31 design proof D12) was a W2-11 proposal. [E1-11](./E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md)
+supersedes that proposal for covered current-version pre-D safety: a matching
+non-expiring repair vetoes a new D through the direct EACH_QUORUM destructive
+proof, independently of worker visit/renewal cadence or pub: TTL. No new health
+gate is required for that contract. W2-13 discovery/completion/scale remains
+OPEN; this does not cover unadopted funnels or post-COMMITTED revocation.
+**These metrics report; they gate nothing.** No protocol, schema or scheduling
 behavior changes with them.
 
 ## Scrape scope
@@ -85,10 +89,10 @@ behavior changes with them.
   node — in another datacenter especially — may list rows this node does
   not see, or fewer. Nodes and DCs may disagree. `max()` across nodes is a
   **dashboard aggregation only**: `max(publish_repair_pending_rows) = 0`
-  does not prove there is no pending repair anywhere. A future
-  destructive-GC gate must obtain global-enough authority of its own
-  (record §2.6 / §4.8) or fail closed on unknown or disagreement; it must
-  not read these gauges as absence.
+  does not prove there is no pending repair anywhere. These gauges must never
+  supply destructive absence authority. The runtime obtains its pre-D proof
+  directly from Cassandra references and pending repairs at EACH_QUORUM,
+  with unknown/error fail-closed; it does not use sweep gauges as that proof.
 
 ## What the sweep is
 
@@ -117,8 +121,10 @@ completion until the next sweep (no second scan is made to avoid extra
 Cassandra I/O). A sweep with a bucket-listing error leaves it unchanged, so
 it never under-reports because part of the backlog was unreadable.
 
-A pending row is not block liveness: the row has no TTL, the pins it names
-do (35 d). This is the repair backlog, not the remaining TTL of any block.
+A pending row is not a real block_reference: the row has no TTL, its pub: pins
+do (35 d). The matching durable row nevertheless vetoes a new D in the covered
+pre-D proof. This gauge reports observed repair backlog, not per-block TTL or
+authoritative global presence/absence.
 
 ### `publish_repair_oldest_pending_age_seconds`
 
@@ -151,10 +157,9 @@ watermark**: the sweep is sequential, so at the instant it completes the
 observation of bucket 0 is as old as the whole sweep took — `time() −
 last_complete = 0` can coexist with a 40-minute-old view of the first
 buckets. It proves "a complete pass finished recently", not "every bucket
-was observed recently". A future destructive-GC gate must also account for
-sweep span (`publish_repair_sweep_duration_seconds`) or build a
-conservative watermark of its own; this series alone is not freshness
-authority.
+was observed recently". Operational freshness analysis must also account for
+sweep span (`publish_repair_sweep_duration_seconds`); this series alone is
+not a per-bucket freshness watermark or destructive authority.
 
 This is the heartbeat an operator alert reads. With a 1-minute cadence:
 

@@ -7191,13 +7191,15 @@ not a widening of the reachability classifier.
 
 ### ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01: Repair-owned `pub:` is renewed after the bounded classifier, not before it
 
-**Status**: **OPEN** (2026-09-13; re-confirmed 2026-09-18 after PR #220 and PR #222 were closed without merge) — PRE-X1 / PRE-GC; not an R31-C1 blocker. The next attempt must pass the design gate in [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) before any runtime is written
-**Severity**: High (P1) — a visit can lose `pub:` during the walk and later recreate it; the hazard is the zero-ref interval, not inability to renew; not a regression versus `main`
-**Scope**: PRE-X1 / PRE-GC
+**Status**: **CLOSED-EVIDENCE — covered current-version pre-D safety contract** (E1-11). Non-expiring repair acquired by the covered writer before final exact-P/HEAD vetoes a new D through the destructive EACH_QUORUM scan, even after real up:/pub: expiry during/after classification. REACHABLE promotes fs: before clearing the guard; UNKNOWN/classifier errors retain it; destructive scan errors fail closed. See [plan and evidence](./E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md).
+**Severity**: Historical P1 destructive-gap claim superseded for this covered mechanism; no claim for a repair acquired after COMMITTED D or an unadopted funnel.
+**Scope**: Current-version pre-D safety only. W2-12/13/14, concurrent cleanup/over-retention, discovery/convergence bounds and broader R31 remain OPEN. No health gate or renewal-before-classify runtime is added.
+
+The diagnosis and rejected designs below describe the pre-#239 premise. Pub: can still expire and be recreated; zero real refs alone no longer authorize a new D while the matching durable repair survives. #220/#222/#224 remain rejected historical designs. Their design gate still applies to any future runtime redesign, not to this evidence-only rebaseline.
 **Affected**: `repairPublishedBlockReferenceRepair`, `classifyPublishedBlockReferenceRepairCommitResumable`, `renewPublishedBlockReferenceRepairLivenessIfPending`
 **Rejected approaches**: PR #220 (`fix/r31-publish-repair-renew-before-classify`, closed 2026-09-17), PR #222 (`fix/r31-renew-before-classify-minimal`, last head `eeb2eba7e`, closed 2026-09-18). Nothing from either is in `main`
 
-#### Problem
+#### Historical problem (pre-#239)
 
 The current visit order is hydrate → classify (SERIAL HEAD, up to 30s of
 EACH_QUORUM parent reads, progress LWTs) → then, on UNKNOWN/error, call
@@ -7207,8 +7209,11 @@ while the repair row is pending. REACHABLE likewise promotes `fs:` only after
 the walk.
 
 If prior liveness expires before that write, a zero-ref interval exists even
-when the later renewal succeeds. Once GC is destructive, that gap can become
-a delete. Recreating `pub:` afterwards does not close the interval.
+when the later renewal succeeds. Under the pre-#239 premise, that gap could
+become a delete once GC was destructive; recreating `pub:` afterwards did not
+close the interval. E1-11 supersedes that destructive-gap claim for the covered
+current-version contract: zero real refs do not authorize a new D while the
+matching non-expiring repair survives.
 
 This is not a regression versus `main` (main had no UNKNOWN renewal) and does
 not invalidate the resumable walk. R31-C1 closed moving-HEAD **convergence**,
@@ -7265,7 +7270,8 @@ session-consistency read and then removed the repair-owned pin. The fix now
 treats that absence as non-authoritative and lets the pin expire under its
 existing TTL.
 
-Operational model (canonical record §8): the 35d `pub:` TTL is a
+Historical operational model at the design-record parent (canonical record §8):
+the 35d `pub:` TTL is a
 crash/recovery backstop — every content funnel attempts `stage pub: → queue
 repair → HEAD → request-local fs: promotion attempt → clear repair on success` inside the request,
 so the durable repair covers only the abnormal post-HEAD interval; the row
@@ -7278,10 +7284,16 @@ classifier) was **rejected** by the design proof of PR #224
 ([R31-REPAIR-LIVENESS-DESIGN-PROOF.md](./R31-REPAIR-LIVENESS-DESIGN-PROOF.md)):
 a failable pre-step ahead of `main`'s handoff delays the blocks it fails
 to cover unless an independent owner or a proven temporal invariant covers
-them — V0 and #222 had neither. Still no runtime; still OPEN.
+them — V0 and #222 had neither. At that point no runtime redesign existed and
+this issue remained OPEN. E1-11 later established that renewal-before-classify
+is not required for the covered current-version pre-D safety contract.
 
-Keep continuity-if-discovery-arrives-after-expiry explicitly PRE-GC. Do not
-treat this issue as a reason to reopen the reachability classifier.
+Discovery/completion bounds (W2-13), candidate creation at the last `pub:` expiry
+(W2-14), known-loser durability (W2-12), and the registered cleanup/retention
+follow-ups remain separate OPEN contracts. Discovery after TTL expiry does not
+by itself authorize a new D while the matching durable repair survives. This
+evidence does not cover an unadopted funnel or a repair acquired after COMMITTED
+D. Broader PRE-GC requirements remain; no classifier redesign is prescribed.
 
 #### Related
 
@@ -7714,7 +7726,7 @@ merged and PR #206 has been rebased for its scoped W2 re-audit.
 
 ### ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01: UNKNOWN repair discovery is scan-bound
 
-**Status**: Confirmed follow-up - intentionally out of scope for this branch (2026-09-07)
+**Status**: OPEN follow-up — R31/W2-13 discovery, convergence and scale; outside the covered E1-11 pre-D safety contract (originally registered 2026-09-07)
 **Severity**: Medium (P2) - R31 performance and convergence at sustained UNKNOWN-row volume
 **Affected**: `internal/api/v2/publish_repair.go`, published-block-reference repair worker
 
@@ -7737,18 +7749,24 @@ that is bounded by fail-closed behavior but remains a discovery/convergence cost
 
 #### Scope / disposition
 
-This issue remains outside this branch, whose contract is scoped Sync direct-HEAD
-safety and positive-settlement behavior. Do not solve it by weakening UNKNOWN
+This remains a separate R31/W2-13 discovery/convergence requirement, outside
+E1-11's covered current-version pre-D safety contract. Do not solve it by weakening UNKNOWN
 retention, cleanup authority, or positive-reachability-only settlement. A
 separate follow-up must characterize rows without a schedule, overdue rows,
 missed ticks, outages, restart, concurrent rescheduling, stale/orphan hints,
 partition growth, tombstones, multi-node duplicate retry, fairness, and bounded
 work per tick before selecting a durable discovery design. Scheduler state must
 remain separate from publication authority, and scheduler failure may delay work
-but must not make a durable repair undiscoverable indefinitely. Because there
-is no hard bound on time-to-visit, this issue also bounds liveness continuity:
-renewal cannot prove that a durable repair remains protected until the next
-visit (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`).
+but must not make a durable repair undiscoverable indefinitely. There is still
+no hard time-to-visit or completion bound; this is an OPEN operational and
+convergence requirement. It is not a TTL-renewal prerequisite for the covered
+pre-D safety contract: the matching non-expiring repair is consulted directly
+by the destructive EACH_QUORUM proof and vetoes a new D even if pub: has expired.
+E1-11 closes that covered W2-11 contract without a sweep-health gate; metrics
+and discovery cadence do not supply destructive authority. A repair first
+acquired after COMMITTED D cannot revoke D, and unadopted funnels are not covered.
+See [E1-11 evidence](./E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md). W2-13 remains
+OPEN; no bounded discovery design is implemented here.
 
 #### Related
 

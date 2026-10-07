@@ -1,6 +1,6 @@
 # E1 — Full-GC publication and recovery evaluation
 
-Status: ACTIVE; E1-3 on codex/e1-3-late-publication-pre-d-proof, following merged #251.
+Status: ACTIVE; E1-11 on codex/e1-11-current-runtime-repair-liveness, following merged #264. E1/X1 remain OPEN.
 Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
 
 Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
@@ -376,3 +376,20 @@ broader batches/layouts, concurrent retention/cleanup, Phase5/6 and R31 remain
 OPEN. Foreign settled fs: is not a continuous own-pin proof through HEAD.
 W2-10/E1/X1 remain OPEN; production GC OFF, shared development GC unchanged.
 See [frozen plan and evidence](./E1-10E-W210-RESIDUAL-DISPOSITION.md).
+
+
+### E1-11: current-version repair liveness disposition
+
+Six named real Office/repair/GC legs cover actual up:/pub: expiry during and
+after classification, clean UNKNOWN retention, applied-HEAD classifier loss
+and destructive pending-scan loss. The non-expiring pending repair prevents
+new D at zero real refs; REACHABLE acknowledges fs: before deleting repair.
+Omitting only the existing guard produces exact COMMITTED D(P1), followed by
+productive terminal recovery and verified cleanup. See [source-pinned evidence](./E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md).
+
+E1-11 / W2-11 = CLOSED-EVIDENCE only for covered current-version pre-D safety
+with repair already acquired by an adopted writer. This supersedes the old
+UNRUN/renewal-gap diagnosis for that contract, not the frozen attack matrix.
+No post-COMMITTED revocation, discovery/completion bound, concurrent cleanup,
+W2-12..14, other funnels, Phase5/6 or broader E1/X1 closure is claimed.
+Production GC remains OFF; the shared dev daemon remains unchanged.

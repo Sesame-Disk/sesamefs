@@ -267,24 +267,26 @@ var (
 	// REACHABLE and retryable. The protocol has no durable negative
 	// cleanup authority.
 	//
-	// These series exist so that a future fail-closed GC health gate can be
-	// designed against measurements rather than expectations
-	// (docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md §8.8 G/H,
-	// docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md D12). They report; they gate
-	// nothing. Every node runs its own sweep, so every series is per node and
+	// These series report repair health, backlog and operational progress.
+	// A fail-closed GC health gate was a historical W2-11 proposal; E1-11
+	// supersedes it for covered pre-D safety through the direct durable-repair
+	// EACH_QUORUM guard, independent of renewal cadence or pub: TTL.
+	// W2-13 discovery/completion bounds remain OPEN. Metrics gate nothing.
+	// Every node runs its own sweep, so every series is per node and
 	// process-local: a restart resets the counters and re-seeds the gauges at
 	// the next sweep. A node's backlog gauges are ITS observation — a
 	// sequential, non-atomic pass over 32 buckets at its own consistency,
 	// which another node or datacenter may not share — never a global or
-	// atomic witness; a future destructive-GC gate must obtain global-enough
-	// authority of its own or fail closed on unknown/disagreement.
+	// atomic witness. They must never supply destructive absence authority;
+	// the runtime obtains its pre-D proof directly from Cassandra, fail-closed
+	// on unknown/error rather than using a sweep gauge as that proof.
 	//
 	// "Pending" means a durable repair row the sweep could act on: rows that
 	// are progress-only residue (no staged blocks) are counted separately and
-	// never as pending. A pending row is not block liveness — the row has no
-	// TTL, the pins it names do — so these gauges describe the repair
-	// backlog, not the remaining TTL of any block. Measuring remaining TTL per
-	// block costs one read per block per row and is left to the gate design.
+	// never as pending. A row is not a real block_reference, but its staged
+	// blocks are protected by the matching durable repair in the pre-D proof.
+	// The row has no TTL, its pub: pins do. These gauges report backlog, not
+	// per-block TTL or authoritative global repair presence/absence.
 
 	// PublishRepairPendingRows is the number of repair rows the last sweep on
 	// this node OBSERVED PENDING WHILE TRAVERSING the buckets — a row is
@@ -328,14 +330,14 @@ var (
 	// start: a long sweep that just completed reads as fresh). It is a
 	// completion / activity heartbeat, not a per-bucket freshness watermark:
 	// the sweep is sequential, so at completion the observation of bucket 0
-	// is as old as the whole sweep took. A destructive-GC gate must also
-	// account for sweep span (PublishRepairSweepDuration) or build a
-	// conservative watermark of its own; this series alone is not freshness
-	// authority. Per-row repair
+	// is as old as the whole sweep took. Operational freshness analysis must
+	// also account for sweep span (PublishRepairSweepDuration); this series
+	// alone is not a per-bucket freshness watermark or destructive authority.
+	// Per-row repair
 	// failures do not withhold it — a sweep that saw everything and failed to
 	// settle some rows is still a complete observation — but a bucket that
 	// could not be listed does, because then the backlog was not observed.
-	// This is the heartbeat a health gate would read as
+	// This is the heartbeat an operator alert reads as
 	// "time() - publish_repair_last_complete_sweep_timestamp_seconds".
 	PublishRepairLastCompleteSweep = prometheus.NewGauge(
 		prometheus.GaugeOpts{
