@@ -54,7 +54,8 @@ func TestMain(m *testing.M) {
 	// comment could not: R26 was added to docker-compose and missed here, and the
 	// omission was invisible in the standard run only because P4A happens to be set
 	// alongside it.
-	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_G5_EVIDENCE") == "1" ||
+	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_G5_COEXISTENCE_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_G5_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_G4_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W24_CHARACTERIZATION") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W2_REPAIR_3DC_EVIDENCE") == "1" ||
@@ -147,6 +148,10 @@ func TestMain(m *testing.M) {
 	}()
 
 	code := m.Run()
+	if os.Getenv(g5CoexistenceEvidenceEnv) == "1" && !g5CoexistenceObserved {
+		fmt.Println("required G5 isolated old-life continuation evidence was not observed")
+		code = 1
+	}
 	if os.Getenv("SESAMEFS_REQUIRE_G5_EVIDENCE") == "1" && (!g5CoexistenceObserved || !g5PaginationObserved || !g5GraceObserved) {
 		fmt.Println("required G5 Cassandra/MinIO old-life, bounded seek and fresh zero-epoch grace evidence was not observed")
 		code = 1
