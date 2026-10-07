@@ -179,7 +179,7 @@ audit: `docs/GC-DELETE-CLEANUP-INVESTIGATION.md`.
 | **Org-Admin Trash Delete Defers Cleanup** | 🟢 Fixed (6A/6B + parity follow-up, 2026-07-14) | Permanent-delete now stamps a durable `deleted_libraries.purge_requested_at` (migration 012). The immediate Phase-13-deduplicated `library_cascade` enqueue is wired on the v2.1 owner path and the platform/org-admin delete paths; the legacy `/api2/repos/deleted/:repo_id` registration still falls back to marker + Phase 13 recovery. In the wired paths, reclamation normally lands around the grace period; if that best-effort enqueue is lost, Phase 13 adds up to one `ScanInterval` before recovery. See ISSUE-GC-ORG-TRASH-NO-CASCADE-01 below. |
 | **Non-Durable, Content-Only Delete Handoff** | 🟢 Resolved (6A/6B + org-admin parity, 2026-07-14) | Correctness is durable via `deleted_libraries.purge_requested_at` + Phase 13; all wired permanent-delete paths (v2.1 owner + platform + org-admin single/bulk) now call `Service.EnqueueLibraryCascade` (identity-matched to Phase 13, a dedup no-op) as a best-effort accelerator, and a lost enqueue costs only latency. The legacy `/api2/repos/deleted/:repo_id` route mounts the handler with `libHandler=nil` and relies on marker + Phase 13. See ISSUE-GC-DELETE-HANDOFF-DURABILITY-01 below. |
 | **Stale `gc_libraries_by_policy` on Direct Delete** | 🟡 Low — transient for new deletes | `hardDeleteLibraryRowsFn` does not synchronously call `AddDeleteLibraryPolicyQuery`, but the durable cascade's `HardDeleteLibrary` clears both policy rows. At most a short stale window for new deletes; branch 2 is optional polish. Not a greenfield-prod blocker. See ISSUE-GC-POLICY-INDEX-STALE-01 below. |
-| **`pub:` Refs Lack Discoverable Zero-Ref Transition** | 🟡 Confirmed gap (Med) | `up:` refs have an expiry projection (`gc_provisional_block_refs` + Phase 0); `pub:` refs do not. When the last `pub:` expires by 35-day Cassandra TTL, nothing runs the zero-ref→candidate transition. Storage retention, not incorrect deletion. See ISSUE-GC-PUB-REF-ZERO-REF-01 below. |
+| **`pub:` Refs Lack Discoverable Zero-Ref Transition** | 🟡 Confirmed gap (Med, P2 follow-up) — runtime-confirmed by E1-14 | `up:` refs have an expiry projection (`gc_provisional_block_refs` + Phase 0); `pub:` refs do not. When the last `pub:` expires by 35-day Cassandra TTL, nothing runs the zero-ref→candidate transition. E1-14 measured this with real Office writers: no candidate/queue/D, P1/K1 retained. Storage retention, not incorrect deletion. See ISSUE-GC-PUB-REF-ZERO-REF-01 below. |
 | **Phase 13 Logs But Does Not Propagate Enqueue Errors** | 🟡 Confirmed gap (Med) | `scanExpiredDeletedLibraries` logs `EnqueueBatch` failures but returns `nil`, and logs+`continue`s on per-library dedupe failure, so the failure is invisible to the phase result/health/metrics and the scan cycle can appear successful. See ISSUE-GC-PHASE13-ERROR-VISIBILITY-01 below. |
 | **Integration Suite Leaves DB + MinIO Residue** | 🟡 Test hygiene — **1A/1B/1C/1G fixed; one S3-only orphan open** | The global `ProcessOnce(storage=nil)` fan-out (the only one that deleted other tests' DB rows while orphaning their S3 objects), the permanent `pub:foreign` ref, the upload fixtures' stranded blocks, and both blocks a full run used to strand (1G — the eternal `fs:` one from the zip fixture's SHA-1 corruption, and the `up:sync:` provisional from `quotas_test.go`) are **fixed** and guarded. Still open: one ~90-byte **S3-only object with no `blocks` row**, not yet attributed to a test — undiscoverable by any GC phase. Shared keyspace/buckets and the global `/admin/gc/run` triggers remain as designed. Dev-cluster only; does not affect prod safety. See ISSUE-GC-TEST-RESIDUE-01 below. |
 | **Existence Checks Fail Open (transient errors, P6a)** | ✅ Fixed (2026-07-10) | `LibraryExists`/`GroupExists` now propagate non-`ErrNotFound` errors and scanner Phases 3/4/9 fail closed. Phase 9 scans `shares_by_group` directly and uses each projection row's `OrgID`, with unit and real-Cassandra regression coverage. See ISSUE-GC-EXISTENCE-CHECK-FAILOPEN-01 below. |
@@ -5463,8 +5463,8 @@ Fold both `AddDeleteLibraryPolicyQuery` calls (version_ttl + auto_delete) into t
 
 ### ISSUE-GC-PUB-REF-ZERO-REF-01: `pub:` Refs Lack a Discoverable Zero-Ref Transition
 
-**Status**: 🟡 Confirmed gap (2026-07-10)
-**Severity**: Medium — a plausible retained-block path, not a demonstrated July-2026 incident
+**Status**: 🟡 Confirmed gap (2026-07-10); runtime-confirmed by E1-14 (2026-10-07), OPEN P2 follow-up
+**Severity**: Medium — storage retention / GC discovery; E1-14 measured no incorrect-deletion (X1) path from the transition itself
 **Affected**: publish-attempt block references (`pub:<attempt>`), block GC discovery
 
 #### Problem
@@ -5472,6 +5472,26 @@ Fold both `AddDeleteLibraryPolicyQuery` calls (version_ttl + auto_delete) into t
 Provisional upload refs (`up:<op>`) register a durable expiry projection (`gc_provisional_block_refs` + `_by_day`); scanner Phase 0 walks it, waits for the ref's own Cassandra TTL to retire it (PR-8/F9 — the scanner no longer deletes the ref, since deleting a just-renewed one would unpin a live upload), then checks `BlockHasReferences` and promotes the block to `gc_block_candidates` if it hit zero. Publish-attempt refs (`pub:<attempt>`) do **not** register any such projection — `AddPublishAttemptReferences` ([block_references.go:339](../internal/db/block_references.go#L339)) only writes the ref with a 35-day Cassandra TTL.
 
 Scenario: a block is kept alive solely by a `pub:` ref from a dead publish attempt. The `up:` ref expires at 2 days; the scanner sees the `pub:` still present and does not create a candidate. At 35 days Cassandra silently expires the `pub:` ref. Now the block is at zero refs, but nothing runs the zero-ref → `EnsureBlockGCCandidate` transition, because `scanOrphanedBlocks` ([scanner.go:335](../internal/gc/scanner.go#L335)) only walks candidates that already exist. The `blocks` row, mapping, and S3 object can be retained indefinitely.
+
+#### Runtime confirmation — E1-14 (2026-10-07)
+
+[E1-14](./E1-14-PUB-ZERO-REF-TRANSITION.md) reproduces the scenario with the
+real Office/CreateFile writer and real Cassandra/SILO. The writer either stops
+after `pub:` staging and before repair queueing (no repair), or leaves a durable
+UNKNOWN repair. `up:` is retired by actual TTL and resolved by Phase 0; the final
+`pub:` (verified to have no tracker/projection) is retired by actual TTL to
+global EACH_QUORUM zero refs. Owned-scope Phase 0, Phase 1 and the productive
+worker create no candidate, queue row, delete lifecycle or recovery root, and
+P1/K1 stay retained. A disposable mutation that routes TTL-bound `pub:` writes
+through the `up:` expiry-projection writer makes the same leg reach a productive
+Phase 0 candidate. The missing projection is therefore the cause.
+
+Classification: **P2 FOLLOW-UP**, storage-retention / GC-discovery gap. The
+measured safety subset is NOT-X1-RED (`pub:` expiry alone cannot reach D).
+The no-repair schedule (writer death between `pub:` staging and repair
+queueing) retains the block indefinitely. Not fixed in E1-14. Once a projection
+exists, the E1-11/E1-13 repair guard becomes load-bearing for this transition
+and the E1-14 matrix plus guard-omission control must be re-run.
 
 #### Fix Direction (branch 7)
 

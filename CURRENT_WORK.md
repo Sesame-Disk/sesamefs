@@ -1,6 +1,28 @@
 # Current Work
 
-## Active slice: E1-13 / W2-13 pending repair safety during discovery delay
+## Active slice: E1-14 / W2-14 pub: expiry zero-ref transition
+
+Base main@718cf85f726f8ed4137c942f57d23e17bf5acd90 (#269 merged).
+Branch claude/e1-14-pub-zero-ref-transition; frozen plan dceb7df19.
+Characterization only, with no production code change. Five legs on real
+Office/CreateFile `pub:`: no-repair (writer stopped after `pub:` staging,
+before repair queueing) and durable-UNKNOWN repair. `up:` is moved through the
+productive renewal API and retired by TTL; Phase 0 resolves it and `pub:`
+keeps the block live. The final `pub:` (no tracker/projection) is retired by
+actual TTL to global EQ zero refs. Owned-scope Phase 0/1 and the productive
+worker create no candidate/queue/D/root; P1/K1 retained. The repair sweep later
+renews the exact repair-owned `pub:` (native UNKNOWN, no fs:/HEAD/P change).
+Causal mutation: an `up:`-style projection on `pub:` yields a productive
+candidate. Docker race 15/15 PASS, vets and three own negatives PASS.
+Measured safety subset CLOSED-EVIDENCE / NOT-X1-RED. W2-14 transition/
+convergence OPEN; ISSUE-GC-PUB-REF-ZERO-REF-01 confirmed P2 FOLLOW-UP
+(retention). No projection/migration/scanner change. W2-12/13, E1/X1 and
+activation remain OPEN. Final go-all-test on ce77a70c1 exit 0 (integration
+828.637s, API 20/20, OIDC 25/25); both backends clean, quota_usage 0, hard
+limits unchanged. Final scoped audit: no unresolved introduced P0/P1/P2.
+[Plan/evidence](docs/E1-14-PUB-ZERO-REF-TRANSITION.md).
+
+## Previous merged slice: E1-13 / W2-13 pending repair safety during discovery delay (PR #269)
 
 Base main@fc50e168db91212cdb6d74b78f3f7db8756c6310 (#268 merged).
 Branch codex/e1-13-repair-discovery-delay-safety; frozen plan cf2cf6c36.
