@@ -44,4 +44,21 @@ Tests must own and clean all fixtures; quota policy/limits must not be relaxed.
 
 ## Evidence
 
-Pending implementation and execution. No PASS or closure claimed yet.
+Initial Docker matrix: six legs PASS; productive isolated child 20.48s, parent
+24.729s including TestMain teardown. This is initial evidence, not final gates.
+Race repetitions, omission, negative controls and full go-all-test still pending.
+
+The clean-loser control lets normal cleanup run and then permits the handler's
+ordinary retry to succeed; it checks that the first attempt's repair/pub are gone.
+Crash controls kill the real writer after the observed definitive conflict and
+before cleanup. Recovery runs the actual bucket sweep in a new test process.
+Only created_at/lease_expires_at of the existing real repair are aged/reset for
+scheduling; no classification or destructive authority is manufactured. Before
+GC, up:/pub: are shortened through AddBlockReference and naturally expire; before
+that expiry the test rejects any unexpected permanent reference. These are harness
+controls, not a production TTL policy or a time-to-discovery guarantee.
+
+Shared E1-11 helpers execute the exact GC probe and independent owned teardown;
+their log labels remain E1-11. Their omission reaches exact COMMITTED and completes
+productive TERMINAL recovery before reporting RED. E1-12 does not label that
+omission alone as a complete X1 post-D publication counterexample.

@@ -1,8 +1,21 @@
 # Current Work
 
-## Active slice: E1-11 / W2-11 current-runtime repair liveness
+## Active slice: E1-12 / W2-12 definitive-loser crash safety
 
-Current PR base main@308d77df68afc2090d1a090528642950b028f4e3 (#267 merged).
+Base main@2a6eb32fd1a5a6a0e71ddd18ddc0a2fedfaad0eb (#266 merged).
+Frozen plan fb9911edd. Scope: one Office/CreateFile block, actual negative HEAD
+CAS, Linux SIGKILL before request-local cleanup, fresh-process productive repair
+sweep, real temporary-reference TTL expiry and owned-candidate GC on Cassandra/SILO.
+Six named legs and independent fixture cleanup; existing e19 isolation only.
+Implementation/verification in progress: no new PASS or closure claimed yet.
+W2-11 covered pre-D CLOSED-EVIDENCE. W2-12 overall remains OPEN for durable
+loser authority/cleanup/convergence; W2-13/14, broader E1/X1 and activation OPEN.
+Production GC OFF; standard development daemon configuration unchanged.
+[Plan/evidence](docs/E1-12-KNOWN-LOSER-CRASH-SAFETY.md).
+
+## Previous merged slice: E1-11 / W2-11 current-runtime repair liveness (PR #266)
+
+Merged #266 in main@2a6eb32fd1a5a6a0e71ddd18ddc0a2fedfaad0eb; PR base was main@308d77df68afc2090d1a090528642950b028f4e3 (#267 merged).
 Original frozen-plan base main@4f7c29923fb6022c4b7e48996b50918011781679 (#264).
 Frozen plan 3dc849fbb. Real Office writer/repair visitor, isolated e19 keyspace,
 actual up:/pub: TTL expiry, productive scoped GC and native Cassandra wire loss.
