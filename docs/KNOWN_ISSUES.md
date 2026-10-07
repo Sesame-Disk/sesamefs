@@ -7768,6 +7768,26 @@ acquired after COMMITTED D cannot revoke D, and unadopted funnels are not covere
 See [E1-11 evidence](./E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md). W2-13 remains
 OPEN; no bounded discovery design is implemented here.
 
+#### E1-13 measured discovery-delay evidence (2026-10-07)
+
+[E1-13](./E1-13-REPAIR-DISCOVERY-DELAY-SAFETY.md) uses productive Office repairs
+in naturally earlier buckets, with an exact-session/library observer before
+repair execution. Target refs naturally expire after controlled TTL shortening;
+its non-expiring repair remains unvisited with no durable classifier progress.
+Productive GC directly finds the matching repair at EQ, releases claim and
+preserves candidate/P1/K1 with no D/root. The sweep later reaches target and
+natively retains UNKNOWN while renewing exact repair-owned pub, with unchanged
+HEAD/tree/P and no fs promotion. A SIGKILL/restart rediscovers backlog in a new
+process; guard-only omission reaches exact COMMITTED and own TERMINAL recovery.
+
+Only this measured pre-D safety subset is CLOSED-EVIDENCE. This does not implement
+bounded discovery or close W2-13 overall. Backlog spans owned orgs and is finite;
+no same-org GC scan scalability, arbitrary delay, fairness, populated-backoff
+restart, missed ticks, sustained churn, multi-node duplicate work or completion
+bound is established. Corrected-source final checks and cleanup are recorded in
+the linked evidence. Scheduler design and all broader operational requirements
+above remain OPEN. W2-12/14, concurrent cleanup, E1/X1 and activation remain OPEN.
+
 #### Related
 
 - `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`

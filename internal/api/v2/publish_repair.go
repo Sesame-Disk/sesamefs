@@ -1787,6 +1787,7 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 				metrics.PublishRepairSweepRowsTotal.WithLabelValues("skipped_lease").Inc()
 				continue
 			}
+			repairBeforeVisitBarrier(database, repair.RepoID, repair.CommitID, repair.FSID)
 			metrics.PublishRepairSweepRowsTotal.WithLabelValues("visited").Inc()
 			if err := repairPublishedBlockReferenceRepair(database, repair); err != nil {
 				nextRetryAt := now.Add(publishedBlockReferenceRepairRetryDelay(now, repair.CreatedAt))

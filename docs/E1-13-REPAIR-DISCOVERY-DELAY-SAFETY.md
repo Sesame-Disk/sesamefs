@@ -45,3 +45,93 @@ parallelism, health gate, bucket-count/TTL or standard dev GC configuration chan
 ## Validation
 
 Pending implementation and productive evidence. No result is inferred from plan.
+
+## Harness and initial evidence
+
+The first productive matrix passes all five legs: isolated child 28.68s, parent
+34.773s including TestMain cleanup. Final strengthened-source checks are pending.
+A diagnostic command initially inherited unrelated mandatory gates from Compose;
+that filtered command correctly failed completeness and is not accepted evidence.
+Dedicated commands explicitly unset unrelated gates; standard go-all-test retains
+all mandatory gates.
+
+Every target and backlog repair comes from real Office/CreateFile execution paused
+by the existing interruption seam after exact-P authority, before HEAD. This is
+an in-process abrupt-interruption fixture, not an OS writer crash claim. A separate
+productive blockless competitor advances HEAD, yielding native UNKNOWN later.
+Each fixture owns its org/library; the worker backlog spans orgs. This measures
+sequential repair discovery delay, not same-org GC scan scalability or large load.
+
+Rows keep their productive bucket and PK. The harness observes natural hash
+placement, creates up to 16 owned fixtures until three earlier-bucket repairs
+exist, and chooses a target in the later bucket. Sorting selects fixtures only;
+production listing/order is untouched. Equal-bucket extras remain under their
+original scheduling lease and are still independently cleaned. Age/lease changes
+are explicit eligibility controls, never an ordering or latency guarantee.
+
+The before-visit observer is scoped to exact DB session/library and runs after
+scheduling filters, before repair execution; normal builds compile it as a no-op.
+The child pauses at its first backlog entry. At that point target has not entered
+repair execution; absence of durable target anchor/cursor/exhaustion and zero
+refs independently detect out-of-band visitors. Child accounting separately
+requires each selected row's actual native UNKNOWN classifier result. Resume must
+visit every selected backlog before target and renew its exact repair-owned pub:
+without fs promotion, HEAD/root/P changes, repair removal, D or recovery root.
+
+The fresh-process leg SIGKILLs this paused sweep and verifies the OS signal. A new
+process must rediscover the same first backlog from Cassandra and eventually
+visit target; no local scheduling map is seeded, cleared or copied. This does not
+characterize sustained duplicate workers or a populated local-backoff restart.
+
+Shared E1-11 GC/teardown helpers retain their E1-11 log labels; auxiliary-expiry
+cleanup retains E1-12 labels. Cleanup covers every created fixture, including
+unselected extras, through exact metadata/repair/K1 and tracker/projection checks.
+The omission must reach productive COMMITTED then own TERMINAL before teardown;
+it proves guard necessity, not a post-D publication violation.
+
+## Cleanup audit correction
+
+A read of a completed E1-13 fixture found one pending_published_fs_objects owner
+and its discovery projection after metadata/repair/K1/expiry teardown. Existing
+shared fixture cleanup did not cover that separate surface. This introduced P2
+TEST-INFRA is fixed within E1-13: enumerate actual owned-library fs coordinates
+before metadata teardown, read exact owners, use DeletePendingPublishedFSObjectOwner,
+and independently require canonical and exact by-day projection absence afterward.
+The omission script requires the affirmative owner cleanup marker and rejects
+owner read/delete/identity/verification errors. No publication/runtime change.
+
+Prior completed E1-13 fixtures are repaired only at coordinates from their own
+successful teardown logs, after verifying library/block metadata absent and exact
+owner org identity. 89 owned fixtures were checked and 89 owners plus their exact
+projections removed and verified. No active or foreign fixture is purged; quota
+policy and limits are unchanged. This does not repair unrelated historical tests.
+
+## Pre-owner-cleanup verification (historical source)
+
+- Strengthened target-not-visited assertions: 15/15 race legs across three runs
+  PASS, 129.501s; ordinary/integration vets, completeness and inventory PASS.
+- Three E1-13 negative controls PASS. Guard omission reached productive exact
+  COMMITTED while target unvisited, completed own TERMINAL, metadata/K1/expiry
+  teardown PASS (11.708s); it predates independent pending-owner cleanup.
+- Four W2, three E1-11 and two G5 negative controls PASS. A shell command used an
+  incorrect W2 script filename after successful own gates/mutation; the existing
+  gates were subsequently run with the correct filename and exit 0.
+- Earlier Go file SHA-256:
+  95096721dc25f5995bac67b55d2fe156aafe4b51b4fc3cbe0e9311b1252d168e.
+- First standard Docker full suite is historical, before pending-owner correction.
+  Corrected-source race/gates/mutation/full regression and final audit are pending.
+
+## Safety disposition
+
+The measured Office single-block pre-D subset has positive guard evidence during
+controlled backlog delay. The target repair exists before claim/proof and cannot
+expire; GC directly scans its org prefix at EQ, independent of worker discovery.
+Native UNKNOWN settlement retains it and does not promote fs or publish HEAD.
+Removing only that destructive guard permits exact D. This supports only the
+measured pre-D subset; W2-13 overall stays OPEN P2 discovery/convergence/scale.
+
+Neither finite timing nor selected bucket order proves arbitrary delays, SLA,
+fairness, sustained load, same-org GC scan scalability, outages, concurrent cleanup,
+progress Paxos races, post-COMMITTED revocation or other funnels. The direct GC
+scan also has backlog and availability cost; read errors remain fail-closed under
+the existing protocol. No scheduler/TTL/index/health-gate or dev GC change.

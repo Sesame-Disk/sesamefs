@@ -1,6 +1,6 @@
 # E1 — Full-GC publication and recovery evaluation
 
-Status: ACTIVE; E1-12 on codex/e1-12-known-loser-crash-safety, following merged #266 (main@2a6eb32fd1a5). E1-11 covered pre-D safety is CLOSED-EVIDENCE. E1/X1 remain OPEN.
+Status: ACTIVE; E1-13 on codex/e1-13-repair-discovery-delay-safety, following merged #268 (main@fc50e168db91). E1-11 and the measured E1-12 subset have pre-D evidence; W2-12/13 overall and E1/X1 remain OPEN.
 Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
 
 Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
@@ -405,3 +405,17 @@ omission reaches COMMITTED and finishes owned TERMINAL recovery/cleanup.
 W2-12 overall remains OPEN for durable loser authority and cleanup/convergence.
 W2-13/14, concurrent cleanup, broader funnels, E1/X1 and activation remain OPEN.
 Full standard regression and final audit status belong to the linked evidence.
+
+## E1-13 / W2-13 — repair discovery delay safety
+
+[E1-13](./E1-13-REPAIR-DISCOVERY-DELAY-SAFETY.md) measures real Office repairs
+behind naturally earlier buckets, with target unvisited and zero refs. Productive
+GC's direct EQ repair guard vetoes new D independently of sweep discovery; later
+native UNKNOWN visits retain repair and renew exact pub without HEAD/fs promotion.
+A fresh-process restart rediscovers backlog. Guard-only omission reaches exact
+COMMITTED and completes owned TERMINAL recovery. Every fixture requires independent
+metadata/bytes/expiry/pending-owner canonical+projection cleanup.
+Only the measured Office delayed-discovery pre-D subset is CLOSED-EVIDENCE.
+W2-13 overall discovery/convergence/scale remains OPEN; no arbitrary delay, SLA,
+fairness, completion or same-org GC scan scale bound. W2-12/14, concurrent cleanup,
+broader E1/X1 and activation remain OPEN. Final validation belongs to linked evidence.
