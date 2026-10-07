@@ -745,6 +745,7 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 	if !pending {
 		return nil
 	}
+	repairBeforeRenewBarrier(database, repair.RepoID, repair.CommitID, repair.FSID)
 	if err := renewPublishedBlockReferenceRepairLivenessFn(database, repair); err != nil {
 		metrics.PublishRepairRenewalFailuresTotal.Inc()
 		return tagPublishedBlockReferenceRepairOutcome(errPublishedBlockReferenceRepairRenewalFailed, err)
