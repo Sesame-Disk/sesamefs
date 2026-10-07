@@ -33,12 +33,20 @@ is retained as prior execution; this correction does not claim a new test run.
 
 Scope reaudit: G5 harness isolation and its own gate controls are extracted
 to prerequisite PR #267, now merged into main. #266 targets main. Effective
-combined Go/Compose match c9a4eb23b. Three E1-11 controls stay in this PR;
+combined executable Go/Compose match c9a4eb23b; metrics comments are reconciled
+in the latest audit. Three E1-11 controls stay in this PR;
 two G5 controls belong to merged #267. Published #266 history is preserved.
 Post-extraction Docker E1-11 6/6 race (49.586s) and three own negatives PASS;
 standalone G5 9/9 race and two negatives/vets PASS. Both backends CLEAN,
 storage quota_usage 0, hard policy/limits unchanged. After user merge of #267,
 #266 is aligned with main; earlier full go-all-test is not claimed as rerun.
+
+Latest audit at a1df08de1 confirmed one P2 live discovery/observability contract
+contradiction. Reconciled W2-13, the runbook and metrics comments: discovery
+remains OPEN for convergence/scale; historical health-gate proposal is superseded
+for covered pre-D safety. Docker parsing/token-equivalence and document checks
+PASS; metrics declarations/literals and all other Go/test/Compose are unchanged.
+Prior full Docker results are retained, not claimed as a new run.
 
 Updated scoped audit: no unresolved introduced P0/P1/P2. W2-11 CLOSED-EVIDENCE
 for covered current-version pre-D safety only. W2-12..14, W2-10 overall,

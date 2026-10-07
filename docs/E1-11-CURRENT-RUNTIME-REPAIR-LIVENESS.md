@@ -259,3 +259,24 @@ remain the tested evidence, not a newly claimed test run. Final diff/scope,
 current versus historical W2-11 status, residual claims and whitespace were
 rechecked. No unresolved introduced P0/P1/P2 was found. W2-11 closure remains
 covered pre-D only; W2-12..14/E1/X1/activation remain OPEN, production GC OFF.
+
+### Live discovery/observability reconciliation — audit at a1df08de1
+
+Confirmed one P2 live-contract inconsistency: W2-13 discovery text and the
+observability runbook/metrics comments still tied covered pre-D safety to
+renewal cadence and a future sweep-health gate. They now distinguish the
+historical W2-11 proposal from direct non-expiring repair authority. W2-13
+remains OPEN for discovery/convergence/scale/completion bounds; no scheduler,
+health gate or operational completion guarantee was implemented. W2-12/14,
+cleanup and other PRE-GC contracts remain separate and OPEN.
+
+Changes are Markdown and comments inside metrics.go. Docker validation parses
+both versions and compares their executable Go token/literal streams excluding
+comments: identical fingerprint de6acc7851001b5815b850af6e5f5f2dcc48f454db220f4f517c5b5dca7a0cab.
+Names, labels, Help strings, metric constructors and all executable statements
+are unchanged; all other internal Go, test sources, scripts and Compose remain
+identical to the audited a1df08de1 snapshot. Documentation checks and diff --check
+PASS. Raw metrics.go text differs only in comments; earlier raw-Go identity
+statements describe their recorded snapshots, not this textual correction.
+The recorded full go-all-test and race results are prior runs, not new executions
+claimed here. Updated scoped audit has no unresolved introduced P0/P1/P2.

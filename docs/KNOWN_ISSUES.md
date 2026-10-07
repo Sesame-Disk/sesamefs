@@ -7726,7 +7726,7 @@ merged and PR #206 has been rebased for its scoped W2 re-audit.
 
 ### ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01: UNKNOWN repair discovery is scan-bound
 
-**Status**: Confirmed follow-up - intentionally out of scope for this branch (2026-09-07)
+**Status**: OPEN follow-up — R31/W2-13 discovery, convergence and scale; outside the covered E1-11 pre-D safety contract (originally registered 2026-09-07)
 **Severity**: Medium (P2) - R31 performance and convergence at sustained UNKNOWN-row volume
 **Affected**: `internal/api/v2/publish_repair.go`, published-block-reference repair worker
 
@@ -7749,18 +7749,24 @@ that is bounded by fail-closed behavior but remains a discovery/convergence cost
 
 #### Scope / disposition
 
-This issue remains outside this branch, whose contract is scoped Sync direct-HEAD
-safety and positive-settlement behavior. Do not solve it by weakening UNKNOWN
+This remains a separate R31/W2-13 discovery/convergence requirement, outside
+E1-11's covered current-version pre-D safety contract. Do not solve it by weakening UNKNOWN
 retention, cleanup authority, or positive-reachability-only settlement. A
 separate follow-up must characterize rows without a schedule, overdue rows,
 missed ticks, outages, restart, concurrent rescheduling, stale/orphan hints,
 partition growth, tombstones, multi-node duplicate retry, fairness, and bounded
 work per tick before selecting a durable discovery design. Scheduler state must
 remain separate from publication authority, and scheduler failure may delay work
-but must not make a durable repair undiscoverable indefinitely. Because there
-is no hard bound on time-to-visit, this issue also bounds liveness continuity:
-renewal cannot prove that a durable repair remains protected until the next
-visit (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`).
+but must not make a durable repair undiscoverable indefinitely. There is still
+no hard time-to-visit or completion bound; this is an OPEN operational and
+convergence requirement. It is not a TTL-renewal prerequisite for the covered
+pre-D safety contract: the matching non-expiring repair is consulted directly
+by the destructive EACH_QUORUM proof and vetoes a new D even if pub: has expired.
+E1-11 closes that covered W2-11 contract without a sweep-health gate; metrics
+and discovery cadence do not supply destructive authority. A repair first
+acquired after COMMITTED D cannot revoke D, and unadopted funnels are not covered.
+See [E1-11 evidence](./E1-11-CURRENT-RUNTIME-REPAIR-LIVENESS.md). W2-13 remains
+OPEN; no bounded discovery design is implemented here.
 
 #### Related
 
