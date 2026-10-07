@@ -54,7 +54,8 @@ func TestMain(m *testing.M) {
 	// comment could not: R26 was added to docker-compose and missed here, and the
 	// omission was invisible in the standard run only because P4A happens to be set
 	// alongside it.
-	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_E113_DISCOVERY_DELAY_EVIDENCE") == "1" ||
+	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_E114_PUB_ZERO_REF_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_E113_DISCOVERY_DELAY_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E112_KNOWN_LOSER_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_G5_COEXISTENCE_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E111_REPAIR_LIVENESS_EVIDENCE") == "1" ||
@@ -200,6 +201,12 @@ func TestMain(m *testing.M) {
 	if os.Getenv(e17EvidenceEnv) == "1" {
 		if missing := e17Missing(e17Evidence); len(missing) > 0 {
 			fmt.Printf("%s=1 requires all named RecvFS-before-PutBlock legs; missing=%s (check -run filters)\n", e17EvidenceEnv, strings.Join(missing, ","))
+			code = 1
+		}
+	}
+	if os.Getenv(e114EvidenceEnv) == "1" {
+		if missing := e114Missing(e114Observed); len(missing) > 0 {
+			fmt.Printf("%s=1 requires all named E1-14 pub zero-ref legs; missing=%s (check -run filters)\n", e114EvidenceEnv, strings.Join(missing, ","))
 			code = 1
 		}
 	}

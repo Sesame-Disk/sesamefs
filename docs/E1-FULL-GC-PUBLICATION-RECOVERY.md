@@ -1,6 +1,6 @@
 # E1 — Full-GC publication and recovery evaluation
 
-Status: ACTIVE; E1-13 on codex/e1-13-repair-discovery-delay-safety, following merged #268 (main@fc50e168db91). E1-11 and the measured E1-12 subset have pre-D evidence; W2-12/13 overall and E1/X1 remain OPEN.
+Status: ACTIVE; E1-14 on claude/e1-14-pub-zero-ref-transition, following merged #269 (main@718cf85f726f). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; W2-12/13/14 overall and E1/X1 remain OPEN.
 Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
 
 Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
@@ -423,3 +423,24 @@ row. E1-11's reachable evidence is separate, not a substituted backlog schedule.
 W2-13 overall discovery/convergence/scale remains OPEN; no arbitrary delay, SLA,
 fairness, completion or same-org GC scan scale bound. W2-12/14, concurrent cleanup,
 broader E1/X1 and activation remain OPEN. Final validation belongs to linked evidence.
+
+## E1-14 / W2-14 — pub: expiry zero-ref transition
+
+[E1-14](./E1-14-PUB-ZERO-REF-TRANSITION.md) uses real Office/CreateFile `pub:`
+references. Without a repair, the writer stops after `pub:` staging and before
+repair queueing; with one, the E1-13 durable UNKNOWN shape is used. `up:` is
+moved through the productive renewal API, then retired by Cassandra TTL, and
+Phase 0 resolves it while `pub:` keeps the block live. The final `pub:` is
+retired by actual TTL to global EQ zero refs. Owned-scope Phase 0, Phase 1 and
+the productive worker then create no candidate, queue row, D or recovery root,
+and P1/K1 stay retained. In the repair schedule the candidate is absent before
+any visit; the later native UNKNOWN sweep renews the exact repair-owned `pub:`
+without fs:/HEAD/P change. A disposable mutation that gives `pub:` the `up:`
+expiry projection makes the same leg reach a productive candidate.
+
+Measured safety subset: CLOSED-EVIDENCE / NOT-X1-RED (`pub:` expiry alone cannot
+reach D). W2-14 transition/convergence stays OPEN as the confirmed P2 retention
+gap `ISSUE-GC-PUB-REF-ZERO-REF-01`. The frozen row's "scanner to D" step is not
+reachable through this transition in current runtime and was not executed. A
+future `pub:` projection must re-run this matrix with the guard-omission
+control. Final validation belongs to the linked evidence.
