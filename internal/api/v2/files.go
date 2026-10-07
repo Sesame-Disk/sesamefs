@@ -1541,6 +1541,7 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 		W2PublicationAfterAuthorityBarrier(repoID)
 		if err := fsHelper.UpdateLibraryHeadFromSnapshot(snapshot, repoID, commitID, snapshot.HeadCommitID); err != nil {
 			if errors.Is(err, ErrLibraryHeadConflict) {
+				knownLoserBeforeCleanupBarrier(h.db, repoID, commitID)
 				if cleanupErr := CleanupFailedPublishAttempt(h.db, orgID, repoID, commitID, commitID, pendingFiles); cleanupErr != nil {
 					return fmt.Errorf("failed to clean up conflict publish attempt %s: %w", commitID, cleanupErr)
 				}

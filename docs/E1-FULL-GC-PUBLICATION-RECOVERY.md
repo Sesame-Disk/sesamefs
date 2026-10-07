@@ -1,6 +1,6 @@
 # E1 — Full-GC publication and recovery evaluation
 
-Status: ACTIVE; E1-11 on codex/e1-11-current-runtime-repair-liveness, following merged #264. E1/X1 remain OPEN.
+Status: ACTIVE; E1-12 on codex/e1-12-known-loser-crash-safety, following merged #266 (main@2a6eb32fd1a5). E1-11 covered pre-D safety is CLOSED-EVIDENCE. E1/X1 remain OPEN.
 Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
 
 Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
@@ -393,3 +393,15 @@ UNRUN/renewal-gap diagnosis for that contract, not the frozen attack matrix.
 No post-COMMITTED revocation, discovery/completion bound, concurrent cleanup,
 W2-12..14, other funnels, Phase5/6 or broader E1/X1 closure is claimed.
 Production GC remains OFF; the shared dev daemon remains unchanged.
+
+## E1-12 / W2-12 — definitive-loser crash pre-D evidence
+
+[E1-12](./E1-12-KNOWN-LOSER-CRASH-SAFETY.md) measures one Office/CreateFile
+plaintext block after actual HEAD CAS applied=false and Linux SIGKILL before
+cleanup. Productive GC cannot create D while its non-expiring repair remains;
+fresh-process productive sweeps retain UNKNOWN and renew exact repair-owned pub:
+without promotion. Normal cleanup/retry and six named legs are covered; the guard
+omission reaches COMMITTED and finishes owned TERMINAL recovery/cleanup.
+W2-12 overall remains OPEN for durable loser authority and cleanup/convergence.
+W2-13/14, concurrent cleanup, broader funnels, E1/X1 and activation remain OPEN.
+Full standard regression and final audit status belong to the linked evidence.
