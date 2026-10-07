@@ -46,7 +46,7 @@ Tests must own and clean all fixtures; quota policy/limits must not be relaxed.
 
 Initial Docker matrix: six legs PASS; productive isolated child 20.48s, parent
 24.729s including TestMain teardown. This is initial evidence, not final gates.
-Race repetitions, omission, negative controls and full go-all-test still pending.
+At this initial snapshot race repetitions, omission, negative controls and full go-all-test were still pending. Final verification below supersedes that status.
 
 The clean-loser control lets normal cleanup run and then permits the handler's
 ordinary retry to succeed; it checks that the first attempt's repair/pub are gone.
@@ -76,3 +76,76 @@ CAS, and checks its absence after normal loser cleanup. Repair-owned renewal is
 separately identified as pub:<repo:commit:fsID>. The normal retry must settle;
 fresh-process sweeps must renew that exact repair-owned pub. Final verification
 is rerun after these assertion corrections, not inferred from earlier PASS.
+## Positive exclusion proof and current disposition
+
+For this actual failed Office attempt the competitor HEAD/root stays exact and
+does not publish the losing file. The writer has terminated, so its request-local
+cleanup cannot race our recovery. `UpdateLibraryHead` returns the definitive
+conflict on a successful MapScanCAS response with applied=false; the observation
+is reached only after that conflict, never by substituting the CAS result.
+
+The non-expiring row contains this exact canonical block and persists after all
+real refs expire. `BlockPublicationLivenessGlobal` reads real refs globally and
+then directly scans the pending repair domain at EACH_QUORUM. A matching row is
+REPAIR_GUARD_ONLY, which releases the held claim and preserves the candidate;
+the productive probe observes that exact path. Omission of only this scan reaches
+exact COMMITTED with matching P/class/key/claim/orphan/root: the guard is necessary.
+
+A new repair process runs the native resumable classifier through the productive
+bucket sweep. Exhausting the current HEAD ancestry remains UNKNOWN because there
+is no durable negative witness. UNKNOWN renews its own pub: and retains the row;
+settlement does not promote fs: or write HEAD. Two new processes demonstrate both
+initial discovery and stable post-progress retention. Lease resets are scheduling
+controls, not a discovery SLA or additional cleanup authority.
+
+Disposition: the measured Office definitive-loser crash pre-D safety subset is
+CLOSED-EVIDENCE. W2-12 overall remains OPEN for durable loser classification,
+cleanup/convergence and retention debt; this PR intentionally supplies no witness.
+The omission is guard necessity evidence, not a complete post-D X1 violation.
+No production protocol/query/TTL/health-gate change; only the observational Office
+hook, compiled as a no-op outside integration. Other funnels, concurrent cleanup,
+W2-13/14, Phase5/6, E1/X1, PRE-GC/A1 and activation stay OPEN.
+
+## Pre-expiry-cleanup verification (historical snapshot 6cdca06e1)
+
+- Docker race: 18/18 measured legs across three independent child runs PASS,
+  89.498s including parent/child teardown. Completeness and gate inventory PASS.
+- Ordinary and integration vets PASS on the audited source.
+- Three E1-12 filtered/unavailable/filtered-child negative controls PASS.
+- Guard omission: exact productive COMMITTED, own TERMINAL recovery and
+  independently verified cleanup PASS (7.413s); source restored afterward.
+- Four existing W2 closure negatives PASS. Existing E1-11 three negatives and G5
+  two negatives PASS in the preceding sequential validation.
+- E1-12 file SHA-256 in the full-test image matches the audited working tree:
+  9f92c052da8466596d2289c53db13def3efbffb4c4be02021ffa34d14f73d6a5.
+- Standard Docker go-all-test PASS on that snapshot: integration 593.530s, API 20/20 suites and OIDC 25/25. This precedes the auxiliary-expiry cleanup fix and is not the final corrected-source run.
+
+Every counted leg records evidence after the independent owned teardown. That
+check verifies blocks/refs/lifecycle/orphans, commits/fs/index/repair and exact K1
+absence; normal fixtures use their own org and do not consume shared user quota.
+No concurrent integration job or stale cleanup is run during go-all-test.
+Source audit: all five changed Go files in the running full-suite container match
+the audited host bytes. The dedicated race/gate container differs only in gofmt
+formatting/trailing newline of the two barrier files; their canonical gofmt
+output matches the host exactly. No executable source difference is hidden by the
+image reuse. Shared standard development GC configuration is unchanged by diff.
+## Final cleanup audit correction
+
+A direct post-teardown Cassandra read found one gc_provisional_block_refs row
+for a completed crash fixture, with its non-expiring by-day projection. The child
+writer cannot populate its parent's request-local uploadRefs, so the existing
+fixture helper omitted this auxiliary cleanup. This introduced P2 TEST-INFRA is
+corrected locally: teardown enumerates only the owned org/block tracker partition,
+uses DeleteProvisionalBlockReferenceExpiry for every exact recorded coordinate,
+and an independent later check requires both canonical and exact by-day rows absent.
+The omission script additionally requires that affirmative expiry-cleanup marker
+and rejects its failures. Production protocol and shared cleanup remain unchanged.
+
+The preceding 593.530s full-suite PASS did not check these auxiliary rows, so it
+is historical rather than sufficient final evidence. Final race/gates/mutation
+and full Docker go-all-test are repeated on the corrected source. Prior local runs'
+owned residues are also removed through the productive helper, only for org/repo
+coordinates logged by E1-12 completed teardown and with blocks/library metadata
+independently absent. 36 canonical trackers and matching projections were removed;
+81 finished fixture coordinates were checked. No active fixture or foreign row is
+purged, and quota policies/limits are not changed.

@@ -163,14 +163,17 @@ func TestKnownLoserCrashSafety(t *testing.T) {
 				}
 			})
 			var fx *w2CreateFileFixture
+			var expiryRows []e112ExpiryRow
 			verification := shareProjectionDBForTest(t)
 			t.Cleanup(func() {
 				if fx != nil {
 					e111VerifyCleanup(t, verification, fx)
+					e112VerifyExpiryCleanup(t, verification, fx, expiryRows)
 				}
 			})
 			var data w2ChildFixture
 			fx, data = w2ClosureFixture(t, "Office")
+			t.Cleanup(func() { expiryRows = e112CleanupExpiry(t, fx) })
 			if leg == "normal" {
 				if rec := fx.create(t); rec.Code != http.StatusCreated {
 					t.Fatalf("control: %d %s", rec.Code, rec.Body.String())
@@ -435,5 +438,51 @@ func TestKnownLoserCrashSafetyCompleteness(t *testing.T) {
 			t.Fatalf("omission %s: %v", leg, missing)
 		}
 		all[leg] = true
+	}
+}
+
+type e112ExpiryRow struct {
+	ref     string
+	expires time.Time
+}
+
+// Writer subprocesses cannot populate the parent's request-local uploadRefs.
+// Enumerate only this fixture's canonical tracker partition at teardown, then
+// use the productive deletion helper to remove each exact by-day projection.
+func e112CleanupExpiry(t *testing.T, fx *w2CreateFileFixture) []e112ExpiryRow {
+	t.Helper()
+	var rows []e112ExpiryRow
+	iter := fx.database.Session().Query(`SELECT referrer,expires_at FROM gc_provisional_block_refs WHERE org_id=? AND block_id=?`, fx.orgID, fx.blockID).Consistency(gocql.EachQuorum).Iter()
+	var row e112ExpiryRow
+	for iter.Scan(&row.ref, &row.expires) {
+		rows = append(rows, row)
+		row = e112ExpiryRow{}
+	}
+	if err := iter.Close(); err != nil {
+		t.Errorf("E1-12 expiry teardown read: %v", err)
+	}
+	for _, row := range rows {
+		if err := fx.database.DeleteProvisionalBlockReferenceExpiry(fx.orgID, fx.blockID, row.ref, row.expires); err != nil {
+			t.Errorf("E1-12 expiry teardown delete: %v", err)
+		}
+	}
+	return rows
+}
+func e112VerifyExpiryCleanup(t *testing.T, database *dbpkg.DB, fx *w2CreateFileFixture, rows []e112ExpiryRow) {
+	t.Helper()
+	clean := true
+	var count int
+	if err := database.Session().Query(`SELECT count(*) FROM gc_provisional_block_refs WHERE org_id=? AND block_id=?`, fx.orgID, fx.blockID).Consistency(gocql.EachQuorum).Scan(&count); err != nil || count != 0 {
+		clean = false
+		t.Errorf("E1-12 expiry teardown canonical rows=%d err=%v", count, err)
+	}
+	for _, row := range rows {
+		if err := database.Session().Query(`SELECT count(*) FROM gc_provisional_block_refs_by_day WHERE expiry_day=? AND bucket=? AND expires_at=? AND org_id=? AND block_id=? AND referrer=?`, dbpkg.GCProjectionUTCDate(row.expires), dbpkg.GCDiscoveryBucket(fx.orgID, fx.blockID, row.ref), row.expires, fx.orgID, fx.blockID, row.ref).Consistency(gocql.EachQuorum).Scan(&count); err != nil || count != 0 {
+			clean = false
+			t.Errorf("E1-12 expiry teardown projection rows=%d err=%v", count, err)
+		}
+	}
+	if clean {
+		t.Logf("E1-12 expiry teardown verified org=%s block=%s trackers/projections absent (%d exact coordinates)", fx.orgID, fx.blockID, len(rows))
 	}
 }

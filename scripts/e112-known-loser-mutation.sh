@@ -15,6 +15,7 @@ rc=0
 go test -tags integration -v -count=1 -timeout=2m -run '^TestKnownLoserCrashSafety$/^crash-gc$' ./internal/integration > /tmp/e112-mutation.log 2>&1 || rc=$?
 cat /tmp/e112-mutation.log
 [ "$rc" -ne 0 ] && grep -q 'E1-11 RED: pending repair allowed exact COMMITTED D(P1)' /tmp/e112-mutation.log || { echo 'mutation did not prove productive COMMITTED D'; exit 1; }
-! grep -Eq 'build failed|syntax error|E1-11 teardown (blocks|block_references|gc_block_delete_lifecycles|gc_s3_orphans|commits|fs_objects|libraries_by_id|repairs|K1)|fixture.*teardown:' /tmp/e112-mutation.log || exit 1
+! grep -Eq 'build failed|syntax error|E1-11 teardown (blocks|block_references|gc_block_delete_lifecycles|gc_s3_orphans|commits|fs_objects|libraries_by_id|repairs|K1)|E1-12 expiry teardown (read|delete|canonical|projection)|fixture.*teardown:' /tmp/e112-mutation.log || exit 1
 grep -q 'E1-11 teardown verified' /tmp/e112-mutation.log || exit 1
+grep -q 'E1-12 expiry teardown verified' /tmp/e112-mutation.log || exit 1
 echo 'PASS: exact COMMITTED D caused only by omitting pending-repair guard; RED fixture teardown completed'
