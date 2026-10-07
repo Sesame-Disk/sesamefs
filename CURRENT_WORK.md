@@ -7,7 +7,14 @@ Frozen plan fb9911edd. Scope: one Office/CreateFile block, actual negative HEAD
 CAS, Linux SIGKILL before request-local cleanup, fresh-process productive repair
 sweep, real temporary-reference TTL expiry and owned-candidate GC on Cassandra/SILO.
 Six named legs and independent fixture cleanup; existing e19 isolation only.
-Implementation/verification in progress: no new PASS or closure claimed yet.
+Final audit corrected one introduced P2: child upload expiry trackers/projections
+were omitted by parent-local ref tracking. Corrected source d35f40b03 passes the
+race matrix 18/18 (79.870s), both vets and own/W2 negative controls. Guard omission
+reaches exact COMMITTED, then own TERMINAL and verified metadata/K1/expiry cleanup
+(9.147s). Final standard Docker go-all-test completed PASS: integration 610.866s,
+API 20/20 suites, OIDC 25/25; all 13 standard daemon controls PASS. Both backends
+CLEAN, quota_usage 0, hard policy/limits unchanged. No unresolved introduced
+P0/P1/P2 identified in the audited scope; ready for PR review.
 W2-11 covered pre-D CLOSED-EVIDENCE. W2-12 overall remains OPEN for durable
 loser authority/cleanup/convergence; W2-13/14, broader E1/X1 and activation OPEN.
 Production GC OFF; standard development daemon configuration unchanged.

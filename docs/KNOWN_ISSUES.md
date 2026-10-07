@@ -7776,7 +7776,7 @@ OPEN; no bounded discovery design is implemented here.
 
 ### ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01: Definitive CAS-loser cleanup has no durable witness
 
-**Status**: Confirmed follow-up - intentionally out of scope for this branch (2026-09-07)
+**Status**: OPEN — R31/W2-12 durable loser authority, cleanup and convergence; E1-12 measures the Office crash pre-D safety subset
 **Severity**: Medium (P2) - R31 convergence and retention
 **Affected**: definitive library-HEAD CAS loser cleanup and post-restart repair classification
 
@@ -7790,7 +7790,25 @@ loser from a timeout or lease expiry; it correctly classifies the outcome as
 UNKNOWN and retains the repair and artifacts. This is safe but can retain
 references until a future reconciliation authority discovers the known loser.
 
-#### Scope / disposition
+#### Current E1-12 evidence (2026-10-07)
+
+The [E1-12 matrix](./E1-12-KNOWN-LOSER-CRASH-SAFETY.md) obtains an actual
+Office/CreateFile HEAD CAS applied=false, verifies Linux SIGKILL before local
+cleanup and retains the original durable repair. After real temporary-reference
+expiry, productive GC observes the matching repair, releases the claim and
+preserves candidate/P1/K1 with no D/root. Two fresh-process bucket sweeps classify
+UNKNOWN and renew exact repair-owned pub: without fs: promotion or HEAD/tree/P
+changes. The omission of only the pending-repair scan reaches exact COMMITTED;
+productive TERMINAL recovery and independent fixture teardown complete.
+
+This is positive evidence for the measured current-version pre-D safety subset,
+not a durable loser witness or eventual artifact cleanup. W2-12 overall remains
+OPEN (P2 convergence/retention), as do W2-13/14, concurrent cleanup, broader
+funnels, E1/X1 and activation. Normal production queries/TTL/protocol are unchanged;
+the new Office observation is a no-op outside integration. Full regression status
+is recorded in the evidence page; no discovery latency bound is claimed.
+
+#### Historical scope / disposition (2026-09-07)
 
 This remains an R31 follow-up and does not block this branch. Direct Sync
 request-local outcomes now conservatively retain shared repair rows; they are

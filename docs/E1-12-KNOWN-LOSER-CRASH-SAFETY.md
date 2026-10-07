@@ -149,3 +149,31 @@ coordinates logged by E1-12 completed teardown and with blocks/library metadata
 independently absent. 36 canonical trackers and matching projections were removed;
 81 finished fixture coordinates were checked. No active fixture or foreign row is
 purged, and quota policies/limits are not changed.
+## Corrected-source final verification (d35f40b03)
+
+- Expanded-cleanup race matrix: 18/18 PASS, 79.870s; ordinary/integration vets,
+  completeness and mandatory-gate inventory PASS.
+- Three E1-12 negative controls and four W2 closure negatives PASS again.
+- Guard omission PASS (9.147s): exact COMMITTED, own productive TERMINAL recovery,
+  metadata/repair/K1 cleanup and both provisional tracker/projection checks.
+- Final standard Docker go-all-test completed PASS on corrected source:
+  integration 610.866s, API 20/20 suites, OIDC 25/25 tests. All 13 standard
+  daemon-dependent controls PASS without GC-disabled skips. Existing Phase6 and
+  optional topology/probe skips retain their original prerequisites; the separate
+  soak-tag suite is not claimed. G4/G5 gates PASS within the standard run.
+- Every final E1-12 leg confirms metadata/K1 and expiry tracker/projection cleanup.
+  Post-suite cleanup checks report CLEAN on standard and isolated e19 backends;
+  both organization quota_usage values are 0 with hard policy and 2,000,000,000
+  limits unchanged. No unresolved introduced P0/P1/P2 found in the audited scope.
+  The earlier full-suite PASS remains explicitly historical.
+- Corrected E1-12 Go file SHA-256:
+  e6c35778ed1f957d5812bfa1102a693a815eb53f5813919f49a54cebf457c3bc.
+
+No production runtime behavior changed between these verification snapshots;
+the new correction extends test teardown and its independent validation only.
+GC schedule controls: the existing store helper ensures/enqueues the real owned
+canonical candidate with an aged eligibility timestamp; the productive worker has
+zero test grace and dequeue discovery is narrowed to that candidate. Claims,
+EACH_QUORUM proof, lifecycle/orphan/root publication and physical recovery remain
+productive. This does not demonstrate automatic candidate creation at pub: expiry
+(W2-14), discovery latency, production grace policy or background scheduling.
