@@ -118,7 +118,8 @@ policy and limits are unchanged. This does not repair unrelated historical tests
   gates were subsequently run with the correct filename and exit 0.
 - Earlier Go file SHA-256:
   95096721dc25f5995bac67b55d2fe156aafe4b51b4fc3cbe0e9311b1252d168e.
-- First standard Docker full suite is historical, before pending-owner correction.
+- First standard Docker go-all-test exit 0: integration 668.529s, API 20/20
+  and OIDC 25/25. This is historical, before pending-owner correction.
   Corrected-source race/gates/mutation/full regression and final audit are pending.
 
 ## Safety disposition
@@ -135,3 +136,16 @@ fairness, sustained load, same-org GC scan scalability, outages, concurrent clea
 progress Paxos races, post-COMMITTED revocation or other funnels. The direct GC
 scan also has backlog and availability cost; read errors remain fail-closed under
 the existing protocol. No scheduler/TTL/index/health-gate or dev GC change.
+
+## Backlog selector audit correction
+
+The first selector checked an incorrect sorted index: some schedules obtained
+only two strictly earlier-bucket repairs despite the three-row minimum in the
+plan. The measured delay was real, but those runs do not certify that minimum.
+Selection now requires the third-lowest bucket to precede target and independently
+asserts at least four actual eligible coordinates (three backlog + target).
+This changes fixture selection only, never the productive scan or row placement.
+
+The intermediate owner-cleanup source passed 15/15 race legs in 149.424s; it is
+historical for the final backlog-size contract. Final source must repeat the
+matrix, negative controls, omission and standard regression with both corrections.

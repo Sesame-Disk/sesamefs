@@ -274,11 +274,11 @@ func TestRepairDiscoveryDelaySafety(t *testing.T) {
 				for len(fixtures) < 16 {
 					fixtures = append(fixtures, e113RealFixture(t))
 					sort.Slice(fixtures, func(i, j int) bool { return fixtures[i].repair.bucket < fixtures[j].repair.bucket })
-					if len(fixtures) >= 4 && fixtures[len(fixtures)-4].repair.bucket < fixtures[len(fixtures)-1].repair.bucket {
+					if len(fixtures) >= 4 && fixtures[2].repair.bucket < fixtures[len(fixtures)-1].repair.bucket {
 						break
 					}
 				}
-				if len(fixtures) < 4 || fixtures[len(fixtures)-4].repair.bucket >= fixtures[len(fixtures)-1].repair.bucket {
+				if len(fixtures) < 4 || fixtures[2].repair.bucket >= fixtures[len(fixtures)-1].repair.bucket {
 					t.Fatal("unable to obtain real earlier-bucket backlog")
 				}
 			}
@@ -292,6 +292,9 @@ func TestRepairDiscoveryDelaySafety(t *testing.T) {
 				f.eligible(t)
 				rows = append(rows, e113Coordinate{Repo: f.fx.repoID, Commit: f.repair.commitID, FS: f.repair.fsID, Bucket: f.repair.bucket})
 				f.retained(t)
+			}
+			if leg != "control-no-backlog" && len(rows) < 4 {
+				t.Fatalf("need at least three actual earlier-bucket repairs: %+v", rows)
 			}
 			refs, err := target.fx.database.ListBlockReferrers(target.fx.orgID, target.fx.blockID)
 			if err != nil || len(refs) == 0 {
