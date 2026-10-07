@@ -62,3 +62,17 @@ Shared E1-11 helpers execute the exact GC probe and independent owned teardown;
 their log labels remain E1-11. Their omission reaches exact COMMITTED and completes
 productive TERMINAL recovery before reporting RED. E1-12 does not label that
 omission alone as a complete X1 post-D publication counterexample.
+## Harness audit corrections
+
+The first omission run failed at an eager guard assertion before productive GC;
+that failure is rejected as COMMITTED evidence. The harness now verifies the
+actual zero-ref boundary independently, then measures the guard through the real
+worker. The corrected omission reached exact COMMITTED, completed productive
+TERMINAL recovery and verified absence of owned metadata/repair/K1 (7.561s).
+Production guard source is restored by the script trap; no host mutation occurs.
+
+The cleanup control now explicitly observes the original pub:<commitID> before
+CAS, and checks its absence after normal loser cleanup. Repair-owned renewal is
+separately identified as pub:<repo:commit:fsID>. The normal retry must settle;
+fresh-process sweeps must renew that exact repair-owned pub. Final verification
+is rerun after these assertion corrections, not inferred from earlier PASS.

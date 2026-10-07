@@ -219,6 +219,18 @@ func TestKnownLoserCrashSafety(t *testing.T) {
 				t.Fatalf("real attempt repair: %+v", rows)
 			}
 			r := rows[0]
+			stageRefs, stageErr := fx.database.ListBlockReferrers(fx.orgID, fx.blockID)
+			if stageErr != nil {
+				t.Fatal(stageErr)
+			}
+			hasStagePub, hasUp := false, false
+			for _, ref := range stageRefs {
+				hasStagePub = hasStagePub || ref == dbpkg.BlockReferrerForPublishAttempt(r.commitID)
+				hasUp = hasUp || strings.HasPrefix(ref, "up:")
+			}
+			if !hasStagePub || !hasUp {
+				t.Fatalf("actual original up/pub missing: %v", stageRefs)
+			}
 			var ttl *int
 			if err := fx.database.Session().Query(`SELECT TTL(created_at) FROM published_block_reference_repairs WHERE bucket=? AND org_id=? AND repo_id=? AND commit_id=? AND fs_id=?`, r.bucket, fx.orgID, fx.repoID, r.commitID, r.fsID).Consistency(gocql.EachQuorum).Scan(&ttl); err != nil || ttl != nil {
 				t.Fatalf("repair TTL: %v %v", ttl, err)
@@ -268,10 +280,14 @@ func TestKnownLoserCrashSafety(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, ref := range refs {
-					if strings.HasPrefix(ref, "pub:"+fx.repoID+":"+r.commitID+":") {
+					if ref == dbpkg.BlockReferrerForPublishAttempt(r.commitID) || ref == dbpkg.BlockReferrerForPublishAttempt(fx.repoID+":"+r.commitID+":"+r.fsID) {
 						t.Fatal("loser pub survived cleanup")
 					}
 				}
+				if len(w2Repairs(t, fx)) != 0 || !fx.hasOwnFSReferrer(t) {
+					t.Fatal("normal retry failed to settle")
+				}
+				w2AssertBytes(t, fx)
 				t.Log("real applied=false; normal cleanup completed; ordinary handler retry succeeded")
 				return
 			}
@@ -297,7 +313,9 @@ func TestKnownLoserCrashSafety(t *testing.T) {
 					}
 				}
 				e12ExpireRealTemporaryTTL(t, fx, refs)
-				w2AssertGuardOnly(t, fx)
+				if live, err := fx.database.BlockHasReferencesGlobal(fx.orgID, fx.blockID); err != nil || live {
+					t.Fatalf("zero-ref boundary: live=%t err=%v", live, err)
+				}
 				e112AssertRetained(t, fx, r, head, headRoot, loserRoot)
 			}
 			if leg == "crash-gc" || leg == "crash-restart" {
@@ -328,6 +346,13 @@ func TestKnownLoserCrashSafety(t *testing.T) {
 					refs, err := fx.database.ListBlockReferrers(fx.orgID, fx.blockID)
 					if err != nil || len(refs) == 0 {
 						t.Fatalf("UNKNOWN did not renew real pub: %v %v", refs, err)
+					}
+					renewed := false
+					for _, ref := range refs {
+						renewed = renewed || ref == dbpkg.BlockReferrerForPublishAttempt(fx.repoID+":"+r.commitID+":"+r.fsID)
+					}
+					if !renewed {
+						t.Fatalf("exact repair-owned pub not renewed: %v", refs)
 					}
 				}
 			}
