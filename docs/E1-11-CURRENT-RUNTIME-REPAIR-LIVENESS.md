@@ -232,3 +232,14 @@ scripts/g5-coexistence-gates.sh. Existing standard integration budget 18m stays
 in E1-11, where its additional mandatory matrix requires it. Prior accepted
 combined go-all-test evidence remains applicable to the identical compiled
 source/Compose; it is not represented as a new run on either split PR.
+
+Post-extraction verification at e098028e9: Docker E1-11 6/6 under race PASS
+(49.586s), gate inventory/completeness PASS, all three independent E1-11
+negative controls PASS. Both backends CLEAN; storage quota_usage 0, hard policy
+and 2,000,000,000-byte limit unchanged. Independent prerequisite G5 validation
+is 9/9 under race plus its two negative controls and both vets (PR #267).
+Git confirms no effective Go/Compose difference from c9a4eb23b and no G5
+file/wiring changes in #266's diff against its prerequisite. The full standard
+go-all-test result remains the earlier accepted identical-code run; no full
+rerun is claimed here. Scope objection is resolved by separation, not by a
+production fix. Merge order: #267, retarget #266 to main, then review/merge #266.
