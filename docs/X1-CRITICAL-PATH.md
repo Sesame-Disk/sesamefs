@@ -215,7 +215,7 @@ adds a funnel later does not.
 | W2-7 | SeafHTTP normal/streaming finalize | E1-5a single-shot and E1-5b streaming retain original materialized P through retries, validate after durable repair before HEAD, reject COMMITTED/TERMINAL; streaming same-tracker retry rematerializes only rejected blocks | [E1-5b evidence](./E1-5B-SEAFHTTP-STREAMING-PUBLICATION-SAFETY.md) / [E1-5a evidence](./E1-5A-SEAFHTTP-SINGLE-PUBLICATION-SAFETY.md) | **CLOSED-FIX measured single-shot and streaming pre-HEAD**; post-HEAD/R31 OPEN |
 | W2-8 | OnlyOffice callback | E1-4 retains original materialized exact P through durable repair and validates before HEAD; current-code COMMITTED/TERMINAL callbacks were RED | [E1-4 evidence](./E1-4-ONLYOFFICE-PUBLICATION-SAFETY.md) | **CLOSED-FIX for measured pre-HEAD contract**; post-HEAD cleanup/recovery and R31 remain OPEN |
 | W2-9 | Cross-repo copy/move | E1-09 captures source exact P per retry and checks it after durable repair before HEAD; productive source-purge COMMITTED/TERMINAL RED -> GREEN | [E1-09](./E1-09-CROSS-REPO-PUBLICATION-SAFETY.md) | CLOSED-FIX measured single-file/block plaintext same-org/representation pre-HEAD; broader W2-9/post-HEAD R31 OPEN |
-| W2-10 | Content resurrection: `RevertFile`, `RevertDirectory`, `RestoreTrashItem`, `RevertDirents` | No own pin, `pub:`, repair or fence. E1-6 RevertFile retained-history measured; #259 single-file restore and E1-10b one-directory/one-child restore cover narrow retained-history schedules; E1-10c adds one-directory/one-child RevertDirectory; E1-10d measures single-root-file/path RevertDirents. Historical child fs: blocks measured GC before claim/D; COMMITTED/TERMINAL unexecuted | [E1-6](./E1-6-REVERTFILE-PUBLICATION-SAFETY.md), [#259 file evidence](./E1-10-RESTORETRASH-RETAINED-HISTORY.md), [E1-10b directory evidence](./E1-10B-RESTORETRASH-DIRECTORY-HISTORY.md), [E1-10c directory revert](./E1-10C-REVERTDIRECTORY-RETAINED-HISTORY.md), [E1-10d dirent revert](./E1-10D-REVERTDIRENTS-RETAINED-HISTORY.md) / `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | OPEN; no CLOSED-FIX or full pre-HEAD safety; broader RevertDirents batch/shapes/policies and retention/Phase5/6 remain open |
+| W2-10 | Content resurrection: `RevertFile`, `RevertDirectory`, `RestoreTrashItem`, `RevertDirents` | Narrow retained-history schedules block GC before D. E1-10e additionally executes real COMMITTED/TERMINAL unpublished-source RED for a RevertDirents root file and adds settled historical fs: admission via LQ→EQ fallback plus original exact-P capture/per-HEAD revalidation. No own up:/pub:/repair. | [retained-file evidence](./E1-6-REVERTFILE-PUBLICATION-SAFETY.md), [E1-10d retained dirent](./E1-10D-REVERTDIRENTS-RETAINED-HISTORY.md), [E1-10e RED/fix](./E1-10E-W210-RESIDUAL-DISPOSITION.md) / `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | CLOSED-FIX measured RevertDirents file source-admission subset only. W2-10 overall, continuous liveness through HEAD, directories/broader batches, other handlers, retention/Phase5/6 and R31 OPEN |
 | W2-11 | R31: repair after HEAD — renewal after classify | open | `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` | OPEN |
 | W2-12 | R31: known-loser durability | open | `ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01` | OPEN |
 | W2-13 | R31: repair discovery bound | open | `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01` | OPEN |
@@ -347,3 +347,30 @@ Characterize physical resurrection/leak at E1/PRE-X1. The separate greenfield
 evaluation of empty-state legacy recovery remains recorded in
 GC-G4-IMPLEMENTATION-PLAN.md. The G4 plan contains the confirmed source chain
 and the current integration/monitoring corrections.
+
+
+### E1-10e: unpublished source counterexample and scoped fix (2026-10-06)
+
+Base main@5071d1701624b291a95db9ade8b5ff6abdbd63d7. Productive web upload
+followed by Sync PutCommit/RecvFS persists an unpublished commit/tree/file with
+SHA-1 block IDs and a canonical mapping, but no permanent fs: or repair.
+Only the owned temporary upload reference exists. After its controlled lapse,
+real GC reaches COMMITTED or TERMINAL for exact P1 without removing history.
+The original RevertDirents handler then successfully publishes HEAD depending
+on that retired P1. This is a source-admission counterexample outside Phase5/6;
+metadata existence does not prove retained permanent liveness.
+
+RevertDirents non-directory items now require their own settled
+fs:<repo>:<historical-file> for every canonical block, capture original exact P,
+and recheck those references plus existing exact-P authority immediately before
+each HEAD CAS. Missing/malformed/unknown evidence fails the item with HEAD intact.
+Live unpublished metadata is deliberately rejected too; normal Sync publication
+followed by deletion and restoration remains supported. No pin/pub:/repair is
+acquired, no bytes are rematerialized and commit ancestry is not certified.
+
+Measured one root file/path/plaintext block, same repo/org and one DC:
+RevertDirents source-admission subset = CLOSED-FIX. Directories, other handlers,
+broader batches/layouts, concurrent retention/cleanup, Phase5/6 and R31 remain
+OPEN. Foreign settled fs: is not a continuous own-pin proof through HEAD.
+W2-10/E1/X1 remain OPEN; production GC OFF, shared development GC unchanged.
+See [frozen plan and evidence](./E1-10E-W210-RESIDUAL-DISPOSITION.md).

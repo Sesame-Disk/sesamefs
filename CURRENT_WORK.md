@@ -1,6 +1,28 @@
 # Current Work
 
-## Active slice: E1-10d / RevertDirents retained-history
+## Active slice: E1-10e / unpublished resurrection source admission
+
+PR #264 targets main@79c5e2d2d (#265 merged); frozen plan c167aa947.
+New cross-audit confirms three P2: serving-DC false misses across the new
+admission chain, no productive rerun after d2d680f32, and stale live validation.
+Scoped correction uses LQ→EQ only on clean absence for historical layout,
+representation, SHA1 mapping, settled fs: and captured P; global readers stay
+unchanged. Local hits avoid EQ, transport/contradiction errors fail closed.
+The same original P is validated before each HEAD via the existing primitive.
+Own up:/pub:/repair and continuous liveness through HEAD remain absent/OPEN.
+
+FINAL updated-runtime validation: six fallback unit cases and 25 actual-query
+consistency mutations PASS; mapping/writer/identity inventories and both vets
+PASS. Productive matrix race 20/20 (212.576s), final standard Docker go-all-test
+exit 0: integration 797.368s, API 20/20 suites, OIDC 25/25 tests, all 13 daemon
+controls PASS with no GC-disabled skips. Both backends CLEAN, quotas free/hard
+and limits unchanged. Earlier b18d3c980/d2d680f32 results are historical snapshots.
+Scoped audit: the three supported P2 are corrected; no unresolved introduced
+P0/P1/P2 found. W2-10 overall/E1/X1/R31/Phase5/6 remain OPEN; production GC OFF.
+Standard dev daemon behavior remains unchanged.
+[Plan/evidence](docs/E1-10E-W210-RESIDUAL-DISPOSITION.md).
+
+## Previous merged slice: E1-10d / RevertDirents retained-history
 
 Base main@f465d1405d147dc34e69c894c08c21b435df5c1d (#262 merged).
 Plan frozen in 1339cb4c7. Single root file/path/plaintext block, retained

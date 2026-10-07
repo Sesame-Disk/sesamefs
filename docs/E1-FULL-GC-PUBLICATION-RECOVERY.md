@@ -97,11 +97,16 @@ Source trace with subsequent scoped dispositions:
   repair before HEAD, then promotes after HEAD. E1-09 now adds source exact-P
   capture per attempt and final validation after repair: the measured productive
   source-purge retirement schedule is CLOSED-FIX; W2-9 overall stays OPEN.
-- `RevertFile`, `RevertDirectory`, `RestoreTrashItem` and `RevertDirents`
-  rebuild a tree from historical fs objects and update HEAD directly, without
-  the pending-publish `pub:`/repair sequence or an exact-placement check. No
-  race was run, and source inspection alone does not establish whether the
-  required historical object can coexist with retired P1; W2-10 stays OPEN.
+- Content-resurrection handlers rebuild a tree from historical fs objects without
+  own up:/pub:/repair. Retained-history subsets block GC before D. E1-10e runs
+  a different real schedule: unpublished PutCommit/RecvFS metadata persists while
+  owned temporary liveness lapses, GC retires exact P1 at COMMITTED/TERMINAL,
+  and the original RevertDirents publishes HEAD depending on that retired P1.
+  The measured non-directory file source-admission subset is now CLOSED-FIX:
+  settled historical fs: via LQ→EQ fallback, original exact-P capture and recheck
+  immediately before every HEAD CAS. This is not continuous own liveness through
+  HEAD; directories/batches, other resurrection handlers, retention/Phase5/6,
+  R31 and W2-10 overall remain OPEN. [E1-10e](./E1-10E-W210-RESIDUAL-DISPOSITION.md).
 - The Sync idempotent-repair path can enqueue a repair for an already-current
   HEAD and intentionally has no retroactive exact-P rejection. This branch did
   not construct that state through a supported current flow after D; W2-3 and
@@ -344,3 +349,30 @@ W2-10/E1-10 overall, broader RevertDirents batch/shapes, retention/Phase5/6,
 R31 and E1/X1 remain OPEN. RevertFile prior disposition unchanged. Reevaluate
 remaining publication risks separately before any PRE-GC reclassification;
 no inference that all remaining risks belong to Phase5/6. Production GC OFF.
+
+
+### E1-10e: unpublished source counterexample and scoped fix (2026-10-06)
+
+Base main@5071d1701624b291a95db9ade8b5ff6abdbd63d7. Productive web upload
+followed by Sync PutCommit/RecvFS persists an unpublished commit/tree/file with
+SHA-1 block IDs and a canonical mapping, but no permanent fs: or repair.
+Only the owned temporary upload reference exists. After its controlled lapse,
+real GC reaches COMMITTED or TERMINAL for exact P1 without removing history.
+The original RevertDirents handler then successfully publishes HEAD depending
+on that retired P1. This is a source-admission counterexample outside Phase5/6;
+metadata existence does not prove retained permanent liveness.
+
+RevertDirents non-directory items now require their own settled
+fs:<repo>:<historical-file> for every canonical block, capture original exact P,
+and recheck those references plus existing exact-P authority immediately before
+each HEAD CAS. Missing/malformed/unknown evidence fails the item with HEAD intact.
+Live unpublished metadata is deliberately rejected too; normal Sync publication
+followed by deletion and restoration remains supported. No pin/pub:/repair is
+acquired, no bytes are rematerialized and commit ancestry is not certified.
+
+Measured one root file/path/plaintext block, same repo/org and one DC:
+RevertDirents source-admission subset = CLOSED-FIX. Directories, other handlers,
+broader batches/layouts, concurrent retention/cleanup, Phase5/6 and R31 remain
+OPEN. Foreign settled fs: is not a continuous own-pin proof through HEAD.
+W2-10/E1/X1 remain OPEN; production GC OFF, shared development GC unchanged.
+See [frozen plan and evidence](./E1-10E-W210-RESIDUAL-DISPOSITION.md).

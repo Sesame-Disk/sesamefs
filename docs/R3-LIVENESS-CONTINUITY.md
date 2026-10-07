@@ -193,13 +193,19 @@ content-addressed fs_object/block-reference ownership. Any race in fs_object
 retention for those operations is a separate question and is not classified as
 R3 publication continuity here.
 
-`RevertFile`, `RevertDirectory`, `RestoreTrashItem`, and `RevertDirents` are a
-different case: they make the new HEAD depend on historical fs_objects the old
-HEAD did not depend on — a positive logical block delta with borrowed
-provenance and no pin, `pub:`, repair, or fence. PC-0 classifies them as
-content-resurrection publication paths
-(`ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`, PC-0 §3.5); their W2 status
-is `UNKNOWN`.
+`RevertFile`, `RevertDirectory`, `RestoreTrashItem`, and `RevertDirents` add
+historical fs_objects to a HEAD that did not depend on them, a positive logical
+block delta with borrowed provenance. They still acquire no own up:/pub:/repair.
+E1-10e disproves metadata existence as a permanent-liveness witness: real
+PutCommit/RecvFS metadata can coexist with COMMITTED/TERMINAL retired P1 before
+any Sync HEAD publication. RevertDirents non-directory file admission now requires
+settled historical fs: via LQ→EQ fallback, captures original exact P and rechecks
+both before every HEAD CAS. That measured unpublished-source subset is
+CLOSED-FIX; the other handlers and directory shapes have no equivalent guard.
+Continuous own liveness through HEAD, broader batches, retention/Phase5/6 and
+R31 remain OPEN; W2-10 overall is OPEN. See
+[E1-10e evidence](./E1-10E-W210-RESIDUAL-DISPOSITION.md) and
+`ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`.
 
 The table intentionally records `UNKNOWN` where a source walk has not proved a
 temporal premise. This PR does not turn those rows green by assumption.
