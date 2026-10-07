@@ -521,8 +521,10 @@ func TestStaleRepairVisitorCancellation(t *testing.T) {
 					t.Errorf("E1-15A RED (%s): stale visitor left a durable reference after exact COMMITTED D(P1): refs=%v live=%t errs=%v/%v", leg, refs, live, refsErr, liveErr)
 				} else if pauseAt == "classify" && (v.renewals != 0 || len(inserts) != 0) {
 					t.Errorf("E1-15A pre-check bypassed (%s): renewal entered=%d writes=%v after COMMITTED D(P1)", leg, v.renewals, inserts)
+				} else if pauseAt == "renew" && (len(inserts) != 1 || inserts[0] != owned || len(deletes) != 1 || deletes[0] != owned) {
+					t.Errorf("E1-15A (%s): expected exactly one transient %s write withdrawn after global absence: inserts=%v deletes=%v", leg, owned, inserts, deletes)
 				} else {
-					t.Logf("E1-15A GREEN (%s): no durable post-D reference; no fs:/HEAD change", leg)
+					t.Logf("E1-15A GREEN (%s): no durable post-D reference (transient writes=%v withdrawn=%v); no fs:/HEAD change", leg, inserts, deletes)
 				}
 				if fx.hasOwnFSReferrer(t) || borrowedFSReadHead(t, fx.database, fx.orgID, fx.repoID) != f.head || len(w2Repairs(t, fx)) != 0 {
 					t.Error("stale visitor changed fs:/HEAD/repair after D")

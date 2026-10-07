@@ -1476,6 +1476,16 @@ func TestPublishedBlockReferenceRepairLivenessIdentityIsPerRepairRow(t *testing.
 	if strings.Contains(ifPendingSource, "cleanupFailedPublishRemoveAttemptReferencesFn") || strings.Contains(ifPendingSource, "RemovePublishAttemptReferences") {
 		t.Fatal("renew-after-row-gone must not turn a non-authoritative absence into pub: cleanup")
 	}
+	// E1-15A: withdrawal is allowed only behind the EACH_QUORUM gone decider.
+	globalCheck := strings.Index(ifPendingSource, "publishedBlockReferenceRepairGoneGloballyFn(database, repair)")
+	withdraw := strings.Index(ifPendingSource, "removePublishedBlockReferenceRepairOwnedLivenessFn(database, repair)")
+	if globalCheck < 0 || withdraw < globalCheck || strings.Count(ifPendingSource, "removePublishedBlockReferenceRepairOwnedLivenessFn(") != 1 {
+		t.Fatal("renewal withdrawal must follow, and only follow, the global gone decider")
+	}
+	goneStart := strings.Index(source, "var publishedBlockReferenceRepairGoneGloballyFn")
+	if goneStart < 0 || goneStart > ifPendingStart || !strings.Contains(source[goneStart:ifPendingStart], "Consistency(gocql.EachQuorum)") {
+		t.Fatal("global gone decider must read at EACH_QUORUM")
+	}
 	if !strings.Contains(removeSource, "publishedBlockReferenceRepairLivenessAttemptID(repair)") {
 		t.Fatal("eager repair-owned cleanup must use the per-repair pub identity")
 	}
@@ -3008,5 +3018,94 @@ func TestClassifyPublishedBlockReferenceRepairCASMissOnResidueIsGoneAndDoesNotRe
 	}
 	if renewed != 0 {
 		t.Fatalf("residue renewed pub: %d times", renewed)
+	}
+}
+
+// E1-15A: a renewal that lands after a concurrent legitimate clear is withdrawn
+// only on EACH_QUORUM-confirmed absence; local absence or an unavailable global
+// read retains it (ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01).
+func TestRenewIfPendingWithdrawsRenewalOnlyOnGlobalAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		gone          bool
+		goneErr       error
+		wantRemove    int
+		wantGoneError bool
+	}{
+		{name: "global absence withdraws", gone: true, wantRemove: 1, wantGoneError: true},
+		{name: "globally present retains", gone: false, wantRemove: 0, wantGoneError: false},
+		{name: "global read unavailable retains", goneErr: errors.New("each quorum unavailable"), wantRemove: 0, wantGoneError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldLoad := loadPublishedBlockReferenceRepairFn
+			oldRenew := renewPublishedBlockReferenceRepairLivenessFn
+			oldGone := publishedBlockReferenceRepairGoneGloballyFn
+			oldRemove := removePublishedBlockReferenceRepairOwnedLivenessFn
+			t.Cleanup(func() {
+				loadPublishedBlockReferenceRepairFn = oldLoad
+				renewPublishedBlockReferenceRepairLivenessFn = oldRenew
+				publishedBlockReferenceRepairGoneGloballyFn = oldGone
+				removePublishedBlockReferenceRepairOwnedLivenessFn = oldRemove
+			})
+			repair := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"block-1"})
+			repair.CreatedAt = time.Now().Add(-time.Hour)
+			loads, renewals, globalReads, removals := 0, 0, 0, 0
+			loadPublishedBlockReferenceRepairFn = func(database *db.DB, r publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+				loads++
+				if loads == 1 {
+					return repair, nil
+				}
+				return publishedBlockReferenceRepair{}, gocql.ErrNotFound
+			}
+			renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, r publishedBlockReferenceRepair) error {
+				renewals++
+				return nil
+			}
+			publishedBlockReferenceRepairGoneGloballyFn = func(database *db.DB, r publishedBlockReferenceRepair) (bool, error) {
+				globalReads++
+				if renewals != 1 {
+					t.Fatal("global gone check must follow the renewal write")
+				}
+				return tc.gone, tc.goneErr
+			}
+			removePublishedBlockReferenceRepairOwnedLivenessFn = func(database *db.DB, r publishedBlockReferenceRepair) error {
+				removals++
+				if globalReads != 1 || publishedBlockReferenceRepairLivenessAttemptID(r) != publishedBlockReferenceRepairLivenessAttemptID(repair) || !reflect.DeepEqual(r.StagedBlockIDs, []string{"block-1"}) {
+					t.Fatalf("withdrawal must target exactly this repair-owned pub after global absence: %+v", r)
+				}
+				return nil
+			}
+			err := renewPublishedBlockReferenceRepairLivenessIfPending(nil, repair)
+			if renewals != 1 || globalReads != 1 || removals != tc.wantRemove {
+				t.Fatalf("renew=%d global=%d remove=%d, want 1/1/%d", renewals, globalReads, removals, tc.wantRemove)
+			}
+			if errors.Is(err, errPublishedBlockReferenceRepairGone) != tc.wantGoneError || (!tc.wantGoneError && err != nil) {
+				t.Fatalf("result = %v, want gone=%t", err, tc.wantGoneError)
+			}
+		})
+	}
+}
+
+func TestRenewIfPendingDoesNotConsultGlobalAuthorityWhileLocallyPending(t *testing.T) {
+	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
+	oldGone := publishedBlockReferenceRepairGoneGloballyFn
+	t.Cleanup(func() {
+		loadPublishedBlockReferenceRepairFn = oldLoad
+		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
+		publishedBlockReferenceRepairGoneGloballyFn = oldGone
+	})
+	repair := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"block-1"})
+	repair.CreatedAt = time.Now().Add(-time.Hour)
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, r publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		return repair, nil
+	}
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, r publishedBlockReferenceRepair) error { return nil }
+	publishedBlockReferenceRepairGoneGloballyFn = func(database *db.DB, r publishedBlockReferenceRepair) (bool, error) {
+		t.Fatal("a locally pending row must not trigger the global gone decider")
+		return false, nil
+	}
+	if err := renewPublishedBlockReferenceRepairLivenessIfPending(nil, repair); err != nil {
+		t.Fatalf("pending renewal = %v", err)
 	}
 }
