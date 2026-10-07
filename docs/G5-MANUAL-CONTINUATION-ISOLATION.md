@@ -15,3 +15,13 @@ Own negative controls reject filtered and unavailable evidence without relying
 on E1-11 tests. Docker targeted race/gate/vet results will be recorded after
 running this standalone branch. The prior combined full regression belongs to
 the original PR #266 snapshot and is not a standalone-branch test claim.
+
+## Standalone validation
+
+Tested code commit 450599746: Docker ordinary/integration vets PASS; three
+repetitions of all three G5 controls under race, 9/9 PASS (97.814s); gate
+inventory PASS; independent filtered/unavailable negative controls PASS.
+Both main and e19 cleanup checks report CLEAN with hard quota policy unchanged.
+No production runtime or GC daemon configuration changes. Full go-all-test
+was not rerun on this smaller standalone snapshot; targeted G5 evidence above
+is independent of the original combined regression.
