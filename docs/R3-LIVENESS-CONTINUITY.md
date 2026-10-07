@@ -199,7 +199,7 @@ block delta with borrowed provenance. They still acquire no own up:/pub:/repair.
 E1-10e disproves metadata existence as a permanent-liveness witness: real
 PutCommit/RecvFS metadata can coexist with COMMITTED/TERMINAL retired P1 before
 any Sync HEAD publication. RevertDirents non-directory file admission now requires
-settled historical fs: at LOCAL_QUORUM, captures original exact P and rechecks
+settled historical fs: via LQ→EQ fallback, captures original exact P and rechecks
 both before every HEAD CAS. That measured unpublished-source subset is
 CLOSED-FIX; the other handlers and directory shapes have no equivalent guard.
 Continuous own liveness through HEAD, broader batches, retention/Phase5/6 and

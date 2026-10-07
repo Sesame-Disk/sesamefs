@@ -342,3 +342,80 @@ The Docker run used the changed runtime source and the final contract test file
 mounted read-only. Log: TEMP/sesamefs-264-source-quorum-docker.log. The preceding
 full productive validation remains evidence for its recorded source version;
 this follow-up does not claim a repeated full daemon matrix or new 3-DC test.
+
+### Cross-DC chain / final-source productive evidence follow-up
+
+Confirmed three supported P2: the local/session read chain can reject a source
+settled in another serving DC; d2d680f32 changed runtime without a productive
+matrix rerun; CURRENT_WORK incorrectly carried earlier validation forward.
+Earlier validation sections remain dated source snapshots.
+
+Scoped correction uses LOCAL_QUORUM first and EACH_QUORUM only on a clean miss
+for all five new reads: nullable layout, live library representation, forward
+SHA1 mapping, exact fs: and canonical P. Local hits never issue EQ. Transport
+errors fail closed without fallback. Missing required semantic fields consult
+EQ rather than silently defaulting metadata; contradictions fail closed. The
+legacy representation default is retained when encryption state is present.
+No unconditional per-block cross-DC read is added. Availability of the serving
+DC suffices for the local-hit admission path; a global fallback requires EQ.
+
+Capture uses the resolved IDs once, avoiding the copy helper's second local
+re-resolution. Strict hex normalization and bounded all-or-error resolution
+remain; NULL size_bytes is rejected while explicit zero is retained. Other
+global readers, mapping writers and handlers are unchanged. No new mapping
+authority, SERIAL protocol or own up:/pub:/repair is introduced. The existing
+final exact-P primitive still validates captured P before each HEAD; positive
+foreign fs: observations do not close continuity through HEAD.
+
+Tests verify exact consistency call order and fail-closed outcomes; the source
+contract binds all five queries to that tested callback and rejects omission,
+ONE, forced EQ, local-only and later override independently for each read.
+This proves consistency binding and fallback logic, not a new three-DC race.
+The productive fixture is RF=1; prior #210/X2 evidence establishes why a local
+reference miss cannot substitute for cross-DC absence.
+
+Fresh final-source productive matrix and final standard Docker go-all-test
+results are recorded below. Broader W2-10/E1/X1/R31/Phase5/6 remain OPEN;
+production GC OFF; standard development daemon and free/hard quotas unchanged.
+
+#### Definitive fallback-source validation
+
+- Six semantic fallback unit cases PASS: LQ hit avoids EQ, LQ transport failure
+  avoids EQ, clean miss reaches EQ, EQ hit/miss/error and wrapped clean miss.
+  All 25 actual-query mutations are rejected (five reads x five bypasses).
+- New mapping SELECT explicitly classified as one scoped reader in the existing
+  repository-wide inventory. Initial short DB suite detected that missing
+  classification; corrected only that exact path/method/consistency binding.
+  Existing writer/delete/freeze contracts and their query counts remain unchanged. Final DB
+  mapping/writer/identity inventories and API admission contracts PASS.
+- Normal go vet ./... and integration go vet PASS on the final test source.
+- Productive E1-10e, four named legs x five race repetitions: 20/20 PASS,
+  212.576s. Includes live-unpublished, COMMITTED, TERMINAL and published Sync
+  history. The source/layout/fallback runtime matches the final full-run image;
+  only the inventory test registration was added between runner images.
+- FINAL standard Docker go-all-test exit 0: integration 797.368s, API 20/20
+  suites, OIDC 25/25 tests. Required E1-10e 4/4 PASS and every other required
+  matrix completes; all 13 compiled daemon-dependent controls PASS, no GC-
+  disabled skips. Optional multi-DC/soak/cgroup suites are not newly certified.
+- Rebuilt/recreated all four backends; binary SHA-256 on each:
+  cd457c953a5aa6b6a629a25585f5b7fefb846b74da7cc0af6594ff72a9821796.
+  Immutable test images and worktree source match by hash:
+  admission 7c5a8e80d732a9625bb956f6f6ee532941ba71fc10023cf61cd486e07952d81e,
+  contract b51f1b745ccd0ef0b1461ac0b4f085248a4d3777f5e66f9c2a87c8e03aa9c0e4.
+- check-test-cleanup.sh CLEAN on main and manual-GC backends: no active/deleted
+  test orgs, test libraries or test groups remain. Exact K teardown assertions
+  pass; both default orgs remain free/hard and library limits are unchanged.
+- Frozen plan prefix intact; final diff excludes merged W2-4 files/wiring.
+  CURRENT_WORK and the live W2/E1 summaries reflect this tested source, not an
+  earlier-source verdict. No global reader, schema, TTL, quota or GC change.
+
+Scoped verdict: the three supported THIS-PR P2 are corrected; no unresolved
+introduced P0/P1/P2 found. Source admission is CLOSED-FIX only for the measured
+subset. Continuous liveness, other handlers/shapes, W2-10 overall, E1, X1, R31
+and Phase5/6 remain OPEN; production GC OFF. This binding/logic validation is
+not a new three-DC adversarial execution or a WAN latency/availability bound.
+
+Logs in workstation TEMP (not tracked):
+sesamefs-264-fallback-{contract,race,db,final-contracts,vet,go-all,cleanup,quota}.log.
+The db.log contains the detected then-corrected inventory failure; final-contracts
+and the full-run log contain the successful definitive checks.

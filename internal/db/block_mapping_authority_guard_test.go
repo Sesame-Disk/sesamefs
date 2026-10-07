@@ -2219,6 +2219,13 @@ func TestBlockMappingMutationsAreRepositoryWideInventoried(t *testing.T) {
 		"getBlockIDMappingForWriteCheck": {
 			path: "internal/db/block_references.go", sessionConsistency: true,
 		},
+		// Scoped resurrection reader; its consistency is the callback parameter
+		// of readHistoricalAdmissionRow (LQ hit / EQ only on clean absence).
+		// API source contracts bind the actual query to that callback and reject
+		// all direct/overridden pins. This admits one SELECT, never a writer.
+		"resolveHistoricalBlockIDs": {
+			path: "internal/api/v2/resurrection_admission.go", consistency: "consistency",
+		},
 		"readBlockMappingProjection": {
 			path: primitivePath, consistency: "gocql.EachQuorum",
 		},

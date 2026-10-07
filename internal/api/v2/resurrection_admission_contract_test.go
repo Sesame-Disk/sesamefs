@@ -1,183 +1,170 @@
 package v2
 
 import (
+	"errors"
 	"fmt"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
-	"regexp"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-// Inspect the actual SELECT -> Scan chain, not an unrelated consistency call.
-func historicalQuorumReadContract(source []byte, function, table string) error {
-	file, err := parser.ParseFile(token.NewFileSet(), "resurrection_admission.go", source, 0)
+// Every query must be inside the callback passed to the tested fallback helper,
+// and its last consistency call must bind the callback's actual parameter.
+func historicalAdmissionReadContract(raw []byte) error {
+	file, err := parser.ParseFile(token.NewFileSet(), "source.go", raw, 0)
 	if err != nil {
 		return err
 	}
-	var fn *ast.FuncDecl
-	for _, decl := range file.Decls {
-		if f, ok := decl.(*ast.FuncDecl); ok && f.Name.Name == function {
-			fn = f
-		}
-	}
-	if fn == nil {
-		return fmt.Errorf("historical read function %s missing", function)
-	}
-	reads, pinned := 0, 0
-	ast.Inspect(fn, func(n ast.Node) bool {
-		scan, ok := n.(*ast.CallExpr)
+	tables := map[string]int{"fs_objects": 0, "libraries": 0, "block_id_mappings": 0, "blocks": 0, "block_references": 0}
+	queries, wrappers := 0, 0
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		sel, ok := scan.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "Scan" {
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Query" {
+			queries++
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		if !ok || ident.Name != "readHistoricalAdmissionRow" {
 			return true
 		}
-		var expr ast.Expr = sel.X
-		localQuorum, consistencySeen := false, false
-		for {
-			call, ok := expr.(*ast.CallExpr)
+		wrappers++
+		if len(call.Args) != 1 {
+			return true
+		}
+		callback, ok := call.Args[0].(*ast.FuncLit)
+		if !ok || len(callback.Type.Params.List) != 1 || len(callback.Type.Params.List[0].Names) != 1 {
+			return true
+		}
+		parameter := callback.Type.Params.List[0].Names[0].Name
+		ast.Inspect(callback.Body, func(n ast.Node) bool {
+			scan, ok := n.(*ast.CallExpr)
 			if !ok {
-				break
+				return true
 			}
-			method, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				break
+			method, ok := scan.Fun.(*ast.SelectorExpr)
+			if !ok || method.Sel.Name != "Scan" {
+				return true
 			}
-			if method.Sel.Name == "Consistency" && !consistencySeen && len(call.Args) == 1 {
-				consistencySeen = true
-				arg, ok := call.Args[0].(*ast.SelectorExpr)
-				if ok {
-					pkg, ok := arg.X.(*ast.Ident)
-					localQuorum = ok && pkg.Name == "gocql" && arg.Sel.Name == "LocalQuorum"
+			var expr ast.Expr = method.X
+			seen, pinned := false, false
+			for {
+				call, ok := expr.(*ast.CallExpr)
+				if !ok {
+					break
 				}
-			}
-			if method.Sel.Name == "Query" && len(call.Args) > 0 {
-				if lit, ok := call.Args[0].(*ast.BasicLit); ok {
-					query, _ := strconv.Unquote(lit.Value)
-					if strings.Contains(strings.Join(strings.Fields(strings.ToLower(query)), " "), "from "+table) {
-						reads++
-						if localQuorum {
-							pinned++
-						}
+				method, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					break
+				}
+				if method.Sel.Name == "Consistency" && !seen {
+					seen = true
+					if len(call.Args) == 1 {
+						arg, ok := call.Args[0].(*ast.Ident)
+						pinned = ok && arg.Name == parameter
 					}
 				}
-				break
-			}
-			expr = method.X
-		}
-		return true
-	})
-	if reads != 1 || pinned != reads {
-		return fmt.Errorf("historical %s reads=%d pinned LOCAL_QUORUM=%d", table, reads, pinned)
-	}
-	return nil
-}
-
-// Check the caller as well as the shared reader: an unrelated pinned reader
-// must not hide a new direct query or a bypass of the source-reader primitive.
-func historicalSourceReaderContract(source []byte) error {
-	file, err := parser.ParseFile(token.NewFileSet(), "resurrection_admission.go", source, 0)
-	if err != nil {
-		return err
-	}
-	readers, queries := 0, 0
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "captureRetainedHistoricalFile" {
-			continue
-		}
-		ast.Inspect(fn, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			if sel.Sel.Name == "Query" {
-				queries++
-			}
-			pkg, ok := sel.X.(*ast.Ident)
-			if ok && pkg.Name == "db" && sel.Sel.Name == "ReadFSObjectIdentitySourceRow" {
-				readers++
+				if method.Sel.Name == "Query" && len(call.Args) > 0 {
+					if lit, ok := call.Args[0].(*ast.BasicLit); ok && pinned {
+						query, _ := strconv.Unquote(lit.Value)
+						words := strings.Fields(strings.ToLower(query))
+						for i, word := range words {
+							if word == "from" && i+1 < len(words) {
+								if _, ok := tables[words[i+1]]; ok {
+									tables[words[i+1]]++
+								}
+							}
+						}
+					}
+					break
+				}
+				expr = method.X
 			}
 			return true
 		})
+		return true
+	})
+	if wrappers != 5 || queries != 5 {
+		return fmt.Errorf("scoped fallback wrappers=%d queries=%d", wrappers, queries)
 	}
-	if readers != 1 || queries != 0 {
-		return fmt.Errorf("historical source readers=%d direct queries=%d", readers, queries)
+	for table, count := range tables {
+		if count != 1 {
+			return fmt.Errorf("%s callback-bound reads=%d", table, count)
+		}
 	}
 	return nil
 }
 
-func TestHistoricalSourceAdmissionUsesQuorumReader(t *testing.T) {
+func TestHistoricalAdmissionReadFallback(t *testing.T) {
+	transport := errors.New("transport")
+	for _, tc := range []struct {
+		name                string
+		local, global, want error
+		levels              []gocql.Consistency
+	}{
+		{"local-hit", nil, transport, nil, []gocql.Consistency{gocql.LocalQuorum}},
+		{"local-error", transport, nil, transport, []gocql.Consistency{gocql.LocalQuorum}},
+		{"global-hit", gocql.ErrNotFound, nil, nil, []gocql.Consistency{gocql.LocalQuorum, gocql.EachQuorum}},
+		{"global-miss", gocql.ErrNotFound, gocql.ErrNotFound, gocql.ErrNotFound, []gocql.Consistency{gocql.LocalQuorum, gocql.EachQuorum}},
+		{"global-error", gocql.ErrNotFound, transport, transport, []gocql.Consistency{gocql.LocalQuorum, gocql.EachQuorum}},
+		{"wrapped-local-miss", fmt.Errorf("lookup: %w", gocql.ErrNotFound), nil, nil, []gocql.Consistency{gocql.LocalQuorum, gocql.EachQuorum}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var levels []gocql.Consistency
+			err := readHistoricalAdmissionRow(func(c gocql.Consistency) error {
+				levels = append(levels, c)
+				if len(levels) == 1 {
+					return tc.local
+				}
+				return tc.global
+			})
+			if !errors.Is(err, tc.want) || !reflect.DeepEqual(levels, tc.levels) {
+				t.Fatalf("err=%v levels=%v want err=%v levels=%v", err, levels, tc.want, tc.levels)
+			}
+		})
+	}
+}
+
+func TestHistoricalAdmissionReadsUseScopedFallback(t *testing.T) {
 	raw, err := os.ReadFile(r3SourcePath("internal", "api", "v2", "resurrection_admission.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := historicalSourceReaderContract(raw); err != nil {
+	if err := historicalAdmissionReadContract(raw); err != nil {
 		t.Fatal(err)
 	}
-	mutated := strings.Replace(string(raw), "db.ReadFSObjectIdentitySourceRow(", "db.ReadUnpinnedHistoricalSourceRow(", 1)
-	if mutated == string(raw) {
-		t.Fatal("mutation did not bypass the shared source reader")
+	for _, bypass := range []string{"resolveStoredBlockIDs", "captureCopiedBlockPlacements", "ResolveBlockRepresentationID", "GetBlockIDMappingContext", "ReadFSObjectIdentitySourceRow"} {
+		if strings.Contains(string(raw), bypass+"(") {
+			t.Fatalf("local resolver bypass: %s", bypass)
+		}
 	}
-	if err := historicalSourceReaderContract([]byte(mutated)); err == nil {
-		t.Fatal("historical source admission accepted a reader bypass")
-	}
-}
-
-func TestHistoricalReferenceAdmissionPinsLocalQuorum(t *testing.T) {
-	for _, contract := range []struct {
-		name, function, table string
-		path                  []string
-	}{
-		{"source-layout", "ReadFSObjectIdentitySourceRow", "fs_objects", []string{"internal", "db", "identity_gateway.go"}},
-		{"permanent-reference", "requireHistoricalFileReferences", "block_references", []string{"internal", "api", "v2", "resurrection_admission.go"}},
-	} {
-		t.Run(contract.name, func(t *testing.T) {
-			raw, err := os.ReadFile(r3SourcePath(contract.path...))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := historicalQuorumReadContract(raw, contract.function, contract.table); err != nil {
-				t.Fatal(err)
-			}
-			// Mutate only the target function, independent of other pins' order.
-			fset := token.NewFileSet()
-			file, err := parser.ParseFile(fset, "source.go", raw, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var start, end int
-			for _, decl := range file.Decls {
-				if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == contract.function {
-					start, end = fset.Position(fn.Pos()).Offset, fset.Position(fn.End()).Offset
+	// Mutate each actual read independently, including a later override.
+	pin := ".Consistency(consistency)"
+	offset := 0
+	for i := 0; i < 5; i++ {
+		pos := strings.Index(string(raw[offset:]), pin)
+		if pos < 0 {
+			t.Fatal("missing target pin")
+		}
+		pos += offset
+		for name, replacement := range map[string]string{"inherited": "", "ONE": ".Consistency(gocql.One)", "always-EQ": ".Consistency(gocql.EachQuorum)", "local-only": ".Consistency(gocql.LocalQuorum)", "override": pin + ".Consistency(gocql.One)"} {
+			t.Run(fmt.Sprintf("read-%d/%s", i, name), func(t *testing.T) {
+				mutated := string(raw[:pos]) + replacement + string(raw[pos+len(pin):])
+				if _, err := parser.ParseFile(token.NewFileSet(), "mutation.go", mutated, 0); err != nil {
+					t.Fatal(err)
 				}
-			}
-			body := string(raw[start:end])
-			pin := regexp.MustCompile(`\.\s*Consistency\(gocql\.LocalQuorum\)`)
-			for name, replacement := range map[string]string{"inherited-session": "", "weak-ONE": ".Consistency(gocql.One)", "overridden-ONE": ".Consistency(gocql.LocalQuorum).Consistency(gocql.One)"} {
-				t.Run(name, func(t *testing.T) {
-					changed := pin.ReplaceAllString(body, replacement)
-					if changed == body {
-						t.Fatal("mutation did not remove the production pin")
-					}
-					mutated := string(raw[:start]) + changed + string(raw[end:])
-					if _, err := parser.ParseFile(token.NewFileSet(), "mutated.go", mutated, 0); err != nil {
-						t.Fatalf("mutation must remain valid Go: %v", err)
-					}
-					if err := historicalQuorumReadContract([]byte(mutated), contract.function, contract.table); err == nil {
-						t.Fatal("admission read accepted weak/inherited consistency")
-					}
-				})
-			}
-		})
+				if err := historicalAdmissionReadContract([]byte(mutated)); err == nil {
+					t.Fatal("admission consistency bypass accepted")
+				}
+			})
+		}
+		offset = pos + len(pin)
 	}
 }

@@ -14,7 +14,8 @@ Require settled historical permanent references and validate original physical
 placement before publishing restored file HEAD. Reject unpublished Sync metadata
 whose borrowed upload liveness may lapse; settled Sync history remains supported.
 Cassandra/SILO evidence reproduces COMMITTED/TERMINAL unsafe publication before
-the scoped fix. The new permanent-fs read pins LOCAL_QUORUM even under a ONE session.
+the scoped fix. All five scoped admission reads use LQ→EQ only on clean absence; local hits
+avoid EQ and errors fail closed.
 The preexisting W2-4 harness isolation is a separate prerequisite PR #265.
 No general W2-10/Phase5/6 closure or GC activation.
 

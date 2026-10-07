@@ -103,7 +103,7 @@ Source trace with subsequent scoped dispositions:
   owned temporary liveness lapses, GC retires exact P1 at COMMITTED/TERMINAL,
   and the original RevertDirents publishes HEAD depending on that retired P1.
   The measured non-directory file source-admission subset is now CLOSED-FIX:
-  settled historical fs: at LOCAL_QUORUM, original exact-P capture and recheck
+  settled historical fs: via LQ→EQ fallback, original exact-P capture and recheck
   immediately before every HEAD CAS. This is not continuous own liveness through
   HEAD; directories/batches, other resurrection handlers, retention/Phase5/6,
   R31 and W2-10 overall remain OPEN. [E1-10e](./E1-10E-W210-RESIDUAL-DISPOSITION.md).

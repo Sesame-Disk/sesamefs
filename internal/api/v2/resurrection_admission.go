@@ -2,53 +2,169 @@ package v2
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
+	"time"
 
+	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
-// captureRetainedHistoricalFile admits only a file whose own permanent fs:
-// references have already settled. Metadata existence and somebody else's up:
-// are insufficient. This does not certify commit ancestry or protect against
-// Phase5/6 metadata destruction; those remain separate open prerequisites.
+// Read local settled observations first; only a clean absence consults the
+// cross-DC domain. Transport errors and contradictory data fail closed. This
+// scoped policy neither acquires own liveness nor grants mapping authority.
+func readHistoricalAdmissionRow(read func(gocql.Consistency) error) error {
+	err := read(gocql.LocalQuorum)
+	if !errors.Is(err, gocql.ErrNotFound) {
+		return err
+	}
+	return read(gocql.EachQuorum)
+}
+
+// The five new admission reads share this policy. The existing final exact-P
+// authority check remains required before every HEAD, against captured P.
 func (h *FSHelper) captureRetainedHistoricalFile(orgID, repoID string, entry FSEntry) ([]commitBlockPlacement, error) {
-	// Use the shared immutable-source reader so admission cannot inherit ONE
-	// and mistake a stale replica's absence for missing historical metadata.
-	row, err := db.ReadFSObjectIdentitySourceRow(context.Background(), h.db.Session(), repoID, entry.ID)
-	if err != nil {
+	var kind *string
+	var size *int64
+	var ids []string
+	// Pointer destinations distinguish NULL from explicit zero, as the shared
+	// immutable-source reader does, without changing its global read policy.
+	if err := readHistoricalAdmissionRow(func(consistency gocql.Consistency) error {
+		kind, size, ids = nil, nil, nil
+		if err := h.db.Session().Query(`SELECT obj_type, block_ids, size_bytes FROM fs_objects WHERE library_id = ? AND fs_id = ?`, repoID, entry.ID).Consistency(consistency).Scan(&kind, &ids, &size); err != nil {
+			return err
+		}
+		// Missing immutable fields are absence, not zero/default metadata. Verify in
+		// the cross-DC domain before rejecting a locally partial source row.
+		if kind == nil || size == nil || (*size > 0 && len(ids) == 0) {
+			return gocql.ErrNotFound
+		}
+		return nil
+	}); err != nil {
 		return nil, fmt.Errorf("read historical file: %w", err)
 	}
-	kind, _ := row["obj_type"].(string)
-	ids, _ := row["block_ids"].([]string)
-	size, hasSize := row["size_bytes"].(int64)
-	if kind != "file" || !hasSize || size < 0 || size != entry.Size || (size > 0 && len(ids) == 0) {
+	if kind == nil || *kind != "file" || size == nil || *size < 0 || *size != entry.Size || (*size > 0 && len(ids) == 0) {
 		return nil, fmt.Errorf("historical file layout is incomplete")
 	}
-	resolved, err := h.resolveStoredBlockIDs(orgID, repoID, ids)
+	resolved, err := h.resolveHistoricalBlockIDs(orgID, repoID, ids)
 	if err != nil {
 		return nil, fmt.Errorf("resolve historical blocks: %w", err)
 	}
 	placements := make([]commitBlockPlacement, 0, len(resolved))
 	for _, id := range db.NormalizeBlockIDs(resolved) {
-		if !db.IsSHA256BlockID(id) {
-			return nil, fmt.Errorf("historical block mapping is incomplete")
-		}
 		placements = append(placements, commitBlockPlacement{blockID: id})
 	}
 	if err := h.requireHistoricalFileReferences(orgID, repoID, entry.ID, placements); err != nil {
 		return nil, err
 	}
-	return h.captureCopiedBlockPlacements(orgID, repoID, []*pendingPublishedFile{{fsID: entry.ID, externalBlockIDs: ids}})
+	// Capture the already resolved set once. Calling the copy adapter here would
+	// re-resolve representation/mappings with its unrelated local read policy.
+	err = runBoundedPublicationChecks(len(placements), func(ctx context.Context, i int) error {
+		block := &placements[i]
+		if err := readHistoricalAdmissionRow(func(consistency gocql.Consistency) error {
+			var class, key *string
+			if err := h.db.Session().Query(`SELECT storage_class, storage_key FROM blocks WHERE org_id = ? AND block_id = ?`, orgID, block.blockID).WithContext(ctx).Consistency(consistency).Scan(&class, &key); err != nil {
+				return err
+			}
+			if class == nil || key == nil {
+				return gocql.ErrNotFound
+			}
+			block.storageClass, block.storageKey = *class, *key
+			return nil
+		}); err != nil {
+			return fmt.Errorf("read historical physical life: %w", err)
+		}
+		if !db.IsSHA256BlockID(block.blockID) || !config.IsCanonicalStorageClassName(block.storageClass) || block.storageKey == "" || strings.TrimSpace(block.storageKey) != block.storageKey {
+			return fmt.Errorf("%w: incomplete historical physical life", db.ErrBlockMetadataPermanent)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return placements, nil
+}
+
+// Preserve representation validation and strict all-or-error ID resolution;
+// only this resurrection adapter changes the reads' consistency domain.
+func (h *FSHelper) resolveHistoricalBlockIDs(orgID, repoID string, ids []string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var encrypted *bool
+	var stored *string
+	var deletedAt *time.Time
+	if err := readHistoricalAdmissionRow(func(consistency gocql.Consistency) error {
+		encrypted, stored, deletedAt = nil, nil, nil
+		if err := h.db.Session().Query(`SELECT encrypted, block_representation_id, deleted_at FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, repoID).Consistency(consistency).Scan(&encrypted, &stored, &deletedAt); err != nil {
+			return err
+		}
+		if encrypted == nil {
+			return gocql.ErrNotFound
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if deletedAt != nil && !deletedAt.IsZero() {
+		return nil, db.ErrLibraryDeleted
+	}
+	// Preserve the existing legacy representation default only when encryption
+	// state is present; a missing encrypted flag must not default to plaintext.
+	storedValue := ""
+	if stored != nil {
+		storedValue = *stored
+	}
+	representation, err := db.CanonicalBlockRepresentationIDForLibrary(repoID, *encrypted, storedValue)
+	if err != nil {
+		return nil, err
+	}
+	resolved := make([]string, len(ids))
+	err = runBoundedPublicationChecks(len(ids), func(ctx context.Context, i int) error {
+		id := db.NormalizeBlockID(ids[i])
+		if db.IsSHA256BlockID(id) {
+			resolved[i] = id
+			return nil
+		}
+		if !db.IsSHA1BlockID(id) {
+			return fmt.Errorf("invalid historical block id %q", ids[i])
+		}
+		var mapped string
+		if err := readHistoricalAdmissionRow(func(consistency gocql.Consistency) error {
+			var value *string
+			if err := h.db.Session().Query(`SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?`, orgID, representation, id).WithContext(ctx).Consistency(consistency).Scan(&value); err != nil {
+				return err
+			}
+			if value == nil {
+				return gocql.ErrNotFound
+			}
+			mapped = *value
+			return nil
+		}); err != nil {
+			return err
+		}
+		mapped = db.NormalizeBlockID(mapped)
+		if !db.IsSHA256BlockID(mapped) {
+			return fmt.Errorf("historical block mapping is incomplete")
+		}
+		resolved[i] = mapped
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resolved, nil
 }
 
 func (h *FSHelper) requireHistoricalFileReferences(orgID, repoID, fsID string, placements []commitBlockPlacement) error {
-	// Intersect permanent reference writes at LOCAL_QUORUM even if the session
-	// is configured at ONE. A weak false absence would reject settled history.
 	ref := db.BlockReferrerForFSObject(repoID, fsID)
 	return runBoundedPublicationChecks(len(placements), func(ctx context.Context, i int) error {
 		var observed string
-		if err := h.db.Session().Query(`SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?`, orgID, placements[i].blockID, ref).WithContext(ctx).Consistency(gocql.LocalQuorum).Scan(&observed); err != nil {
+		if err := readHistoricalAdmissionRow(func(consistency gocql.Consistency) error {
+			return h.db.Session().Query(`SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?`, orgID, placements[i].blockID, ref).WithContext(ctx).Consistency(consistency).Scan(&observed)
+		}); err != nil {
 			return fmt.Errorf("historical file lacks settled permanent liveness: %w", err)
 		}
 		if observed != ref {
@@ -58,9 +174,9 @@ func (h *FSHelper) requireHistoricalFileReferences(orgID, repoID, fsID string, p
 	})
 }
 
-// Recheck the retained references and original exact P after the per-item retry
-// work and immediately before HEAD. Unknown, changed and claimed lives fail
-// closed through the existing authority primitive. No new reference is acquired.
+// Recheck the retained references and original exact P immediately before each
+// HEAD. Unknown, changed and claimed lives fail closed via the existing authority
+// primitive. The fallback does not close observation-to-HEAD continuity.
 func (h *FSHelper) validateRetainedHistoricalFile(orgID, repoID, fsID string, placements []commitBlockPlacement) error {
 	if err := h.requireHistoricalFileReferences(orgID, repoID, fsID, placements); err != nil {
 		return err
