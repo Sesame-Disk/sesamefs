@@ -1,6 +1,6 @@
 # E1 — Full-GC publication and recovery evaluation
 
-Status: ACTIVE; E1-15A on claude/e1-15a-stale-repair-visitor-cancellation, following merged #270 (main@3583d989d39f). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; E1-15A found a stale-renewal post-D RED and compensated it (PARTIAL-FIX / CLOSED-EVIDENCE only when the global check and withdrawal succeed; strict guarantee OPEN P1 PRE-X1); W2-12/13/14, E1-15 overall and E1/X1 remain OPEN.
+Status: ACTIVE; E1-15B on claude/e1-15b-writer-post-d-staging-crash, following merged #271 (main@4290a2bb394b). E1-15B confirms post-D writer staging liveness on crash (P1 PRE-X1 OPEN, characterized). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; E1-15A found a stale-renewal post-D RED and compensated it (PARTIAL-FIX / CLOSED-EVIDENCE only when the global check and withdrawal succeed; strict guarantee OPEN P1 PRE-X1); W2-12/13/14, E1-15 overall and E1/X1 remain OPEN.
 Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
 
 Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
@@ -468,3 +468,16 @@ bypass re-check) reproduce the post-D pin. Crash/withdraw-failure/unavailable
 residue (TTL-bounded), funnel-specific E1-15 rows, multi-DC measurement,
 E1/X1 and activation stay OPEN. Final validation belongs to the linked
 evidence.
+
+## E1-15B — writer publication after D, crash before the final fence
+
+[E1-15B](./E1-15B-WRITER-POST-D-STAGING-CRASH.md) holds a real CreateFile
+writer subprocess after materialization. Its real `up:` is retired by TTL and
+the productive GC reaches a natural exact COMMITTED D(P1). Resumed, the writer
+stages `pub:` post-D. Without a crash the final fence rejects it (409) and
+cleans up. SIGKILL after staging leaves a durable `pub:` (35d). SIGKILL after
+repair queueing and insertCommit leaves `pub:` plus a non-expiring repair, and
+two productive sweeps classify UNKNOWN and renew `pub:<repo:commit:fs>` after D.
+Characterized P1 PRE-X1 class, not fixed; the pre-HEAD guarantee holds. A
+shared fix must also settle repairs for attempts that never reach HEAD. Other
+funnels (unmeasured), E1/X1 and activation stay OPEN.

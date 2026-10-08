@@ -1,6 +1,24 @@
 # Current Work
 
-## Active slice: E1-15A stale repair visitor vs concurrent durable cancellation
+## Active slice: E1-15B writer publication after D, crash before the final fence
+
+Base main@4290a2bb394b8748973b2a4b7e9b8340d122a2af (#271 merged).
+Branch claude/e1-15b-writer-post-d-staging-crash; frozen plan d25a44350.
+Characterization; the only production-file change is an integration-only
+CreateFile seam before the final fence. A real CreateFile writer subprocess
+resumed after natural exact COMMITTED D(P1) stages `pub:` post-D. No crash:
+the fence rejects (409) and cleans up. SIGKILL after staging: durable `pub:`
+(35d). SIGKILL after queue: `pub:` plus a non-expiring repair, renewed post-D
+by every sweep (measured twice). Race 12/12, 0 data races, gates PASS.
+Confirmed P1 PRE-X1 class ISSUE-PUBLICATION-POST-D-LIVENESS-BEFORE-VALIDATION-01,
+not fixed. Pre-HEAD holds; strict post-D X1, E1-15, E1/X1 and activation
+remain OPEN. go-all-test exit 0 with the integration budget raised 18m→22m
+(integration 1196.541s; the 18m run timed out without failures); API 20/20,
+OIDC 25/25; both backends clean, quota_usage 0, hard limits unchanged. Final
+scoped audit: no unresolved introduced P0/P1/P2.
+[Plan/evidence](docs/E1-15B-WRITER-POST-D-STAGING-CRASH.md).
+
+## Previous merged slice: E1-15A stale repair visitor vs concurrent durable cancellation (PR #271)
 
 Base main@3583d989d39fc6c0e2706b426dde1131c3dcb3a7 (#270 merged).
 Branch claude/e1-15a-stale-repair-visitor-cancellation; frozen plan cd12f83b9.
