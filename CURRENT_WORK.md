@@ -1,6 +1,24 @@
 # Current Work
 
-## Active slice: E1-15B writer publication after D, crash before the final fence
+## Active slice: E1-15C post-D references, terminal retirement and P2 rematerialization
+
+Base main@304f6da8f7c30e4ad816d17d061dcde6816c0854 (#272 merged).
+Branch claude/e1-15c-post-d-physical-life; frozen plan 11cbdb6b5. Evidence only,
+no production change. On Office, post-D `pub:` and a dead repair do not stop
+TERMINAL retirement of P1 or reinstall it. A real rematerialization publishes
+P2 (new key, same content-addressed fs_id as the dead repair). The dead repair
+re-pins L, and with every real reference expired the worker vetoes D of the
+unreferenced P2 only because of it. Race 12/12, 0 data races, gates PASS. No
+physical (D0 §13) RED measured; strict E1 reading stays RED. Proposed for
+explicit decision: X1 safety = physical invariant, post-D refs = convergence
+gate, next PR = dead-repair settlement (never removing `fs:<repo:fs_id>`). No
+severity lowered. Review fixes: C1 requires the shared fs_id; C2 requires the
+worker's own RepairGuardOnly answer. go-all-test on d3fcef19f exit 0
+(integration 1562.886s, 87% of the 30m budget; API 20/20, OIDC 25/25); both backends clean, quota_usage 0, hard limits
+unchanged. Final scoped audit: no unresolved introduced P0/P1/P2.
+[Plan/evidence](docs/E1-15C-POST-D-PHYSICAL-LIFE-DISPOSITION.md).
+
+## Previous merged slice: E1-15B writer publication after D, crash before the final fence (PR #272)
 
 Base main@4290a2bb394b8748973b2a4b7e9b8340d122a2af (#271 merged).
 Branch claude/e1-15b-writer-post-d-staging-crash; frozen plan d25a44350.
