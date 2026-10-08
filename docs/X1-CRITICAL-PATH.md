@@ -221,6 +221,13 @@ adds a funnel later does not.
 | W2-13 | R31: repair discovery bound | Office real earlier-bucket backlog delays target execution; direct EQ repair guard vetoes D before target visit; fresh-process native UNKNOWN discovery/renewal | [E1-13 evidence](./E1-13-REPAIR-DISCOVERY-DELAY-SAFETY.md) / `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01` | **OPEN overall** discovery/convergence/scale; measured Office delayed-discovery pre-D subset **CLOSED-EVIDENCE**; no SLA/fairness or bounded completion |
 | W2-14 | R31: `pub:` zero-ref transition | Office real `pub:` (with and without durable repair) retired by actual TTL to global zero refs: productive Phase 0/1 and worker create no candidate/queue/D; P1/K1 retained; later native UNKNOWN renews exact repair-owned `pub:`. A causal mutation giving `pub:` the `up:` expiry projection yields a productive candidate | [E1-14 evidence](./E1-14-PUB-ZERO-REF-TRANSITION.md) / `ISSUE-GC-PUB-REF-ZERO-REF-01` | **OPEN overall** transition/convergence (dead block retained, P2 follow-up); measured safety subset **CLOSED-EVIDENCE / NOT-X1-RED**: `pub:` expiry alone cannot reach D |
 
+E1-15A (shared repair cancellation, not a W2 row): a stale visitor that has
+passed its durable re-check no longer leaves a post-D `pub:` after a legitimate
+clear. RED on #270 main, fixed with EACH_QUORUM-confirmed withdrawal; the
+measured Office subset is CLOSED-FIX and E1-15 overall stays OPEN
+([evidence](./E1-15A-STALE-REPAIR-VISITOR-CANCELLATION.md),
+`ISSUE-PUBLISH-REPAIR-STALE-RENEWAL-AFTER-CLEAR-01`).
+
 Not W2 exit rows (follow-ups, may be reclassified in E1):
 `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`,
 `ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01`,

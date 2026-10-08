@@ -1,6 +1,6 @@
 # E1 — Full-GC publication and recovery evaluation
 
-Status: ACTIVE; E1-14 on claude/e1-14-pub-zero-ref-transition, following merged #269 (main@718cf85f726f). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; W2-12/13/14 overall and E1/X1 remain OPEN.
+Status: ACTIVE; E1-15A on claude/e1-15a-stale-repair-visitor-cancellation, following merged #270 (main@3583d989d39f). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; E1-15A found and fixed a stale-renewal post-D RED (measured subset CLOSED-FIX); W2-12/13/14, E1-15 overall and E1/X1 remain OPEN.
 Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
 
 Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
@@ -444,3 +444,23 @@ gap `ISSUE-GC-PUB-REF-ZERO-REF-01`. The frozen row's "scanner to D" step is not
 reachable through this transition in current runtime and was not executed. A
 future `pub:` projection must re-run this matrix with the guard-omission
 control. Final validation belongs to the linked evidence.
+
+## E1-15A — stale repair visitor vs concurrent durable cancellation
+
+[E1-15A](./E1-15A-STALE-REPAIR-VISITOR-CANCELLATION.md) holds a real Office
+writer before HEAD with durable R. The productive sweep classifies R natively
+UNKNOWN and pauses. Every CreateFile retry then meets a real competitor HEAD
+and runs real known-loser cleanup, clearing R. Real `up:` TTL expiry gives a
+natural candidate, and the productive worker reaches exact COMMITTED D(P1)
+before the visitor resumes. Paused before its durable re-checks, the visitor
+does not renew. Paused after the last re-check, current runtime was **RED**:
+it wrote `pub:<repo:commit:fs>` after D, and the post-renewal local gone
+observation kept it.
+
+Fix: post-renewal local absence escalates to EACH_QUORUM; confirmed global
+absence withdraws exactly that pin, and unavailable authority retains. Measured
+Office single-block subset: CLOSED-FIX. Two causal mutations (revert fix;
+bypass re-check) reproduce the post-D pin. Crash/withdraw-failure/unavailable
+residue (TTL-bounded), funnel-specific E1-15 rows, multi-DC measurement,
+E1/X1 and activation stay OPEN. Final validation belongs to the linked
+evidence.

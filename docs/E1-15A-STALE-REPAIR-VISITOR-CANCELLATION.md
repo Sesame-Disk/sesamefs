@@ -99,3 +99,157 @@ Phase5/6, PRE-GC, A1, GC activation.
 ## Validation
 
 Accepted results are recorded below. Nothing is inferred from this plan.
+
+## Harness
+
+`TestStaleRepairVisitorCancellation` runs in the existing e19 isolated child
+(GC OFF on every endpoint it addresses). Each leg owns a new org/library.
+
+- Writer: real CreateFile (Office template) in a goroutine. The existing
+  `SetW2PublicationAfterAuthorityForTest` callback holds attempt 1 after
+  exact-P authority and durable R1, before HEAD. On release the leg either lets
+  it win, or runs a real blockless competitor CreateFile inside the callback
+  before every attempt. The existing known-loser observer counts one real
+  `ErrLibraryHeadConflict` cleanup per attempt.
+- Visitor: the productive sweep body (integration entry at +2h eligibility,
+  E1-13 control) on its own Cassandra session. A query observer records every
+  `block_references` INSERT/DELETE for the block on that session. Exact
+  session/library observers: before visit, after native classify, and the new
+  before-renewal observer (after the last durable re-check, before the write).
+  The new observer is integration-tagged; normal builds compile a no-op.
+- Natural D: every real `up:` (one per attempt) is moved by the productive
+  renewal API to a common seconds-scale deadline and retired by actual TTL
+  (global EQ zero refs). Owned-scope Phase 0 creates exactly one candidate at
+  exact P1; owned-scope Phase 1 enqueues it; the productive worker over the
+  owned queue reaches exact COMMITTED: lifecycle PUBLISHED at P1, orphan
+  COMMITTED, recovery root present, canonical row retired. The harness never
+  creates the candidate.
+- After the checks, `w2AssertCommittedContinuation` completes the owned root
+  to TERMINAL. Teardown is verified for every fixture (E1-11/12/13/14 plus
+  recovery roots).
+
+## RED on current runtime (2700790c9, production code unchanged)
+
+First complete run, single pass:
+
+- `retained-control` PASS: R present at resume; native UNKNOWN renewed
+  `pub:<repo:commit:fs>`; writer then won and promoted fs:.
+- `clear-before-recheck` PASS: status 409, 8 attempts, 8 real loser
+  cleanups, repairs/pub:/fs: absent, loser not in HEAD; natural candidate;
+  exact COMMITTED D(P1). Resumed visitor: 0 renewal entries, 0 reference writes,
+  refs=[] (the durable re-checks suppress it).
+- `clear-after-recheck` **RED**: same cancellation and exact COMMITTED D(P1).
+  The visitor, paused after its last re-check observed R, resumed and wrote
+  `pub:<repo:commit:fs>`; the post-renewal local gone observation left it.
+  Final state: `refs=[pub:<repo:commit:fs>]`, `BlockHasReferencesGlobal=true`,
+  canonical row retired, no fs:, HEAD unchanged. Harm: no reachable HEAD
+  depends on P1. The dead pin would over-retain a future incarnation of the
+  same block id for up to 35 days. Per the frozen rule this is RED.
+- `fresh-sweep-after-clear` PASS: a new sweep makes 0 visits and 0 writes.
+- Teardown clean in every leg, including the RED leg (20 verifications).
+
+## Fix (7c59cc63a)
+
+`renewPublishedBlockReferenceRepairLivenessIfPending`: after the renewal, a
+local "gone" re-check is no longer final. It is escalated to
+`publishedBlockReferenceRepairGoneGloballyFn`, an EACH_QUORUM point read of
+the repair row (a progress-only residue counts as gone).
+
+- Global absence: `removePublishedBlockReferenceRepairOwnedLivenessFn`
+  withdraws exactly this repair-owned `pub:<repo:commit:fs>`; returns gone.
+- Globally present: the renewal is owned; returns nil.
+- Global read error: retains the pin until TTL and logs; returns gone (the
+  pre-fix behaviour).
+
+Why it closes the window: GC's destructive liveness read is refs → EACH_QUORUM
+repair scan → refs again. The renewal is a LOCAL_QUORUM write, and the
+EACH_QUORUM re-read intersects its quorum. If D committed, the renewal was not
+acknowledged before that re-read began. The negative repair scan therefore
+precedes the visitor's post-write EACH_QUORUM read, which then observes the
+same tombstone. Withdrawal uses global authority, consistent with
+`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01`. Its "why not
+under-retention" analysis of every tombstone writer in main applies unchanged.
+
+Residuals (OPEN, not fixed): a crash, or a failed withdrawal, between the
+renewal write and the withdrawal leaves the dead pin until TTL; so does an
+unavailable EACH_QUORUM read. Multi-DC behaviour is argued, not measured.
+This is a shared-worker change: every funnel using the shared repair now
+withdraws on confirmed global absence.
+
+Design-record compliance
+([rejected designs](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md)):
+- Not a cherry-pick of #220/#222. It adds no durable producer state, witness,
+  lease, generation, pre-pass or deadline (the properties that killed them,
+  §2.4/§3.3); the only new effect is a delete of an existing pin.
+- It satisfies the mandatory §2.6 rules: local absence never withdraws, the
+  destructive decision uses EACH_QUORUM, and unavailable authority fails
+  closed (retain). The record certifies EACH_QUORUM for the one-replica-per-DC
+  topology; the intersection argument above is the general quorum one, and
+  only single-DC Docker is measured.
+- It changes the earlier answer to §8.8 question F ("keep the TTL-bounded pin
+  and let it expire"). E1-15A shows that pin can be a durable post-D
+  reference, so for confirmed global absence it is now withdrawn. Accepting
+  the TTL pin stays the answer for crash/unavailable cases.
+
+Unit tests: `TestRenewIfPendingWithdrawsRenewalOnlyOnGlobalAbsence`
+(absence withdraws exactly once with the per-repair identity; present and
+unavailable retain; the global read follows the write);
+`TestRenewIfPendingDoesNotConsultGlobalAuthorityWhileLocallyPending`. The
+existing source guard now also requires withdrawal to appear only after the
+EACH_QUORUM decider. Existing GONE-CHECK tests pass unchanged; with a nil
+session the decider is unavailable and retains.
+
+## Accepted checks on 7c59cc63a
+
+Container SHA-256: test e115a f467afdef944940cfd39b08de9d861fa578be5682b56a546a8b32d5e28f77928,
+publish_repair.go cf8e7f4ef05a9a588c87430b85672ea345b2ddeb36bc79ec68533c3ce7d85ceb.
+
+- Matrix after the fix: 4/4 PASS. `clear-after-recheck` records exactly one
+  transient write of `pub:<repo:commit:fs>` and exactly one withdrawal of it
+  by the same visit; final refs=[]; no fs:/HEAD change.
+- Race `-race -count=3`: 12/12 legs across three fresh isolated children,
+  6 GREEN post-D legs, 0 RED, 60 teardown verifications, 0 data races;
+  150.221s package, 238s wall.
+- `go test ./internal/api/v2/` PASS; both vets PASS.
+- Three own gate negatives PASS (filtered, unavailable, filtered child).
+- Causal mutations PASS (`scripts/e115a-stale-visitor-mutation.sh`):
+  M-fix (decider forced to "not gone") reproduces the RED on
+  `clear-after-recheck`; M-pre (re-check treats an absent row as pending)
+  produces a durable post-D pin on `clear-before-recheck`. Both reach exact
+  COMMITTED first and pass all teardown verifiers. A first M-pre attempt did
+  not compile (the comment swallowed `, nil`); the script rejected it as
+  build-failed and it is not evidence.
+- Prior matrices with the fix: E1-11, E1-12, E1-13, E1-14 with their
+  mandatory gates, exit 0 (188.538s).
+
+## Standard regression and final audit
+
+- Standard Docker go-all-test on 7c59cc63a: exit 0, 2026-10-07 19:08–19:31
+  local. `go test ./... -short` PASS; integration 1009.387s (E1-15A isolated
+  child PASS, 4 E1-15A teardown verifications); API 20/20 suites; OIDC 25/25
+  tests. The 74 SKIPs are the existing optional 3-DC/topology suites and are
+  not claimed as executed, so the shared-worker change has no multi-DC run.
+- Afterwards both backends report `CLEANUP_STATUS: clean`, with quota_usage 0,
+  storage_quota 2000000000 and policy hard unchanged.
+- Scoped audit. The production diff is the EACH_QUORUM decider, the
+  conditional withdrawal and a no-op barrier call; no schema, migration, GC,
+  scanner, TTL or config change. Plan items 1–10 were executed except merge
+  and activation. The frozen RED rule was applied as written. Prohibitions
+  held: no CQL insert/delete of references, no harness repair removal or
+  candidate, no fabricated HEAD/P/D. Two items were corrected during
+  development, before acceptance: the M-pre build failure (rejected by the
+  script) and the leg check, strengthened to require the exact transient
+  write plus its withdrawal. No unresolved introduced P0/P1/P2 in the
+  measured scope. The design-record and GONE-CHECK documents now carry dated
+  notes, because `main` has an EACH_QUORUM absence check again.
+
+## Disposition
+
+- E1-15A shared repair cancellation, measured Office single-block schedules:
+  **CLOSED-FIX**. A current-version stale visitor that has already classified
+  leaves no durable reference after a legitimate durable clear followed by
+  exact COMMITTED D(P1): suppressed before the re-checks, withdrawn after them.
+- E1-15 overall: **OPEN** (Sync/SeafHTTP/OnlyOffice/cross-repo specifics,
+  bucket contention, owned-pub cleanup race, cancel/retry interleavings).
+- Crash/withdraw-failure/unavailable-authority residue: OPEN, bounded by TTL.
+- W2/R31, E1/X1 and GC activation: OPEN.

@@ -1,6 +1,26 @@
 # Current Work
 
-## Active slice: E1-14 / W2-14 pub: expiry zero-ref transition
+## Active slice: E1-15A stale repair visitor vs concurrent durable cancellation
+
+Base main@3583d989d39fc6c0e2706b426dde1131c3dcb3a7 (#270 merged).
+Branch claude/e1-15a-stale-repair-visitor-cancellation; frozen plan cd12f83b9.
+A real Office writer is held before HEAD with durable R; the productive sweep
+classifies R natively UNKNOWN and pauses. Every CreateFile retry meets a real
+competitor HEAD and runs real loser cleanup (8/8), clearing R. Real `up:` TTL
+gives a natural candidate; the productive worker reaches exact COMMITTED D(P1).
+Paused before the re-checks: no renewal. Paused after the last re-check:
+**RED** on current runtime, a durable `pub:` after D (2700790c9).
+Fix 7c59cc63a: post-renewal local absence escalates to EACH_QUORUM; confirmed
+global absence withdraws exactly that pin; unavailable authority retains.
+Race 12/12, 0 RED, 0 data races; unit tests, vets, gate negatives, two
+causal mutations and the E1-11..14 matrices pass. Measured subset CLOSED-FIX;
+crash/unavailable residue (TTL-bounded), E1-15 overall, E1/X1 and activation
+remain OPEN. go-all-test exit 0 (integration 1009.387s, API 20/20, OIDC
+25/25); both backends clean, quota_usage 0, hard limits unchanged. Final
+scoped audit: no unresolved introduced P0/P1/P2.
+[Plan/evidence](docs/E1-15A-STALE-REPAIR-VISITOR-CANCELLATION.md).
+
+## Previous merged slice: E1-14 / W2-14 pub: expiry zero-ref transition (PR #270)
 
 Base main@718cf85f726f8ed4137c942f57d23e17bf5acd90 (#269 merged).
 Branch claude/e1-14-pub-zero-ref-transition; frozen plan dceb7df19.

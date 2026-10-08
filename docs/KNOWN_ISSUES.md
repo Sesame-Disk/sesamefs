@@ -7390,10 +7390,57 @@ cleanup-authority decision (the "cleanup authority" column of its phase
 table); that issue, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`, X1
 and GC remain open. No `EACH_QUORUM` absence decider was added.
 
+**Dated follow-up (2026-10-07, E1-15A):** E1-15A measured that keeping the
+renewed pin can leave a durable reference after exact COMMITTED D
+(`ISSUE-PUBLISH-REPAIR-STALE-RENEWAL-AFTER-CLEAR-01`). The local gone
+observation is still never destructive. It is now escalated to an
+EACH_QUORUM read; confirmed global absence withdraws exactly the renewed
+pin, and an unavailable read retains it as above.
+
 #### Related
 
 - `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
 - [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) §1, §2.6, §4.8
+
+### ISSUE-PUBLISH-REPAIR-STALE-RENEWAL-AFTER-CLEAR-01: A stale repair visitor could renew `pub:` after a legitimate clear and COMMITTED D
+
+**Status**: ✅ Fixed (2026-10-07, E1-15A); crash/unavailable-authority residue OPEN (bounded by TTL)
+**Severity**: High (P1, X1 contract) — durable reference added after exact COMMITTED D(P1); practical harm limited to dead-pin over-retention, no reachable HEAD
+**Scope**: PRE-X1 / E1-15 shared repair cancellation
+**Affected**: `renewPublishedBlockReferenceRepairLivenessIfPending` (shared by every repair funnel)
+
+#### Problem
+
+The UNKNOWN visit re-checks the durable repair row twice before renewing, but
+the renewal write is unfenced. Consider a visitor that passed its last
+re-check (row present). Before it writes, a real known-loser cleanup clears
+the row, the real `up:` expires, Phase 0 creates a natural candidate and the
+productive worker reaches exact COMMITTED D(P1). The visitor then writes
+`pub:<repo:commit:fs>`. The post-renewal local gone observation was not
+cleanup authority, so the pin stayed until its 35-day TTL. Reproduced on
+current runtime by
+[E1-15A](./E1-15A-STALE-REPAIR-VISITOR-CANCELLATION.md) `clear-after-recheck`.
+A visitor paused before the re-checks is already safe.
+
+#### Resolution
+
+After renewal, local absence is escalated to an EACH_QUORUM read of the row.
+GC re-reads references after its negative EACH_QUORUM repair scan, so a
+committed D implies the row tombstone precedes that read. Confirmed global
+absence withdraws exactly the repair-owned pin; local absence or an
+unavailable read retains it, as in GONE-CHECK-XDC. Decider unit tests, a
+source guard, mandatory E1-15A legs and two causal mutations (revert fix;
+bypass re-check) cover it.
+
+#### Residual (OPEN)
+
+A crash or failed withdrawal between write and withdrawal, or an unavailable
+EACH_QUORUM read, leaves the dead pin until TTL. Multi-DC is argued, not
+measured. Other E1-15 interleavings and funnel-specific matrices stay open.
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`, `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`
 
 ### ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01: A dead/unreachable publication's repair row surviving request-local cleanup can be retained and repeatedly re-pinned indefinitely
 
