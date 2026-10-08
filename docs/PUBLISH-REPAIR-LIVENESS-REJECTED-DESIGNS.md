@@ -25,6 +25,15 @@ link here; they do not repeat this postmortem.
 > legs M1–M25 those branches added. Everything below that describes those
 > mechanisms describes **rejected prototypes**, kept as evidence of required
 > properties, not current behavior.
+>
+> **Dated note (2026-10-07, E1-15A):** `main` now has one `EACH_QUORUM`
+> absence check after the renewal write. It is newly written, not taken from
+> #222: it withdraws only the pin that renewal just wrote, only on confirmed
+> global absence, and retains on local absence or unavailable authority
+> (§2.6). The motivation is a measured post-D pin from a stale visitor, which
+> changes the §8.8 F answer for that case only. See
+> [E1-15A](./E1-15A-STALE-REPAIR-VISITOR-CANCELLATION.md). Nothing else from
+> #220/#222 is in `main`.
 
 ---
 

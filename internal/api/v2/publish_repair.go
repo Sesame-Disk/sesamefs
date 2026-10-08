@@ -729,14 +729,47 @@ func publishedBlockReferenceRepairStillPending(database *db.DB, repair published
 	return false, err
 }
 
+// publishedBlockReferenceRepairGoneGloballyFn is the only authority for
+// withdrawing liveness this visit just renewed. A local absence may only retain
+// (ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01); this read is EACH_QUORUM,
+// the domain of GC's destructive repair scan. A progress-only residue is gone.
+var publishedBlockReferenceRepairGoneGloballyFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
+	if database == nil || database.Session() == nil {
+		return false, fmt.Errorf("database not available")
+	}
+	var stagedBlockIDs []string
+	var createdAt, leaseExpiresAt time.Time
+	err := database.Session().Query(`
+		SELECT staged_block_ids, created_at, lease_expires_at
+		FROM published_block_reference_repairs
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID).
+		Consistency(gocql.EachQuorum).
+		Scan(&stagedBlockIDs, &createdAt, &leaseExpiresAt)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return publishedBlockReferenceRepairIsProgressOnly(publishedBlockReferenceRepair{StagedBlockIDs: stagedBlockIDs, CreatedAt: createdAt, LeaseExpiresAt: leaseExpiresAt}), nil
+}
+
 // renewPublishedBlockReferenceRepairLivenessIfPending renews temporary liveness
 // owned by this repair row (pub:<repo:commit:fsID>), not the original Sync
 // pub:<publishAttemptID> and not v2's shared pub:<commitID>. It does not renew
-// after the durable row is gone. A post-renewal gone observation is not
-// cleanup authority, so any pub: written by the renewal is left to its
-// existing TTL. A concurrent settler of this same row can still remove pub:
-// then delete the row after this renewal
-// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
+// after the durable row is gone.
+//
+// The renewal write itself is unfenced, so a visitor that passed the re-check
+// can land it after a concurrent legitimate clear and an exact COMMITTED D
+// (E1-15A). GC re-reads references after its negative EACH_QUORUM repair scan:
+// if D committed, this write was invisible to that re-read, so the row's
+// tombstone precedes an EACH_QUORUM read issued after the write. Only that
+// global absence withdraws the pins written here. A local absence, or an
+// unavailable global read, retains them until their existing TTL. A crash or
+// failed withdrawal between write and withdrawal leaves that bounded residue.
+// A concurrent settler of this same row can still remove pub: then delete the
+// row after this renewal (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
 func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair publishedBlockReferenceRepair) error {
 	pending, err := publishedBlockReferenceRepairStillPending(database, repair)
 	if err != nil {
@@ -745,6 +778,7 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 	if !pending {
 		return nil
 	}
+	repairBeforeRenewBarrier(database, repair.RepoID, repair.CommitID, repair.FSID)
 	if err := renewPublishedBlockReferenceRepairLivenessFn(database, repair); err != nil {
 		metrics.PublishRepairRenewalFailuresTotal.Inc()
 		return tagPublishedBlockReferenceRepairOutcome(errPublishedBlockReferenceRepairRenewalFailed, err)
@@ -759,8 +793,18 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 	if !shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) {
 		return errPublishedBlockReferenceRepairGone
 	}
-	// A post-renewal repair-row absence is a non-authoritative observation.
-	// Retain the stable repair-owned pub: until its existing TTL expires.
+	gone, goneErr := publishedBlockReferenceRepairGoneGloballyFn(database, repair)
+	if goneErr != nil {
+		log.Printf("[publish_repair] global gone check unavailable after renewal for repo=%s commit=%s fs_object=%s; retaining repair-owned pub: until TTL: %v", repair.RepoID, repair.CommitID, repair.FSID, goneErr)
+		return errPublishedBlockReferenceRepairGone
+	}
+	if !gone {
+		// Locally absent but globally present: the renewal is still owned.
+		return nil
+	}
+	if err := removePublishedBlockReferenceRepairOwnedLivenessFn(database, repair); err != nil {
+		log.Printf("[publish_repair] failed to withdraw repair-owned pub: renewed after global clear for repo=%s commit=%s fs_object=%s; retained until TTL: %v", repair.RepoID, repair.CommitID, repair.FSID, err)
+	}
 	return errPublishedBlockReferenceRepairGone
 }
 
