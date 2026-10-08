@@ -1,6 +1,6 @@
 # E1 — Full-GC publication and recovery evaluation
 
-Status: ACTIVE; E1-15A on claude/e1-15a-stale-repair-visitor-cancellation, following merged #270 (main@3583d989d39f). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; E1-15A found a stale-renewal post-D RED and mitigated it (completed visits PARTIAL-FIX / CLOSED-EVIDENCE; strict guarantee OPEN P1 PRE-X1); W2-12/13/14, E1-15 overall and E1/X1 remain OPEN.
+Status: ACTIVE; E1-15A on claude/e1-15a-stale-repair-visitor-cancellation, following merged #270 (main@3583d989d39f). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; E1-15A found a stale-renewal post-D RED and compensated it (PARTIAL-FIX / CLOSED-EVIDENCE only when the global check and withdrawal succeed; strict guarantee OPEN P1 PRE-X1); W2-12/13/14, E1-15 overall and E1/X1 remain OPEN.
 Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
 
 Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
@@ -459,7 +459,9 @@ observation kept it.
 
 Fix: post-renewal local absence escalates to EACH_QUORUM; confirmed global
 absence withdraws exactly that pin, and unavailable authority retains. Measured
-Office single-block subset: PARTIAL-FIX / CLOSED-EVIDENCE for completed visits.
+Office single-block subset: PARTIAL-FIX / CLOSED-EVIDENCE only when the global
+check and withdrawal succeed; crash, check/withdraw errors and ambiguous renewal
+still leave the pin.
 This is compensation after the write, not a fence; the strict post-D
 no-reference guarantee stays OPEN (P1 PRE-X1). Two causal mutations (revert fix;
 bypass re-check) reproduce the post-D pin. Crash/withdraw-failure/unavailable

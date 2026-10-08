@@ -246,9 +246,11 @@ publish_repair.go cf8e7f4ef05a9a588c87430b85672ea345b2ddeb36bc79ec68533c3ce7d85c
 ## Disposition
 
 - E1-15A shared repair cancellation, measured Office single-block schedules:
-  **PARTIAL-FIX / CLOSED-EVIDENCE for completed visits**. A stale visitor that
-  has already classified, and that then completes its visit, leaves no durable
-  reference after a legitimate durable clear followed by exact COMMITTED D(P1).
+  **PARTIAL-FIX / CLOSED-EVIDENCE only when the global check and the withdrawal
+  both succeed**. A stale visitor that has already classified leaves no durable
+  reference after a legitimate durable clear followed by exact COMMITTED D(P1)
+  only on that path. A visit that ends normally can still leave the pin (see
+  the residual paths below).
   It is suppressed before the re-checks; after them it writes and then
   withdraws (best-effort compensation after the write, not a fence).
 - Strict post-D no-reference guarantee: **OPEN**.
@@ -261,9 +263,19 @@ publish_repair.go cf8e7f4ef05a9a588c87430b85672ea345b2ddeb36bc79ec68533c3ce7d85c
   OPEN residual**.
 - E1-15 overall: **OPEN** (Sync/SeafHTTP/OnlyOffice/cross-repo specifics,
   bucket contention, owned-pub cleanup race, cancel/retry interleavings).
-- Crash/withdraw-failure/unavailable-authority residue: OPEN, bounded by TTL.
-  Reachable without any code change: the renewal INSERT is acknowledged after
-  COMMITTED D, then the process dies before the global check.
+- Residual paths (OPEN, bounded by TTL), all reachable without any code
+  change, each leaving a durable post-D pin:
+  1. crash after the acknowledged renewal INSERT, before the global check or
+     the withdrawal;
+  2. EACH_QUORUM check error: a warning is logged and Gone returned, so the
+     visit ends normally with the pin retained;
+  3. withdrawal DELETE error after confirmed absence: a warning is logged and
+     Gone returned, so the visit ends normally with the pin retained;
+  4. ambiguous or partial renewal: `renewPublishedBlockReferenceRepairLivenessFn`
+     returns an error after `AddPublishAttemptReferences` already wrote some
+     blocks, or after a timed-out INSERT that applied. The function returns at
+     once, without the re-check or the global check, so nothing withdraws
+     those pins. This path predates #271.
 - W2/R31, E1/X1 and GC activation: OPEN.
 
 ## Review reclassification (2026-10-07)

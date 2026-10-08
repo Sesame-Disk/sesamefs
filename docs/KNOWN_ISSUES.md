@@ -7404,7 +7404,7 @@ pin, and an unavailable read retains it as above.
 
 ### ISSUE-PUBLISH-REPAIR-STALE-RENEWAL-AFTER-CLEAR-01: A stale repair visitor could renew `pub:` after a legitimate clear and COMMITTED D
 
-**Status**: 🟠 Mitigated (2026-10-07, E1-15A), P1 PRE-X1 OPEN residual — completed visits withdraw the post-D pin; the write itself is not fenced
+**Status**: 🟠 Mitigated (2026-10-07, E1-15A), P1 PRE-X1 OPEN residual — the post-D pin is withdrawn only when the global check and the withdrawal both succeed; the write itself is not fenced
 **Severity**: High (P1, X1 contract) — durable reference added after exact COMMITTED D(P1); practical harm limited to dead-pin over-retention, no reachable HEAD
 **Scope**: PRE-X1 / E1-15 shared repair cancellation
 **Affected**: `renewPublishedBlockReferenceRepairLivenessIfPending` (shared by every repair funnel)
@@ -7439,9 +7439,13 @@ withdrawal leaves no post-D reference. The fix does not prevent the transient
 creation of that reference, and it does not guarantee withdrawal after a crash,
 a failed DELETE or unavailable authority. The strict X1 guarantee therefore
 stays OPEN: the measured mitigation is proven, but it is not a publication fence.
-A crash or failed withdrawal between write and withdrawal, or an unavailable
-EACH_QUORUM read, leaves the dead pin until TTL; this is reachable in current
-code. Multi-DC (a positive local re-check) is argued to be excluded by quorum
+Four paths leave the dead pin until TTL, all reachable in current code:
+(1) a crash after the acknowledged renewal INSERT; (2) an EACH_QUORUM check
+error; (3) a failed withdrawal DELETE (in 2 and 3 the visit logs, returns Gone
+and ends normally); (4) an ambiguous or partial renewal. In case 4 the renewal
+returns an error after some `pub:` rows (or a timed-out INSERT) were applied,
+and the function returns before any re-check or global check. Case 4 predates
+#271. Multi-DC (a positive local re-check) is argued to be excluded by quorum
 intersection plus blocking read repair, but not measured. Writer funnels share
 the write-before-validate pattern (hypothesis, unmeasured; see the E1-15A
 review section). Other E1-15 interleavings and funnel matrices stay open.
