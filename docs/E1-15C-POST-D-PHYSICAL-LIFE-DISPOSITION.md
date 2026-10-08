@@ -68,7 +68,10 @@ convergence? Concretely:
    - `p2-published-with-dead-repair` (C1): B after TERMINAL, then a real
      in-process CreateFile of the same content in the same library. Require
      201, P2 key ≠ P1 key, K1 absent, P2 canonical and bytes present, HEAD
-     tree with the new file only, its fs: present, and no fs: for R's fs_id.
+     tree with the new file only, its fs: present, and ~~no fs: for R's
+     fs_id~~ *(corrected after review: fs_id is content-addressed, so the new
+     file's fs_id must equal R's, and that shared `fs:` legitimately belongs
+     to P2; the test now requires the equality and the fs: surviving R's sweep)*.
      Then a productive sweep of R: record classification and writes.
    - `dead-repair-blocks-unreferenced-p2` (C2): B after TERMINAL, then a
      real rematerialization whose writer dies after staging (in-process
@@ -126,6 +129,42 @@ gate negatives PASS. Container test SHA-256
   visits it and **vetoes D(P2)**: n=0, candidate retained, no P2 lifecycle,
   K2 present. The only remaining liveness is the dead R. A further R sweep
   re-pins L.
+
+## Review corrections (two P2 evidence findings, both confirmed)
+
+1. C1 did not require the fs_id equality it reports. The check
+   `!hasNew || (repairFS != newFS && hasRepair)` passed whenever the IDs
+   differed and R's `fs:` was absent, yet the settlement constraint is derived
+   from their equality. C1 now requires `created fs_id == repair fs_id`, the
+   shared legitimate `fs:` present after publication, and the same `fs:`
+   still present after R's sweep. The frozen-plan sentence that expected "no
+   fs: for R's fs_id" is struck through with a correction note.
+2. C2 did not observe why the worker vetoed. `w2ClosureOwnedQueue` set
+   `visited` before delegating and did not keep the answer, and
+   `ProcessOrgOnce` can absorb a failed liveness read and still return n=0. The
+   shared wrapper now records every productive `BlockPublicationLivenessGlobal`
+   answer and error for its owned block. This is additive; the other eight
+   callers are unchanged. C2 first runs the direct productive probe
+   (`w2AssertGuardOnly`: zero real refs → `RepairGuardOnly`), then requires every
+   answer the worker itself obtained to be `RepairGuardOnly` with no error.
+
+Re-run on d3fcef19f (container SHA-256: E1-15C test
+6ca057c5b85abf59589f849fe5eacc5d90f02aee8c5c9897111aa7d7ba5eb1fb, wrapper
+71bed7a7f34d8d1035aeadcec78c21c8bd6841efa3a54ee04597e56558f5ce09):
+race `-count=3` 12/12. C1 required equality 3/3. C2: the direct guard probe
+passed 3/3, and the worker's own proof returned exactly one `RepairGuardOnly`
+answer, without error, in each run. 60 teardown verifications, 0 data races
+(231.391s package, 300s wall). Vets and three gate negatives PASS. The earlier
+9af0cda0d results above are historical.
+
+**Accepted standard regression on d3fcef19f** (30m budget): exit 0,
+2026-10-08 16:26–16:57 local. Integration 1562.886s, with the E1-15C child
+PASS, including C2's worker `RepairGuardOnly` answer. The shared wrapper's
+other callers pass. API 20/20; OIDC 25/25; the same 75 SKIPs. Both backends
+report `CLEANUP_STATUS: clean`, with quota_usage 0 and hard limits unchanged.
+**The integration package now uses 87% of the 30m budget** (1562.9s of 1800s),
+so the next E1 PR must raise or split the budget before adding legs. The
+9af0cda0d regression below is historical.
 
 ## Standard regression and final audit
 
