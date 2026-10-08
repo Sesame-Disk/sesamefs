@@ -1529,6 +1529,7 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 			)
 		}
 
+		createFileBeforeFinalFenceBarrier(repoID)
 		// The request's own up: may have expired before staging. As in W2-6,
 		// pub: is already durable; validate the exact materialized P immediately
 		// before HEAD. Empty CreateFile has no placements and remains blockless.
