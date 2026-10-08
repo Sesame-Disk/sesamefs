@@ -1,6 +1,6 @@
 # E1 — Full-GC publication and recovery evaluation
 
-Status: ACTIVE; E1-15B on claude/e1-15b-writer-post-d-staging-crash, following merged #271 (main@4290a2bb394b). E1-15B confirms post-D writer staging liveness on crash (P1 PRE-X1 OPEN, characterized). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; E1-15A found a stale-renewal post-D RED and compensated it (PARTIAL-FIX / CLOSED-EVIDENCE only when the global check and withdrawal succeed; strict guarantee OPEN P1 PRE-X1); W2-12/13/14, E1-15 overall and E1/X1 remain OPEN.
+Status: ACTIVE; E1-15C on claude/e1-15c-post-d-physical-life, following merged #272 (main@304f6da8f7c3). E1-15C measures no physical (D0 §13) RED from post-D refs on Office; it shows that dead repairs veto later lives of L; a contract reconciliation is pending a decision. E1-15B confirms post-D writer staging liveness on crash (P1 PRE-X1 OPEN, characterized). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; E1-15A found a stale-renewal post-D RED and compensated it (PARTIAL-FIX / CLOSED-EVIDENCE only when the global check and withdrawal succeed; strict guarantee OPEN P1 PRE-X1); W2-12/13/14, E1-15 overall and E1/X1 remain OPEN.
 Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
 
 Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
@@ -481,3 +481,16 @@ two productive sweeps classify UNKNOWN and renew `pub:<repo:commit:fs>` after D.
 Characterized P1 PRE-X1 class, not fixed; the pre-HEAD guarantee holds. A
 shared fix must also settle repairs for attempts that never reach HEAD. Other
 funnels (unmeasured), E1/X1 and activation stay OPEN.
+
+## E1-15C — post-D references, terminal retirement and P2
+
+[E1-15C](./E1-15C-POST-D-PHYSICAL-LIFE-DISPOSITION.md) reuses the E1-15B
+schedules. The productive continuation completes D1 to TERMINAL with the
+post-D `pub:` and the dead repair present: K1/orphan/root gone, canonical not
+reinstalled, HEAD unchanged. A real CreateFile then rematerializes the same
+content as P2 (new key) and publishes HEAD on P2 only; the new file shares R's
+content-addressed fs_id. The dead repair stays UNKNOWN and re-pins L. Once
+every real reference of an unreferenced P2 has expired, the productive worker
+vetoes D(P2) only because of the dead repair. No physical RED on Office; the
+strict E1 reading stays RED; a contract reconciliation and dead-repair
+settlement as the next step are proposed for explicit decision.

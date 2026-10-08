@@ -240,6 +240,15 @@ OPEN, characterized and not fixed
 `ISSUE-PUBLICATION-POST-D-LIVENESS-BEFORE-VALIDATION-01`). W2-6a pre-HEAD
 status is unchanged.
 
+E1-15C (physical disposition, not a W2 row): on Office, post-D references and a
+dead repair do not reinstall P1 or block its TERMINAL retirement, and a
+rematerialized P2 is published legitimately. No physical (D0 §13) RED was
+measured. The strict E1 "no post-D reference" reading stays RED. The
+demonstrated harm is that a dead repair vetoes D of every later life of L. A
+contract reconciliation is proposed for explicit decision
+([evidence](./E1-15C-POST-D-PHYSICAL-LIFE-DISPOSITION.md)). No severity is
+lowered.
+
 Not W2 exit rows (follow-ups, may be reclassified in E1):
 `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`,
 `ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01`,

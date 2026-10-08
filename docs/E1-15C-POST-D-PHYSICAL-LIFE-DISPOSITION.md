@@ -93,3 +93,99 @@ proposal for an explicit decision, not a change to the contract.
 ## Validation
 
 Accepted results are recorded below. Nothing is inferred from this plan.
+
+## Results (test code 9af0cda0d, no production change)
+
+Matrix 4/4 PASS on the first complete run. Race `-count=3`: 12/12 legs,
+12 TERMINAL-with-post-D-refs checks, C1 and C2 3/3 each, 60 teardown
+verifications, 0 data races (198.812s package, 266s wall). Vets and three
+gate negatives PASS. Container test SHA-256
+96913e578d00f7bab05bffe5e866ea23c6b3e95172a024c1016a19bc39e5eec7.
+
+- **A `post-d-pub-terminal`**: the post-D `pub:<commit>` stays present
+  throughout. The productive continuation completes D1 to TERMINAL at P1; K1,
+  orphan and root are absent; canonical L is not reinstalled; the references
+  are unchanged; HEAD unchanged; no fs:.
+- **B `post-d-repair-terminal`**: dead repair R plus two productive UNKNOWN
+  sweeps that renew `pub:<repo:commit:fs>` post-D. TERMINAL is reached with
+  both pins and R present; the same assertions hold; R is retained.
+- **C1 `p2-published-with-dead-repair`**: after TERMINAL, a real in-process
+  CreateFile of the same content returns 201. It installs **P2 with a new
+  storage key**, K1 stays absent, and K2 bytes are correct. HEAD advances and
+  its tree contains only the new file, not the loser. **The new file has the
+  same content-addressed fs_id as R** (`520fa00a…`), so its legitimate
+  `fs:<repo:fs_id>` is the very identity R would promote. A further R sweep
+  stays native UNKNOWN (R classifies by commit, c1 is never an ancestor) and
+  renews its pin on L, which now pins P2. HEAD and P2 are unchanged.
+- **C2 `dead-repair-blocks-unreferenced-p2`**: after TERMINAL, a real
+  rematerialization installs P2 (new key), and its writer dies after staging.
+  Every remaining real reference is retired by its productive write API plus
+  Cassandra TTL (P2 `up:`, P2 `pub:`, the original post-D `pub:` and R's
+  renewed pin), giving global EACH_QUORUM zero refs. Owned-scope Phase 0
+  creates the natural P2 candidate; Phase 1 enqueues it; the productive worker
+  visits it and **vetoes D(P2)**: n=0, candidate retained, no P2 lifecycle,
+  K2 present. The only remaining liveness is the dead R. A further R sweep
+  re-pins L.
+
+## Standard regression and final audit
+
+- Standard Docker go-all-test on 9af0cda0d (30m budget): exit 0,
+  2026-10-08 15:01–15:30 local. `go test ./... -short` PASS; integration
+  1409.711s (E1-15C isolated child PASS, all four legs); API 20/20 suites;
+  OIDC 25/25. The 75 SKIPs are unchanged from #272 (optional 3-DC/topology
+  plus the E1-15B parent-only helper) and are not claimed as executed. The
+  suite now uses 78% of the 30m budget; the next E1 PR should re-check the
+  margin.
+- Afterwards both backends report `CLEANUP_STATUS: clean`, with quota_usage 0,
+  storage_quota 2000000000 and policy hard unchanged.
+- Scoped audit. No production file changed; the diff is one integration test,
+  gate wiring, a gate-negatives script and docs. Plan items executed except
+  merge/activation. Prohibitions held: no CQL insert/delete of references or
+  repairs, no harness candidate, no fabricated HEAD/P/D/P2. P2 came only from
+  real CreateFile rematerialization. Reference retirement in C2 used only the
+  productive write APIs (`AddProvisionalBlockReferenceWithExpiry`,
+  `AddBlockReference` on the same referrer) plus Cassandra TTL.
+  During development a mid-leg root check reused the E1-15A teardown
+  verifier, which inflated the "teardown verified" count. It was replaced by
+  a local check before acceptance. No unresolved introduced P0/P1/P2. No
+  severity was lowered; the reconciliation is a proposal only.
+
+## Disposition
+
+- **Physical safety (D0 §13), measured Office subset: no RED.** In none of
+  the four schedules do post-D references or the dead repair reinstall P1,
+  prevent or revert its terminal retirement, publish HEAD on retired P1,
+  promote an illegitimate fs:, or alter a legitimate P2. Not proven for
+  other funnels.
+- **Strict E1 reading: still RED** (E1-15A/B). Durable references are
+  written after D.
+- **Demonstrated harm: retention and convergence, unbounded.** A dead repair
+  for an attempt that can never reach HEAD stays UNKNOWN forever, renews L on
+  every visit and makes GC veto D of every later life of L in that org, even
+  when that life has no other reference. Classified **FOLLOW-UP** by the
+  frozen rule, but it is the priority follow-up: any destructive-GC
+  activation would accumulate permanently uncollectable blocks.
+  `ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01` is upgraded with this evidence.
+- **Design constraint for that fix (measured):** a dead repair's
+  `fs:<repo:fs_id>` identity can coincide with a live publication's, because
+  fs_id is content-addressed. Settling a dead repair must never remove
+  `fs:<repo:fs_id>`. It may only drop its own repair-owned `pub:` and the row,
+  and only on authority that the attempt can never publish.
+
+## Reconciliation proposal (for an explicit decision; nothing is changed)
+
+1. Make X1 safety the D0 physical invariant: after D, no operation may
+   reinstall P, revert its retirement, or publish reachable content that
+   depends on the retired P. This is the property the measured legs exercise.
+2. Turn the E1 "no durable post-D reference" wording into a
+   retention/convergence requirement with its own pre-activation gate: dead
+   references and repairs must converge. It should no longer be a physical
+   safety claim.
+3. Remove or rewrite the D0 §13 "post-D refs remain a contradiction/veto
+   (CURRENT / TRANSITIONAL)" sentence. Current code forbids post-COMMITTED
+   revocation, and E1-15C shows retirement completes despite post-D refs.
+4. Make the next PR the dead-repair settlement (convergence), under the
+   constraint above, not a write fence on every writer.
+
+Until that decision is taken, E1-15A/B keep their P1 PRE-X1 labels.
+E1-15C does not lower any severity by itself.

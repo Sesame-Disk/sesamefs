@@ -7481,6 +7481,15 @@ Measured with real Office writers, natural COMMITTED D and SIGKILL by
 [E1-15B](./E1-15B-WRITER-POST-D-STAGING-CRASH.md) (two sweeps renewed after
 D). Same class as the #271 stale-renewal residual.
 
+#### Physical disposition (E1-15C, 2026-10-08)
+
+Measured on Office: post-D references and the dead repair do not reinstall P1,
+prevent or revert its TERMINAL retirement, or make HEAD depend on retired P1.
+A rematerialized P2 is published legitimately. The demonstrated harm is
+retention/convergence (see `ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01`). The
+P1 PRE-X1 label stays until the contract reconciliation in
+[E1-15C](./E1-15C-POST-D-PHYSICAL-LIFE-DISPOSITION.md) is explicitly decided.
+
 #### Direction (not started)
 
 A shared design, not per-funnel guards. A write fence alone does not cover
@@ -7497,6 +7506,30 @@ keeps renewing, so its settlement also needs authority.
 **Severity**: Medium (P2) — over-retention / reclamation efficiency: a genuinely dead/unreachable publication attempt whose repair row survived request-local cleanup has no terminal settlement path; successful unresolved visits can repeatedly refresh its 35-day `pub:`. No under-retention, no data loss. Does not block X1 safety closure. Does not block destructive-GC activation.
 **Scope**: FOLLOW-UP / GENERAL (storage cost and worker load; related to GC reclaim efficiency, but not a GC-activation gate)
 **Affected**: `CleanupFailedPublishAttempt` + `clearPendingPublishedFileRepairs` / `cleanupSeafHTTPFailedPublishAttempt` / `cleanupOnlyOfficeFailedPublishAttempt` (known-loser and pre-HEAD abort/rollback paths after the durable row is queued), `repairPublishedBlockReferenceRepairVisit` (UNKNOWN renewal of those residues)
+
+#### E1-15C evidence (2026-10-08)
+
+[E1-15C](./E1-15C-POST-D-PHYSICAL-LIFE-DISPOSITION.md) measures the
+consequence for later physical lives. It uses a real Office writer and a
+natural exact COMMITTED D(P1). The writer is SIGKILLed after repair queueing,
+which leaves a repair R that can never reach HEAD.
+
+- R stays native UNKNOWN on every sweep, because it classifies by commit and
+  c1 is never an ancestor of HEAD. Each sweep renews `pub:<repo:commit:fs>` on
+  logical block L.
+- After P1 is TERMINAL, a real rematerialization of the same content installs
+  P2 under a new key. With every other real reference retired by TTL, the
+  productive worker **vetoes D(P2) solely because of R**. Every later life of L
+  in that org is uncollectable while R exists.
+- P1 itself is unaffected: TERMINAL completes, nothing is reinstalled and
+  HEAD only ever depends on P2.
+- Design constraint (measured): the rematerialized file has the same
+  content-addressed fs_id as R, so a settlement of R must never remove
+  `fs:<repo:fs_id>`.
+
+Proposed, pending explicit decision: reconsider this as a pre-activation
+convergence gate (destructive GC would otherwise accumulate permanently
+uncollectable blocks). Scope line above is unchanged until decided.
 
 #### Problem
 
