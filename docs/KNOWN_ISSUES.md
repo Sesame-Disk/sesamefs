@@ -7454,6 +7454,43 @@ review section). Other E1-15 interleavings and funnel matrices stay open.
 
 - `ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`, `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`
 
+### ISSUE-PUBLICATION-POST-D-LIVENESS-BEFORE-VALIDATION-01: Writers can durably write liveness after COMMITTED D, before their final fence
+
+**Status**: 🔴 Confirmed (2026-10-08, E1-15B), P1 PRE-X1 OPEN — characterized, not fixed
+**Severity**: High (P1, strict X1 contract) — durable reference written after exact COMMITTED D(P1); no HEAD advanced; harm is a dead pin, renewed indefinitely when a repair was queued
+**Scope**: PRE-X1 / E1-15 shared class (writer staging + repair worker)
+**Affected**: CreateFile measured (`stagePendingPublishedFiles` → `queuePendingPublishedFileRepairs` → `insertCommit` → `validateCommitBlockPublicationFences`); other W2 funnels share the order (unmeasured)
+
+#### Problem
+
+Writers stage liveness first and validate exact-P afterwards. Nothing
+between materialization and staging checks claim or D, and staging resolves
+through retained `block_id_mappings`. A writer resumed after exact COMMITTED
+D(P1) therefore writes `pub:` post-D. When it completes, the final fence
+rejects it and cleans up, so the pre-HEAD guarantee holds. When it dies
+first:
+
+```text
+crash after staging          durable pub:<commit>, 35d TTL, no repair
+crash after queue+commit     durable pub:<commit> + non-expiring repair;
+                             every sweep: native UNKNOWN, renews
+                             pub:<repo:commit:fs> post-D, retains repair
+```
+
+Measured with real Office writers, natural COMMITTED D and SIGKILL by
+[E1-15B](./E1-15B-WRITER-POST-D-STAGING-CRASH.md) (two sweeps renewed after
+D). Same class as the #271 stale-renewal residual.
+
+#### Direction (not started)
+
+A shared design, not per-funnel guards. A write fence alone does not cover
+the second case: a durable repair for an attempt that can never reach HEAD
+keeps renewing, so its settlement also needs authority.
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-STALE-RENEWAL-AFTER-CLEAR-01`, `ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
+
 ### ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01: A dead/unreachable publication's repair row surviving request-local cleanup can be retained and repeatedly re-pinned indefinitely
 
 **Status**: OPEN (2026-09-18; observed while reviewing the repair-worker observability, `feat/publish-repair-observability`; contract narrowed 2026-09-19) — FOLLOW-UP / GENERAL over-retention / reclamation efficiency; not a safety issue

@@ -231,6 +231,15 @@ guarantee OPEN (P1 PRE-X1); E1-15 overall stays OPEN
 ([evidence](./E1-15A-STALE-REPAIR-VISITOR-CANCELLATION.md),
 `ISSUE-PUBLISH-REPAIR-STALE-RENEWAL-AFTER-CLEAR-01`).
 
+E1-15B (writer post-D staging crash, not a W2 row): a real CreateFile writer
+resumed after exact COMMITTED D stages `pub:` before its final fence. Without
+a crash the fence rejects it (pre-HEAD holds). SIGKILL leaves the `pub:`
+durable, and after repair queueing every sweep renews it post-D. P1 PRE-X1
+OPEN, characterized and not fixed
+([evidence](./E1-15B-WRITER-POST-D-STAGING-CRASH.md),
+`ISSUE-PUBLICATION-POST-D-LIVENESS-BEFORE-VALIDATION-01`). W2-6a pre-HEAD
+status is unchanged.
+
 Not W2 exit rows (follow-ups, may be reclassified in E1):
 `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`,
 `ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01`,
