@@ -74,6 +74,10 @@ type w2ClosureOwnedQueue struct {
 	block    string
 	identity gcpkg.BlockGCCandidateIdentity
 	visited  bool
+	// Every productive destructive-liveness answer for the owned block, so a
+	// caller can require the exact classification rather than only a visit.
+	liveness []dbpkg.BlockPublicationLiveness
+	errs     []error
 }
 
 func (s *w2ClosureOwnedQueue) DequeueBatch(org uuid.UUID, _ int, cutoff time.Time) ([]gcpkg.QueueItem, error) {
@@ -93,10 +97,13 @@ func (s *w2ClosureOwnedQueue) DequeueBatch(org uuid.UUID, _ int, cutoff time.Tim
 	return own, nil
 }
 func (s *w2ClosureOwnedQueue) BlockPublicationLivenessGlobal(org uuid.UUID, block string) (dbpkg.BlockPublicationLiveness, error) {
+	live, err := s.GCStore.BlockPublicationLivenessGlobal(org, block)
 	if org == s.org && block == s.block {
 		s.visited = true
+		s.liveness = append(s.liveness, live)
+		s.errs = append(s.errs, err)
 	}
-	return s.GCStore.BlockPublicationLivenessGlobal(org, block)
+	return live, err
 }
 
 func w2AssertGCBlocked(t *testing.T, fx *w2CreateFileFixture) {

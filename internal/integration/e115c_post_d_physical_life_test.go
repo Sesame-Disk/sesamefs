@@ -290,8 +290,10 @@ func TestPostDPhysicalLifeDisposition(t *testing.T) {
 					hasNew = hasNew || ref == newFS
 					hasRepair = hasRepair || ref == repairFS
 				}
-				if !hasNew || (repairFS != newFS && hasRepair) {
-					t.Fatalf("fs: references: new=%t repairFS=%t sameFSID=%t refs=%v", hasNew, hasRepair, repairFS == newFS, refs)
+				// fs_id is content-addressed: the legitimate P2 file must share R's
+				// fs_id, so its fs: is the very identity R would promote.
+				if created.ID != r.fsID || newFS != repairFS || !hasNew || !hasRepair {
+					t.Fatalf("expected shared fs_id with a present legitimate fs:: new=%s repair=%s hasNew=%t refs=%v", created.ID, r.fsID, hasNew, refs)
 				}
 				sweeper.sweep(t, 14*time.Hour, owned)
 				if rows := w2Repairs(t, fx); len(rows) != 1 || rows[0].commitID != r.commitID {
@@ -300,7 +302,14 @@ func TestPostDPhysicalLifeDisposition(t *testing.T) {
 				if borrowedFSReadHead(t, fx.database, fx.orgID, fx.repoID) != head || fx.readTarget(t) != p2 {
 					t.Fatal("dead repair sweep changed HEAD or P2")
 				}
-				t.Logf("E1-15C C1: real rematerialization installed P2=(%s,%s) != P1=(%s,%s); K1 absent; HEAD %s publishes only the new file fs=%s (same fs_id as dead repair: %t); dead repair R=%s stays UNKNOWN and keeps renewing %s on L (now pinning P2); no illegitimate fs:", p2.StorageClass, p2.StorageKey, p1.StorageClass, p1.StorageKey, head, created.ID, repairFS == newFS, r.commitID, owned)
+				stillLegit := false
+				for _, ref := range f.refsExact(t) {
+					stillLegit = stillLegit || ref == newFS
+				}
+				if !stillLegit {
+					t.Fatalf("legitimate %s lost after the dead repair sweep", newFS)
+				}
+				t.Logf("E1-15C C1: real rematerialization installed P2=(%s,%s) != P1=(%s,%s); K1 absent; HEAD %s publishes only the new file fs=%s, which equals the dead repair's fs_id (required); dead repair R=%s stays UNKNOWN and keeps renewing %s on L (now pinning P2); the legitimate shared fs: survives the sweep", p2.StorageClass, p2.StorageKey, p1.StorageClass, p1.StorageKey, head, created.ID, r.commitID, owned)
 			case "dead-repair-blocks-unreferenced-p2":
 				p1, r, owned, sweeper := e115cDeadRepairTerminal(t, f)
 				fx.filename = "rematerialized.docx"
@@ -360,11 +369,20 @@ func TestPostDPhysicalLifeDisposition(t *testing.T) {
 				if enqueued, err := gcpkg.NewScanner(phase1, gcpkg.NewQueue(phase1), &gcpkg.Stats{}, config.GCConfig{}).ScanOrphanedBlocksOnce(context.Background()); err != nil || enqueued != 1 {
 					t.Fatalf("Phase 1 enqueue: %d %v", enqueued, err)
 				}
+				// Direct productive probe first: zero real refs, the dead repair alone
+				// must classify the block RepairGuardOnly.
+				w2AssertGuardOnly(t, fx)
 				store := gcpkg.NewCassandraStore(fx.database)
 				ownedQueue := &w2ClosureOwnedQueue{GCStore: store, org: fx.orgUUID, block: fx.blockID, identity: candidates[0]}
 				n, workerErr := w2Worker(t, ownedQueue, p2.StorageClass).ProcessOrgOnce(t.Context(), fx.orgUUID)
-				if !ownedQueue.visited || n != 0 || workerErr != nil {
-					t.Fatalf("worker on unreferenced P2: visited=%t n=%d err=%v", ownedQueue.visited, n, workerErr)
+				if !ownedQueue.visited || n != 0 || workerErr != nil || len(ownedQueue.liveness) == 0 {
+					t.Fatalf("worker on unreferenced P2: visited=%t n=%d err=%v liveness=%v", ownedQueue.visited, n, workerErr, ownedQueue.liveness)
+				}
+				// The worker's own destructive proof must have been the dead-repair veto.
+				for i, live := range ownedQueue.liveness {
+					if ownedQueue.errs[i] != nil || live != dbpkg.BlockPublicationRepairGuardOnly {
+						t.Fatalf("worker liveness answer %d = %v err=%v; want RepairGuardOnly", i, live, ownedQueue.errs[i])
+					}
 				}
 				if _, found, err := store.GetBlockGCCandidateExact(fx.orgUUID, fx.blockID, candidates[0]); err != nil || !found {
 					t.Fatalf("P2 candidate lost: %t %v", found, err)
@@ -387,7 +405,7 @@ func TestPostDPhysicalLifeDisposition(t *testing.T) {
 				if live, err := fx.database.BlockHasReferencesGlobal(fx.orgID, fx.blockID); err != nil || !live {
 					t.Fatalf("dead repair renewal did not re-pin L: %t %v", live, err)
 				}
-				t.Logf("E1-15C C2: every real reference of unreferenced P2=(%s,%s) retired by TTL (global refs=0); natural candidate; productive worker visited and vetoed D(P2) (n=0, candidate retained, no P2 lifecycle, K2 present) only because dead repair R=%s is pending for L; a further sweep re-pinned L with %s. Every later life of L in this org is uncollectable while R exists", p2.StorageClass, p2.StorageKey, r.commitID, owned)
+				t.Logf("E1-15C C2: every real reference of unreferenced P2=(%s,%s) retired by TTL (global refs=0); natural candidate; productive worker's own liveness proof returned RepairGuardOnly (%d answer(s), no error) and vetoed D(P2) (n=0, candidate retained, no P2 lifecycle, K2 present) only because dead repair R=%s is pending for L; a further sweep re-pinned L with %s. Every later life of L in this org is uncollectable while R exists", p2.StorageClass, p2.StorageKey, len(ownedQueue.liveness), r.commitID, owned)
 			}
 		})
 	}
