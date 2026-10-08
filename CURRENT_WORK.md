@@ -12,9 +12,11 @@ the fence rejects (409) and cleans up. SIGKILL after staging: durable `pub:`
 by every sweep (measured twice). Race 12/12, 0 data races, gates PASS.
 Confirmed P1 PRE-X1 class ISSUE-PUBLICATION-POST-D-LIVENESS-BEFORE-VALIDATION-01,
 not fixed. Pre-HEAD holds; strict post-D X1, E1-15, E1/X1 and activation
-remain OPEN. go-all-test exit 0 with the integration budget raised 18m→22m
-(integration 1196.541s; the 18m run timed out without failures); API 20/20,
-OIDC 25/25; both backends clean, quota_usage 0, hard limits unchanged. Final
+remain OPEN. Review fixes: the no-crash control requires 409 plus the
+fence marker; the root finalizer is deferred before GC (negative control
+PASS). go-all-test exit 0 with the integration budget raised 18m→30m
+(integration 1223.464s; the 18m and 22m runs timed out without failures);
+API 20/20, OIDC 25/25; both backends clean, quota_usage 0, hard limits unchanged. Final
 scoped audit: no unresolved introduced P0/P1/P2.
 [Plan/evidence](docs/E1-15B-WRITER-POST-D-STAGING-CRASH.md).
 

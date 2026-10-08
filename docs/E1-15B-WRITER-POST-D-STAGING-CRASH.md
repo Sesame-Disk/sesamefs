@@ -154,6 +154,51 @@ canonical absent, one orphan whose class/key match the fixture pattern, and
 the exact root; it used `DeleteS3OrphanRecoveryRoot`/`DeleteS3Orphan`, then
 deleted the exact K1 and verified root/orphan/K1 absent.
 
+## Review corrections (two P2 evidence-contract findings, both confirmed)
+
+1. The no-crash control accepted any non-201 response. A writer failing
+   before `validateCommitBlockPublicationFences` (a 400/404/500 after cleanup)
+   would leave HEAD and references clean and pass without proving the fence
+   rejected it. Now the subprocess records, without holding, that it reached
+   `createFileBeforeFinalFenceBarrier`, and the parent requires that marker
+   **and** HTTP 409. The HEAD/pub:/repair checks are kept.
+2. The root finalizer was registered after `e115aCommitD`. A failure inside
+   that function after exact COMMITTED (orphan/root/lifecycle verification)
+   would have left the root uncompleted. `e115bFinalizeCommitted` is now
+   deferred **before** GC runs, and acts only when durable exact COMMITTED
+   authority for this P1 exists: lifecycle PUBLISHED at P1 and its orphan
+   COMMITTED. It never creates D or deletes without that authority. Focused
+   negative control `scripts/e115b-finalizer-negative.sh` (disposable
+   container): a `t.Fatalf` is injected right after the COMMITTED check inside
+   `e115aCommitD`. The leg fails with that marker, the finalizer completes the
+   root, and all E1-11/12/13/14/15A teardown verifiers pass (PASS). The
+   script unsets every unrelated mandatory gate.
+
+No production change. Re-run on the corrected source (test SHA-256
+60408675f2a0a8b89ce5d3ead4a187d3d79ada214fa2c694b00dfc5ce5751d16):
+race `-count=3` 12/12, 12 RED characterizations, 9 finalizer completions
+(three D legs × 3), 60 teardown verifications, 0 data races (143.325s package,
+219s wall); vets and three gate negatives PASS. The E1-15A test shares the
+older end-of-leg continuation (merged in #271), a test-robustness follow-up
+not changed here.
+
+Standard regression on the corrected source:
+- With the 22m budget: exit 1, **timeout only** (1320.804s). There was no
+  `--- FAIL`; the timeout hit while `TestWebBlockUploadRejectsUncommittableBlocks`
+  was starting. Host load slowed the suite (each E1 matrix 10–20s slower than
+  the 1196s accepted run), and 22m left about 2 minutes of margin. Not
+  accepted.
+- Budget raised again, 22m → **30m**, in both Compose runners (about 10
+  minutes of margin). Time budget only; no gate or assertion relaxed.
+- **Accepted** go-all-test with 30m: exit 0, 2026-10-08 13:09–13:35 local.
+  Integration 1223.464s (E1-15B child PASS with the 409 + fence-marker control
+  and 4 RED characterizations); API 20/20; OIDC 25/25; the same 75 SKIPs as
+  before.
+- Afterwards both backends report `CLEANUP_STATUS: clean`, with quota_usage 0,
+  storage_quota 2000000000 and policy hard unchanged. The earlier 22m-budget
+  acceptance (1196.541s) is historical; this run is the accepted evidence for
+  the final source.
+
 ## Disposition
 
 - Confirmed **P1 PRE-X1 class**: a current writer's liveness can be written
