@@ -13,9 +13,11 @@ Paused before the re-checks: no renewal. Paused after the last re-check:
 Fix 7c59cc63a: post-renewal local absence escalates to EACH_QUORUM; confirmed
 global absence withdraws exactly that pin; unavailable authority retains.
 Race 12/12, 0 RED, 0 data races; unit tests, vets, gate negatives, two
-causal mutations and the E1-11..14 matrices pass. Measured subset CLOSED-FIX;
-crash/unavailable residue (TTL-bounded), E1-15 overall, E1/X1 and activation
-remain OPEN. go-all-test exit 0 (integration 1009.387s, API 20/20, OIDC
+causal mutations and the E1-11..14 matrices pass. Review reclassified it:
+completed visits PARTIAL-FIX / CLOSED-EVIDENCE. The write is not fenced, so
+crash/failed DELETE/unavailable authority keep strict post-D X1 OPEN (P1
+PRE-X1). Multi-DC and the shared writer write-before-validate class are
+unmeasured. E1-15 overall, E1/X1 and activation remain OPEN. go-all-test exit 0 (integration 1009.387s, API 20/20, OIDC
 25/25); both backends clean, quota_usage 0, hard limits unchanged. Final
 scoped audit: no unresolved introduced P0/P1/P2.
 [Plan/evidence](docs/E1-15A-STALE-REPAIR-VISITOR-CANCELLATION.md).

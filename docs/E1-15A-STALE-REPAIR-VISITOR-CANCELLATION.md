@@ -246,10 +246,52 @@ publish_repair.go cf8e7f4ef05a9a588c87430b85672ea345b2ddeb36bc79ec68533c3ce7d85c
 ## Disposition
 
 - E1-15A shared repair cancellation, measured Office single-block schedules:
-  **CLOSED-FIX**. A current-version stale visitor that has already classified
-  leaves no durable reference after a legitimate durable clear followed by
-  exact COMMITTED D(P1): suppressed before the re-checks, withdrawn after them.
+  **PARTIAL-FIX / CLOSED-EVIDENCE for completed visits**. A stale visitor that
+  has already classified, and that then completes its visit, leaves no durable
+  reference after a legitimate durable clear followed by exact COMMITTED D(P1).
+  It is suppressed before the re-checks; after them it writes and then
+  withdraws (best-effort compensation after the write, not a fence).
+- Strict post-D no-reference guarantee: **OPEN**.
+  E1-15A shows that an Office visit which completes its global check and
+  withdrawal leaves no post-D reference. The fix does not prevent the transient
+  creation of that reference, and it does not guarantee withdrawal after a crash,
+  a failed DELETE or unavailable authority. The strict X1 guarantee therefore
+  stays OPEN: the measured mitigation is proven, but it is not a publication fence.
+- `ISSUE-PUBLISH-REPAIR-STALE-RENEWAL-AFTER-CLEAR-01`: **P1 PRE-X1, mitigated,
+  OPEN residual**.
 - E1-15 overall: **OPEN** (Sync/SeafHTTP/OnlyOffice/cross-repo specifics,
   bucket contention, owned-pub cleanup race, cancel/retry interleavings).
 - Crash/withdraw-failure/unavailable-authority residue: OPEN, bounded by TTL.
+  Reachable without any code change: the renewal INSERT is acknowledged after
+  COMMITTED D, then the process dies before the global check.
 - W2/R31, E1/X1 and GC activation: OPEN.
+
+## Review reclassification (2026-10-07)
+
+An external review of #271 accepted the RED, the harness, the fix and the
+evidence, and found no productive regression. It rejected the unqualified
+CLOSED-FIX label: the fix removes the post-D reference but does not stop it
+from being written. The frozen plan already listed the crash window as a
+residual, but the label promised more than the strict X1 rule
+("durably add a P1 reference"). Runtime is unchanged by this reclassification.
+
+Shared residual class (hypothesis from code reading, not measured): writer
+funnels use the same write-before-validate order. CreateFile stages `pub:`,
+queues its repair and only then validates exact-P fences, cleaning up on
+rejection. If D is already COMMITTED, that `pub:` is also written post-D, and a
+crash before cleanup leaves it (plus a repair row the sweep may renew). Those
+rows are CLOSED-FIX for pre-HEAD publication and were never measured against
+the strict reading. Whatever criterion is adopted for E1-15A should apply to
+this whole class: liveness written post-D before validation, left behind by a
+crash. Their rows are not reclassified until measured.
+
+Multi-DC, after-recheck positive local read (unmeasured, P1 PRE-X1). For the
+visitor to still see R in DC-B after GC's EACH_QUORUM scan observed absence,
+the DC-B replicas it reads would have to lack the tombstone. That EACH_QUORUM
+scan reads a quorum in every DC, including DC-B, and with Cassandra 5's
+default BLOCKING read repair it writes the tombstone to those replicas before
+answering. The repair table does not override `read_repair` in any migration.
+D comes after that scan, so the visitor's later LOCAL_QUORUM read intersects
+the repaired quorum, also with one replica per DC. This argument depends on
+read repair staying enabled for the table and is not measured: OPEN until a
+3-DC leg runs.
