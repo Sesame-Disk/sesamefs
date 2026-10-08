@@ -77,6 +77,8 @@ func TestE115BProcessChild(t *testing.T) {
 	case "crash-after-queue":
 		t.Cleanup(v2pkg.SetCreateFileBeforeFinalFenceForTest(data.Repo, func() { hold(".beforefence") }))
 	case "no-crash":
+		// Record, without holding, that the writer reached the final exact-P fence.
+		t.Cleanup(v2pkg.SetCreateFileBeforeFinalFenceForTest(data.Repo, func() { mark(".beforefence", "reached") }))
 	default:
 		t.Fatalf("unknown phase %s", data.Phase)
 	}
@@ -169,6 +171,32 @@ func (f *e114Fixture) assertPostD(t *testing.T) {
 	}
 }
 
+// Completes the owned root only when exact COMMITTED authority for this P1 is
+// durable (lifecycle PUBLISHED at P1 and its orphan COMMITTED). It never creates
+// D and never deletes anything without that authority.
+func e115bFinalizeCommitted(t *testing.T, fx *w2CreateFileFixture) {
+	t.Helper()
+	var phase, class, key, claim string
+	var claimedAt time.Time
+	err := fx.database.Session().Query(`SELECT phase,storage_class,storage_key,claim_id,claimed_at FROM gc_block_delete_lifecycles WHERE org_id=? AND block_id=?`, fx.orgID, fx.blockID).Consistency(gocql.EachQuorum).Scan(&phase, &class, &key, &claim, &claimedAt)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return
+	}
+	if err != nil {
+		t.Errorf("E1-15B finalizer lifecycle read: %v", err)
+		return
+	}
+	authority := gcpkg.BlockDeleteAuthority{Target: gcpkg.BlockDeleteTarget{StorageClass: class, StorageKey: key}, ClaimID: claim, ClaimedAt: claimedAt}
+	store := gcpkg.NewCassandraStore(fx.database)
+	orphan, found, orphanErr := store.GetS3OrphanExact(fx.orgUUID, fx.blockID, authority)
+	if phase != gcpkg.BlockDeleteLifecyclePhasePublished || class != fx.target.StorageClass || key != fx.target.StorageKey || orphanErr != nil || !found || orphan.RecoveryState != gcpkg.S3OrphanRecoveryStateCommitted {
+		t.Logf("E1-15B finalizer: no exact COMMITTED authority for P1 (phase=%s %s/%s orphan=%t/%v); not finalizing", phase, class, key, found, orphanErr)
+		return
+	}
+	w2AssertCommittedContinuation(t, store, fx.orgUUID, fx.blockID, fx.target.StorageClass, fx.target.StorageKey, newVerificationBlockStore(t, fx.orgID))
+	t.Logf("E1-15B finalizer completed exact COMMITTED root P1=(%s,%s) claim=%s", class, key, claim)
+}
+
 func TestWriterPostDStagingCrash(t *testing.T) {
 	if endpoint := os.Getenv("SESAMEFS_E115B_ISOLATED_URL"); endpoint != "" && os.Getenv("SESAMEFS_E115B_CHILD") != "1" {
 		e115bRunIsolated(t, endpoint)
@@ -227,10 +255,11 @@ func TestWriterPostDStagingCrash(t *testing.T) {
 				t.Fatalf("before staging only the writer's real up: may exist: refs=%v repairs=%+v", refs, w2Repairs(t, fx))
 			}
 			fx.assertHeadUnchanged(t)
+			// Deferred before GC runs (not t.Cleanup, whose context is already canceled):
+			// a failure anywhere after exact COMMITTED, including inside
+			// e115aCommitD's verification reads, still completes the owned root.
+			defer e115bFinalizeCommitted(t, fx)
 			e115aCommitD(t, f)
-			// Deferred (not t.Cleanup, whose context is already canceled) so a failing
-			// leg still completes its owned COMMITTED root before fixture teardown.
-			defer w2AssertCommittedContinuation(t, gcpkg.NewCassandraStore(fx.database), fx.orgUUID, fx.blockID, fx.target.StorageClass, fx.target.StorageKey, newVerificationBlockStore(t, fx.orgID))
 			if err := os.WriteFile(data.Marker+".resume", nil, 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -253,9 +282,12 @@ func TestWriterPostDStagingCrash(t *testing.T) {
 				if waitErr != nil {
 					t.Fatalf("writer child: %v\n%s", waitErr, output.String())
 				}
+				if _, err := os.Stat(data.Marker + ".beforefence"); err != nil {
+					t.Fatalf("writer did not reach the final exact-P fence: %v\n%s", err, output.String())
+				}
 				result, err := os.ReadFile(data.Marker + ".result")
-				if err != nil || strings.HasPrefix(string(result), "201") {
-					t.Fatalf("final fence must reject the post-D publication: %q %v", result, err)
+				if err != nil || !strings.HasPrefix(string(result), fmt.Sprintf("%d ", http.StatusConflict)) {
+					t.Fatalf("final fence must reject the post-D publication with 409: %q %v", result, err)
 				}
 				f.assertPostD(t)
 				if refs := f.refsExact(t); len(refs) != 0 || len(w2Repairs(t, fx)) != 0 {
