@@ -33,6 +33,9 @@ func repairAfterClassifyBarrier(database *db.DB, repo string, outcome publishedB
 		if outcome == publishedBlockReferenceRepairCommitNoLongerPending {
 			name = "no_longer_pending"
 		}
+		if outcome == publishedBlockReferenceRepairCommitSuperseded {
+			name = "superseded"
+		}
 		if outcome == publishedBlockReferenceRepairCommitDefinitelyNotReachable {
 			name = "definitely_not_reachable"
 		}

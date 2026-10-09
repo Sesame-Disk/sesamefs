@@ -45,6 +45,8 @@ func PublishedBlockReferenceRepairCommitOutcomeForIntegration(database *db.DB, o
 	switch outcome {
 	case publishedBlockReferenceRepairCommitReachable:
 		return "reachable", err
+	case publishedBlockReferenceRepairCommitSuperseded:
+		return "superseded", err
 	case publishedBlockReferenceRepairCommitDefinitelyNotReachable:
 		return "definitely_not_reachable", err
 	case publishedBlockReferenceRepairCommitNoLongerPending:
@@ -97,6 +99,8 @@ func ClassifyPublishedBlockReferenceRepairResumableForIntegration(database *db.D
 	switch outcome {
 	case publishedBlockReferenceRepairCommitReachable:
 		return "reachable", err
+	case publishedBlockReferenceRepairCommitSuperseded:
+		return "superseded", err
 	case publishedBlockReferenceRepairCommitDefinitelyNotReachable:
 		return "definitely_not_reachable", err
 	case publishedBlockReferenceRepairCommitNoLongerPending:
