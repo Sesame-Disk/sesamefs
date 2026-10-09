@@ -221,7 +221,9 @@ func TestSupersededSettlementFailureRetainsAndRetrySettles(t *testing.T) {
 // the current HEAD under a SERIAL CAS. A new writer must re-audit E1-15E.
 func TestSupersededWitnessHeadWriterSetIsPinned(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
-	write := regexp.MustCompile(`(?i)UPDATE\s+libraries\s+SET\s+head_commit_id\s*=`)
+	// UPDATEs move HEAD; INSERTs (upserts) set it, and must only ever create a
+	// library under a freshly generated library_id.
+	write := regexp.MustCompile(`(?i)UPDATE\s+libraries\s+SET\s+head_commit_id\s*=|INSERT\s+INTO\s+libraries\s*\([^)]*head_commit_id`)
 	comment := regexp.MustCompile(`(?m)^\s*//.*$`)
 	var found []string
 	err := filepath.WalkDir(filepath.Join(root, "internal"), func(path string, d fs.DirEntry, err error) error {
@@ -243,10 +245,13 @@ func TestSupersededWitnessHeadWriterSetIsPinned(t *testing.T) {
 	}
 	sort.Strings(found)
 	want := []string{
-		"internal/api/sync.go",              // updateLibraryHeadWithStats: IF head = current
-		"internal/api/v2/fs_helpers.go",     // UpdateLibraryHeadFromSnapshot: IF head = snapshot
-		"internal/api/v2/fs_helpers.go",     // InitializeLibraryHeadIfUnset: IF head = null
-		"internal/db/library_continuity.go", // AdvanceLibraryCertifiedFrontier: no production caller
+		"internal/api/sync.go",               // updateLibraryHeadWithStats: IF head = current
+		"internal/api/v2/admin_libraries.go", // INSERT: new library, fresh newLibID
+		"internal/api/v2/fs_helpers.go",      // UpdateLibraryHeadFromSnapshot: IF head = snapshot
+		"internal/api/v2/fs_helpers.go",      // InitializeLibraryHeadIfUnset: IF head = null
+		"internal/api/v2/libraries.go",       // INSERT: new (encrypted) library, fresh newLibID
+		"internal/api/v2/libraries.go",       // INSERT: new library, fresh newLibID
+		"internal/db/library_continuity.go",  // AdvanceLibraryCertifiedFrontier: no production caller
 	}
 	if strings.Join(found, ",") != strings.Join(want, ",") {
 		t.Fatalf("production HEAD writers = %v, want %v; re-audit the E1-15E superseded witness", found, want)
