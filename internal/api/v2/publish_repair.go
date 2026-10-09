@@ -909,8 +909,12 @@ func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repai
 		return reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx, database, repair, headObservationBudget, targetParent)
 	}
 
+	targetParentCommitID, parentErr := targetParent()
+	if parentErr != nil {
+		return publishedBlockReferenceRepairCommitUnknown, parentErr
+	}
 	startCommitID := publishedBlockReferenceRepairProgressCursor(*repair)
-	progress, err := walkPublishedCommitReachabilityWitnessed(ctx, repair.CommitID, startCommitID, publishedBlockReferenceRepairWalkSeeds(*repair), publishedBlockReferenceRepairWitness(*repair, targetParent()), publishedCommitReachabilityMaxNodes, publishedBlockReferenceRepairParentLookup(database, repair.RepoID))
+	progress, err := walkPublishedCommitReachabilityWitnessed(ctx, repair.CommitID, startCommitID, publishedBlockReferenceRepairWalkSeeds(*repair), publishedBlockReferenceRepairWitness(*repair, targetParentCommitID), publishedCommitReachabilityMaxNodes, publishedBlockReferenceRepairParentLookup(database, repair.RepoID))
 	outcome, terminal, persistErr := persistPublishedBlockReferenceRepairWalkCursor(database, repair, startCommitID, progress, err)
 	if terminal {
 		return outcome, persistErr
@@ -933,19 +937,27 @@ func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repai
 // newPublishedBlockReferenceRepairTargetParent returns a memoized reader of
 // the repair commit's own immutable parent at EACH_QUORUM, for the Superseded
 // witness. It reads only when a walk is about to run, so a visit that does not
-// own a snapshot reads no commit row. Any failure, a missing commit row (for
-// example a crash between repair queueing and the commit insert) or an empty
-// parent disables the witness; it never changes any other outcome.
-func newPublishedBlockReferenceRepairTargetParent(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) func() string {
+// own a snapshot reads no commit row. A missing commit row (for example a
+// crash between repair queueing and the commit insert) or an empty parent only
+// disables the witness. Any other read error is returned so the visit stays
+// UNKNOWN without walking: a walk without the witness could pass the parent
+// and persist genesis exhaustion or a cursor beyond it, leaving the repair
+// unsettled until HEAD moves again (E1-15F).
+func newPublishedBlockReferenceRepairTargetParent(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) func() (string, error) {
 	read, parent := false, ""
-	return func() string {
+	var readErr error
+	return func() (string, error) {
 		if !read {
 			read = true
-			if value, err := publishedBlockReferenceRepairCommitParentFn(ctx, database, repair.RepoID, strings.TrimSpace(repair.CommitID)); err == nil {
+			value, err := publishedBlockReferenceRepairCommitParentFn(ctx, database, repair.RepoID, strings.TrimSpace(repair.CommitID))
+			switch {
+			case err == nil:
 				parent = strings.TrimSpace(value)
+			case !errors.Is(err, gocql.ErrNotFound):
+				readErr = fmt.Errorf("read parent of repair commit %s for the superseded witness: %w", strings.TrimSpace(repair.CommitID), err)
 			}
 		}
-		return parent
+		return parent, readErr
 	}
 }
 
@@ -1044,7 +1056,7 @@ func persistPublishedBlockReferenceRepairWalkCursor(database *db.DB, repair *pub
 	return progress.Outcome, false, nil
 }
 
-func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context, database *db.DB, repair *publishedBlockReferenceRepair, headObservationBudget int, targetParent func() string) (publishedBlockReferenceRepairCommitOutcome, error) {
+func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context, database *db.DB, repair *publishedBlockReferenceRepair, headObservationBudget int, targetParent func() (string, error)) (publishedBlockReferenceRepairCommitOutcome, error) {
 	// Same 30s context as the exhausted chunk. A newer HEAD is walked
 	// immediately so a pre-HEAD repair can converge without waiting for the
 	// next discovery visit. That second walk is a second 1024-node chunk,
@@ -1110,8 +1122,12 @@ func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context,
 		break
 	}
 
+	targetParentCommitID, parentErr := targetParent()
+	if parentErr != nil {
+		return publishedBlockReferenceRepairCommitUnknown, parentErr
+	}
 	startCommitID := publishedBlockReferenceRepairProgressCursor(*repair)
-	progress, walkErr := walkPublishedCommitReachabilityWitnessed(ctx, repair.CommitID, startCommitID, publishedBlockReferenceRepairWalkSeeds(*repair), publishedBlockReferenceRepairWitness(*repair, targetParent()), publishedCommitReachabilityMaxNodes, publishedBlockReferenceRepairParentLookup(database, repair.RepoID))
+	progress, walkErr := walkPublishedCommitReachabilityWitnessed(ctx, repair.CommitID, startCommitID, publishedBlockReferenceRepairWalkSeeds(*repair), publishedBlockReferenceRepairWitness(*repair, targetParentCommitID), publishedCommitReachabilityMaxNodes, publishedBlockReferenceRepairParentLookup(database, repair.RepoID))
 	outcome, terminal, persistErr := persistPublishedBlockReferenceRepairWalkCursor(database, repair, startCommitID, progress, walkErr)
 	if terminal {
 		return outcome, persistErr
