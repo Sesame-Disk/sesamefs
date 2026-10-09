@@ -1,6 +1,6 @@
 # E1 — Full-GC publication and recovery evaluation
 
-Status: ACTIVE; E1-15D on claude/e1-15d-post-d-contract-decision, following merged #273 (main@24372ba95fad). E1-15D shows abandoned commits stay publishable via Sync auto-merge, and proposes the contract split and cancellation authority for approval. Before it, E1-15C on #273, E1-15C measures no physical (D0 §13) RED from post-D refs on Office; it shows that dead repairs veto later lives of L; a contract reconciliation is pending a decision. E1-15B confirms post-D writer staging liveness on crash (P1 PRE-X1 OPEN, characterized). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; E1-15A found a stale-renewal post-D RED and compensated it (PARTIAL-FIX / CLOSED-EVIDENCE only when the global check and withdrawal succeed; strict guarantee OPEN P1 PRE-X1); W2-12/13/14, E1-15 overall and E1/X1 remain OPEN.
+Status: ACTIVE; E1-15E on claude/e1-15e-abandoned-repair-settlement, following merged #274 (main@1b39d6a0b2f9): the repair worker settles superseded abandoned repairs (option A of E1-15D §3), narrowing the PRE-GC retention. Before it, E1-15D (#274). E1-15D shows abandoned commits stay publishable via Sync auto-merge, and proposes the contract split and cancellation authority for approval. Before it, E1-15C on #273, E1-15C measures no physical (D0 §13) RED from post-D refs on Office; it shows that dead repairs veto later lives of L; a contract reconciliation is pending a decision. E1-15B confirms post-D writer staging liveness on crash (P1 PRE-X1 OPEN, characterized). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; E1-15A found a stale-renewal post-D RED and compensated it (PARTIAL-FIX / CLOSED-EVIDENCE only when the global check and withdrawal succeed; strict guarantee OPEN P1 PRE-X1); W2-12/13/14, E1-15 overall and E1/X1 remain OPEN.
 Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
 
 Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
@@ -494,6 +494,20 @@ every real reference of an unreferenced P2 has expired, the productive worker
 vetoes D(P2) only because of the dead repair. No physical RED on Office; the
 strict E1 reading stays RED; a contract reconciliation and dead-repair
 settlement as the next step are proposed for explicit decision.
+
+## E1-15E — superseded abandoned repair settlement
+
+[E1-15E](./E1-15E-ABANDONED-REPAIR-SETTLEMENT.md) adds the one negative
+outcome with cleanup authority: SUPERSEDED, when the resumable walk from the
+SERIAL HEAD anchor reaches the repair commit's immutable parent before the
+commit and the anchor is not that parent. Monotonic HEAD makes it permanent.
+Settlement removes only the repair-owned `pub:` and the row. Measured on real
+writers, sweeps and Sync: HEAD = parent still retains; a superseded repair
+settles and a natural D(P1) then reaches COMMITTED; Sync after the settlement,
+and Sync paused before its repair or before its CAS, publish with their own
+references while Phase 0 makes no candidate; a stale renewal is withdrawn.
+E1-15D, E1-15C C1 and E1-12 crash-restart were amended because their repair
+now settles. Still retained: HEAD = parent, a missing commit row.
 
 ## E1-15D — contract decision and repair cancellation authority
 

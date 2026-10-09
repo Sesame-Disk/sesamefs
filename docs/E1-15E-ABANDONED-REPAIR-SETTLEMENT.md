@@ -92,6 +92,9 @@ witness, and left UNKNOWN (retained):
 - HEAD = c1.parent: c1 can still be fast-forwarded;
 - a crash between repair queueing and `insertCommit` (CreateFile queues
   before inserting the commit): no c1 row, so no parent;
+- a known loser or pre-HEAD rollback whose request-local cleanup deleted the
+  c1 row (`CleanupFailedPublishAttempt`) and then failed to clear R: no c1
+  row either (found during implementation);
 - distance from A to P beyond what the resumable walk completes;
 - the stale pending-owner sweep (non-resumable classifier) and the writer's
   own TTL-bound `pub:<c1>` (E1-14 class).
@@ -129,6 +132,10 @@ Amended existing evidence, because its subject now converges:
   HEAD, so R settles; the shared legitimate `fs:` and P2 stay.
 - E1-12 `crash-restart`: a new-process sweep now settles the crashed loser's
   R (the authority lost by the crash is recovered from the canonical chain).
+- E1-11 `unknown-retained` and the E1-13 backlog fixture (found by the first
+  standard run): both need a genuinely pending repair and built it with a
+  competitor that moved HEAD, which now settles it. They now leave HEAD at
+  the attempt's parent, the class that legitimately stays UNKNOWN.
 
 RED: the new integration legs on unmodified main (UNKNOWN, retained, vetoed).
 Gate: unit + vet, E1-15E race `-count=3`, the amended suites, gate negatives,
@@ -137,3 +144,64 @@ standard Docker go-all-test, cleanup, `GC_ENABLED=false`.
 ## Validation
 
 Accepted results are recorded below. Nothing is inferred from this plan.
+
+### RED (unmodified runtime, test 8d664b6bf)
+
+`TestAbandonedRepairSettlement` against main's runtime: `parent-head-retains`
+PASS; the other five legs FAIL because every sweep classifies R natively
+UNKNOWN and retains it ("publication outcome ... is unknown; retain queued
+repair").
+
+### GREEN (fix e405f3027 and follow-ups)
+
+- **Unit** (`go test -race ./internal/api/v2 ./internal/api ./internal/db`):
+  PASS. That covers the witness walk table (9 cases), unwitnessed walks, the
+  owned `pub:` then row order, HEAD = parent, a missing commit row,
+  re-anchor, chunks, remove/delete failure with retry, and the HEAD-writer
+  source guard (UPDATEs plus library-creation INSERTs). The existing
+  head-observation budget test first caught an eager parent read; the read
+  is now lazy, so a visit that does not walk reads no commit row.
+- **Mutations** (`scripts/e115e-superseded-mutation.sh`): removing the
+  A ≠ P guard, the owned-`pub:` removal, the no-renewal early return, or the
+  witness itself each turns the named unit test RED.
+- **Integration**, isolated e19 child: E1-15E 6/6. Amended suites: E1-15D
+  2/2, E1-15C 4/4, E1-12 6/6, E1-11 6/6, E1-13 5/5. Measured: a natural
+  D(P1) reaches exact COMMITTED after the settlement. Sync after the
+  settlement, and Sync paused before its repair or before its CAS, publishes
+  with its own `fs:` while Phase 0 makes no candidate. With Sync paused
+  before its CAS, its own fresh repair (HEAD = its parent) stays UNKNOWN in
+  the same sweep. A stale renewal is written and then withdrawn.
+- **Race** `-count=3`: E1-15E 18/18 legs; 0 data races; 90 teardown
+  verifications (303s wall). Gate negatives: 3/3 PASS.
+- **Unchanged controls rerun**: the E1-11/E1-12/E1-13 omission mutations, the
+  E1-15A mutations, the E1-15B finalizer negative, and the E1-15A–D gate
+  negatives all PASS. This matters because `e115aCommitD` was split into
+  reusable helpers with identical logs.
+- **Standard Docker go-all-test**:
+  - First run on 0d0dfe16c: exit 1. E1-11 `unknown-retained` and all E1-13
+    legs failed, because their fixtures needed an UNKNOWN repair and built it
+    with a competitor that moved HEAD. Fixed in 04907118d (see the amended
+    evidence above). Not accepted.
+  - Accepted run on 04907118d, 2026-10-09 13:01–13:32 local: exit 0.
+    Integration 1587.426s (66% of 40m); API 20/20; OIDC 25/25; the same 75
+    SKIPs. Afterwards both backends report `CLEANUP_STATUS: clean`.
+- **Not run**: the 3-DC multi-DC suites (they need the 3-DC stack). By code
+  reading, their resumable-classifier leg expects REACHABLE from the durable
+  cursor, which the witness cannot change: the target is visited before its
+  parent.
+
+### Audit
+
+The only production change is `publish_repair.go`; the `db` change is a
+comment. Sync, writers, GC, schema and hot paths are untouched. The witness
+was re-checked against:
+
+- every HEAD write (three CAS UPDATEs plus one with no caller; three INSERTs
+  that only create libraries under a fresh id);
+- every producer of repair rows;
+- the persisted commit graph, which is first-parent only (`second_parent_id`
+  is not stored).
+
+Two gaps found during implementation are now listed out of scope: the
+known-loser cleanup deleting the commit row, and E1-11/E1-13 fixtures that
+relied on the old behaviour. No unresolved introduced P0/P1/P2.
