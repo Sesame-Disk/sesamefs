@@ -29,8 +29,14 @@ the authority depends on: can an abandoned v2 commit still be published?
   1. The stale v2 writer's CAS `IF head = c1.parent` can apply while
      HEAD == c1.parent.
   2. Sync `UpdateBranch?head=c1`: fast-forward if c1.parent == HEAD, otherwise
-     **auto-merge** when HEAD descends from c1.parent, which holds forever. The
-     merge commit records only the current HEAD as its parent, not c1.
+     **auto-merge** when HEAD descends from c1.parent. With monotonic HEAD
+     that ancestry never stops being true, but `syncCommitHasAncestor` walks
+     at most 1024 commits from HEAD; past that it returns an error and the
+     handler answers 500 ("failed to inspect sync commit ancestry") without
+     publishing. So auto-merge of c1 stays possible while HEAD is within 1024
+     first-parent commits of c1.parent, not at every depth. The bound is an
+     implementation constant, not an authority. The merge commit records
+     only the current HEAD as its parent, not c1.
 - Consequence (hypothesis to measure): the E1-15B/C repair is not provably
   dead. c1's content stays publishable through Sync. The E1-15C C2 veto of P2
   protects a still-publishable commit rather than pure dead retention.
@@ -63,7 +69,13 @@ gate negatives, race repeats, vets, standard go-all-test, cleanup/quota.
   Sync `UpdateBranch?head=c1` returns **200**, auto-merges and publishes
   HEAD M with parent = H1 (not c1). M's tree contains c1's file with c1's
   fs_id, whose `fs:` is now present on exact P1. **R was protecting a
-  commit that could still be published.**
+  commit that could still be published.** A later productive repair sweep
+  (real `RunPublishedBlockReferenceRepairSweepAt` on an observed session, R
+  aged into eligibility) still classifies R **natively UNKNOWN**: M names
+  H1, not c1, so the ancestry classifier cannot see that c1's content is
+  now published. The sweep retains R, renews only R's own
+  `pub:<repo:c1:fs>`, deletes nothing, and the `fs:<repo:fs_id>` that Sync
+  published stays. Added after the cross audit (P2-2); see Validation.
 - **`sync-promote-after-terminal` — fail-closed.** Same, but after a natural
   exact COMMITTED D(P1) completed to TERMINAL: the promotion is rejected
   (HTTP 500, "failed to auto-merge sync head"). The test captures the
@@ -132,29 +144,62 @@ be rewritten to match the code, which forbids post-COMMITTED revocation.
 | --- | --- | --- |
 | c1 positively REACHABLE from HEAD | yes (existing classifier) | normal settlement (promote fs:, drop R) |
 | writer observed applied=false | yes, but **process-local**: the request clears R synchronously | existing known-loser cleanup; a crash before cleanup loses the authority (E1-12) |
-| c1 not found on HEAD's first-parent chain | **no** | retain. Sync can still auto-merge c1's content into a HEAD that never names c1 (E1-15D) |
-| HEAD ≠ c1.parent (stale v2 CAS can no longer apply) | **partial**. With monotonic HEAD, the v2 writer can never win, but Sync promotion of c1 remains possible | retain |
+| c1 not found on HEAD's first-parent chain | **no** | retain. Sync can still auto-merge c1's content into a HEAD that never names c1, and the classifier then still says UNKNOWN (E1-15D) |
+| HEAD ≠ c1.parent (stale v2 CAS can no longer apply) | **partial**. With monotonic HEAD the Office attempt can never publish c1, but whether removing R is then safe against a concurrent Sync promotion of c1 is not analyzed (section 3) | retain |
 | R UNKNOWN, old, or retries exhausted | **no**. Time is never authority | retain |
 | ambiguous read / DC unavailable | no | fail closed (retain) |
 
 `DefinitelyNotReachable` must not get an emitter until an authority source
 exists. Today none does.
 
-### 3. What a future cancellation needs (why the next PR is not small)
+### 3. What a future settlement of R needs (open design)
 
-To retire R(c1) safely, c1 must become **unpublishable through every path**:
+R protects the *Office attempt* c1: its staged references for c1's content
+until that attempt is published or definitively lost. Sync publication of
+c1's content is a different publication with its own protection. Two
+obligations, kept separate:
 
-- (a) The stale v2 CAS is defeated once HEAD ≠ c1.parent. HEAD
-  monotonicity, from the HEAD-writer audit above, makes that durable. No
-  new state is needed.
-- (b) Sync promotion of c1 (fast-forward and auto-merge) must be defeated
-  **durably and atomically with that promotion**. This needs a commit-level
-  cancellation that `handleSyncHeadPromotion`/auto-merge checks, for example
-  an LWT-retired commit row or a cancellation marker read in the same
-  serial domain as the HEAD CAS. That is new protocol: it touches Sync
-  and possibly schema, and needs its own RED→GREEN.
+1. **Authority that the Office attempt itself can no longer publish c1.**
+   The stale v2 CAS `IF head = c1.parent` is defeated once HEAD ≠ c1.parent,
+   and HEAD monotonicity (audit above) makes that durable. No new state is
+   needed for this part. What is missing is durable authority to *act* on
+   it from the repair path: the classifier has no such emitter, and the
+   request-local `applied=false` dies with the process (E1-12).
+2. **Any later Sync publication of c1's content takes its own protection.**
+   By code reading it already does: `handleSyncHeadPromotion` stages its own
+   block delta, passes publication readiness (exact P) and queues its own
+   repair before the HEAD CAS; `tryAutoMergeSyncHeadPromotion` builds a new
+   merge commit and does the same for it. E1-15D measured both outcomes:
+   with P1 live, Sync publishes and installs its own `fs:`; after TERMINAL,
+   readiness rejects. Neither depends on R.
 
-Only after (a) and (b) may a settlement remove, exclusively:
+The runtime already relies on this split: on a definitive
+`ErrLibraryHeadConflict`, CreateFile runs `CleanupFailedPublishAttempt` and
+`clearPendingPublishedFileRepairs` for its losing commit, without cancelling
+that commit globally, although Sync could later auto-merge its content.
+
+This does **not** prove that a new repair-path settlement is safe. Still
+open, and required before any settlement code:
+
+- the durable authority source for (1): who may emit it, from what read,
+  at what consistency;
+- concurrency between removing R's `pub:` and a Sync promotion of c1 that is
+  already in flight (staged but not yet past readiness, or past readiness
+  but before its HEAD CAS), and the GC zero-proof in between;
+- the relation to new publications of the same fs_id.
+
+Design options, none chosen:
+
+- (A) Settle R on (1) alone, relying on (2) for Sync, after the concurrency
+  analysis above and its RED→GREEN. Smallest change; no Sync change if the
+  analysis holds.
+- (B) Conservative: additionally make c1 globally unpublishable, for
+  example an LWT-retired commit row or cancellation marker that Sync
+  promotion checks in the HEAD CAS serial domain. New protocol in Sync and
+  possibly schema. A fallback if (A) fails its analysis, not a demonstrated
+  requirement.
+
+Whatever option is chosen, a settlement may remove exclusively:
 
 - R's own repair-owned `pub:<repo:commit:fs>`;
 - the R row.
@@ -169,17 +214,19 @@ a later life P2.
 E1-15C described R as "dead" and the P2 veto as caused "solely" by a dead
 repair. E1-15D shows c1 stays publishable through Sync while R exists. The
 C2 veto therefore protects a commit that is abandoned but still publishable.
-The retention harm is real, and its cure is cancellation (section 3), not
-deleting R. The E1-15C and DEAD-ROW-RETENTION records are amended
+The retention harm is real; its cure is a settlement backed by durable
+authority (section 3), not deleting R today. The E1-15C and DEAD-ROW-RETENTION records are amended
 accordingly. No severity changes.
 
 ### 5. Recommended sequence
 
 1. Approve or amend sections 1–2. This is a contract decision; nothing is
    changed by this PR.
-2. Next production PR: design plus RED→GREEN for commit-level cancellation
-   (3b). That includes a characterization leg where Sync promotes c1 *after*
-   a cancellation attempt.
+2. Next PR: evaluate the minimal settlement first (section 3, option A):
+   the authority source for obligation 1 and the concurrency analysis
+   against in-flight Sync promotion, with RED→GREEN, including a leg where
+   Sync promotes c1 while or after R is settled. Option B (global commit
+   cancellation) only if A fails that analysis. No commitment to B here.
 3. Then the settlement of R under the exact removal scope of section 3.
 
 ## Out of scope
@@ -191,3 +238,28 @@ is lowered without explicit approval.
 ## Validation
 
 Accepted results are recorded below. Nothing is inferred from this plan.
+
+### Cross-audit follow-up (2026-10-09)
+
+Two THIS-PR P2 findings from the cross audit of c043d7b8e, both accepted:
+
+- **P2-1 (contract).** Section 3 presented global cancellation of c1 as
+  mandatory without evidence. Rewritten: settlement authority for the
+  Office attempt is separated from the protection a later Sync publication
+  takes for itself; global cancellation is option B, not a requirement.
+  The "auto-merge holds forever" wording is corrected to the 1024-commit
+  ancestry walk bound. Matrix row "HEAD ≠ c1.parent", sections 4 and 5 and
+  the linked records are aligned. No severity changed.
+- **P2-2 (evidence).** `sync-promotes-abandoned-commit` now runs a productive
+  sweep after the auto-merge and requires: native classification UNKNOWN,
+  exactly one renewal (R's own `pub:`) and no deletes, R the only queued
+  repair before and after, the Sync-published `fs:<repo:fs_id>` still
+  present and HEAD unchanged.
+
+Rerun on the amended test, isolated e19 child, unrelated `REQUIRE_*` gates
+unset: race `-count=3` 6/6 PASS plus completeness 3/3; 3 post-merge native
+UNKNOWN sweeps, 3 gate-attributed rejections, 30 teardown verifications, 0
+data races (149.048s package, 214s wall). Three gate negatives and
+`go vet -tags integration ./internal/integration/` PASS. No production
+file changed. The standard go-all-test above ran on db1cb229a, before this
+test-only addition; it was not repeated.

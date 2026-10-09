@@ -218,9 +218,9 @@ abandoned commit c1 behind R can still be published: real Sync
 `UpdateBranch?head=c1` auto-merges its content into HEAD. "Dead repair" above
 therefore means *abandoned*, not *provably unpublishable*. The C2 veto of
 D(P2) protects a still-publishable commit rather than being pure dead
-retention. The retention harm stands, but its cure is commit-level
-cancellation followed by settlement, not deleting R. Physical results are
-unchanged.
+retention. The retention harm stands, but its cure is a settlement backed by
+durable authority (E1-15D §3, design open), not deleting R today. Physical
+results are unchanged.
 
 ## Reconciliation proposal (for an explicit decision; nothing is changed)
 

@@ -506,6 +506,9 @@ commit. After P1 is TERMINAL, the same promotion is rejected by the Sync
 publication readiness gate (attributed via the handler log). Proposed for
 approval: X1 = physical invariant, post-D references and abandoned repairs =
 PRE-GC convergence. A cancellation-authority matrix records that no
-authority exists today. The next production PR is commit-level cancellation
-checked by Sync promotion, and only then settlement, never removing
-`fs:<repo:fs_id>`. No severity changed.
+authority exists today. A post-merge productive sweep still classifies R
+natively UNKNOWN and retains it. The next PR evaluates the minimal
+settlement first (durable authority over the original attempt plus a
+concurrency analysis against Sync promotion, which takes its own
+protection); global commit cancellation is a fallback, not a requirement.
+A settlement never removes `fs:<repo:fs_id>`. No severity changed.

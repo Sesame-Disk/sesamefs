@@ -11,8 +11,10 @@ so R protected a still-publishable commit. After TERMINAL, Sync's publication
 readiness gate rejects it. Race 6/6, 0 data races, gates PASS. Integration
 budget raised 30m→40m. Proposed for approval: X1 = physical invariant;
 convergence is a PRE-GC requirement; no cancellation authority exists today;
-the next production PR is commit-level cancellation, then settlement. E1-15C
-wording amended ("abandoned", not "dead"). No severity changed. Fixed an
+the next PR evaluates the minimal settlement first, global commit
+cancellation only as a fallback. E1-15C wording amended ("abandoned", not
+"dead"). No severity changed. Cross-audit follow-up: post-merge sweep
+classifies R natively UNKNOWN and retains it (race 6/6 again). Fixed an
 E1-12 marker-read race found by the first standard run. go-all-test exit 0
 (integration 1736.896s, 72% of 40m; API 20/20, OIDC 25/25); both backends
 clean. Final scoped audit: no unresolved introduced P0/P1/P2.
