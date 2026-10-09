@@ -255,7 +255,7 @@ func TestPostDPhysicalLifeDisposition(t *testing.T) {
 			case "post-d-repair-terminal":
 				e115cDeadRepairTerminal(t, f)
 			case "p2-published-with-dead-repair":
-				p1, r, owned, sweeper := e115cDeadRepairTerminal(t, f)
+				p1, r, owned, _ := e115cDeadRepairTerminal(t, f)
 				fx.filename = "rematerialized.docx"
 				rec := fx.create(t)
 				if rec.Code != http.StatusCreated {
@@ -295,12 +295,12 @@ func TestPostDPhysicalLifeDisposition(t *testing.T) {
 				if created.ID != r.fsID || newFS != repairFS || !hasNew || !hasRepair {
 					t.Fatalf("expected shared fs_id with a present legitimate fs:: new=%s repair=%s hasNew=%t refs=%v", created.ID, r.fsID, hasNew, refs)
 				}
-				sweeper.sweep(t, 14*time.Hour, owned)
-				if rows := w2Repairs(t, fx); len(rows) != 1 || rows[0].commitID != r.commitID {
-					t.Fatalf("dead repair settled unexpectedly: %+v", rows)
-				}
+				// The rematerialization moved HEAD off c1.parent, so since E1-15E the
+				// sweep settles R (SUPERSEDED): only R's own pub: and row go.
+
+				e115eSettle(t, f, r, 14*time.Hour)
 				if borrowedFSReadHead(t, fx.database, fx.orgID, fx.repoID) != head || fx.readTarget(t) != p2 {
-					t.Fatal("dead repair sweep changed HEAD or P2")
+					t.Fatal("abandoned repair settlement changed HEAD or P2")
 				}
 				stillLegit := false
 				for _, ref := range f.refsExact(t) {
@@ -309,7 +309,7 @@ func TestPostDPhysicalLifeDisposition(t *testing.T) {
 				if !stillLegit {
 					t.Fatalf("legitimate %s lost after the dead repair sweep", newFS)
 				}
-				t.Logf("E1-15C C1: real rematerialization installed P2=(%s,%s) != P1=(%s,%s); K1 absent; HEAD %s publishes only the new file fs=%s, which equals the dead repair's fs_id (required); dead repair R=%s stays UNKNOWN and keeps renewing %s on L (now pinning P2); the legitimate shared fs: survives the sweep", p2.StorageClass, p2.StorageKey, p1.StorageClass, p1.StorageKey, head, created.ID, r.commitID, owned)
+				t.Logf("E1-15C C1: real rematerialization installed P2=(%s,%s) != P1=(%s,%s); K1 absent; HEAD %s publishes only the new file fs=%s, which equals the dead repair's fs_id (required); abandoned repair R=%s settles once HEAD left c1.parent (E1-15E SUPERSEDED), removing only %s and its row; the legitimate shared fs: and P2 survive", p2.StorageClass, p2.StorageKey, p1.StorageClass, p1.StorageKey, head, created.ID, r.commitID, owned)
 			case "dead-repair-blocks-unreferenced-p2":
 				p1, r, owned, sweeper := e115cDeadRepairTerminal(t, f)
 				fx.filename = "rematerialized.docx"
