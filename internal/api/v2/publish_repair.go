@@ -74,7 +74,8 @@ type publishedBlockReferenceRepair struct {
 }
 
 // publishedBlockReferenceRepairCommitOutcome is deliberately fail-closed.
-// Only positive reachability is actionable in the background repair path.
+// Only positive reachability and the Superseded witness are actionable in the
+// background repair path.
 // A false or incomplete reachability observation may be caused by a stale,
 // locally blind, or otherwise ambiguous view of the canonical publication.
 // It must retain the durable row and all artifacts for a later confirmation.
@@ -90,6 +91,16 @@ const (
 	// The durable repair row is gone. This is not positive reachability and
 	// never authorizes promote, cleanup, or pub: renewal.
 	publishedBlockReferenceRepairCommitNoLongerPending
+	// Superseded is the one negative outcome with cleanup authority (E1-15E):
+	// the resumable walk from a SERIAL HEAD anchor A visited the target's own
+	// immutable parent P before the target, and A != P. The first-parent chain
+	// is linear, so the target is not on it; every HEAD writer installs a child
+	// of the current HEAD under a SERIAL CAS and HEAD never returns to P, so no
+	// later CAS can install the target either. It authorizes removing only the
+	// repair-owned pub: and the repair row. Sync can still publish the target's
+	// content through auto-merge, but that publication takes its own
+	// references and repair under a unique merged commit.
+	publishedBlockReferenceRepairCommitSuperseded
 )
 
 // errPublishedBlockReferenceRepairGone means this work is no longer queued.
@@ -546,7 +557,35 @@ func walkPublishedCommitReachability(ctx context.Context, targetCommitID, startC
 // ISSUE-PUBLISH-REPAIR-CROSS-CHUNK-CYCLE-01). Seeds equal to startCommitID
 // are ignored so a first chunk never reports itself as a cycle.
 func walkPublishedCommitReachabilitySeeded(ctx context.Context, targetCommitID, startCommitID string, seedCommitIDs []string, maxNodes int, parentLookup func(context.Context, string) (string, error)) (publishedCommitReachabilityWalk, error) {
+	return walkPublishedCommitReachabilityWitnessed(ctx, targetCommitID, startCommitID, seedCommitIDs, publishedCommitSupersededWitness{}, maxNodes, parentLookup)
+}
+
+// publishedCommitSupersededWitness carries what the walk needs to emit
+// Superseded: the target's immutable parent P and the SERIAL HEAD anchor A of
+// the chain being walked. It is inert unless both are known and A != P.
+type publishedCommitSupersededWitness struct {
+	TargetParentCommitID string
+	AnchorHeadCommitID   string
+}
+
+func (w publishedCommitSupersededWitness) parentFor(targetCommitID string) string {
+	parent := strings.TrimSpace(w.TargetParentCommitID)
+	anchor := strings.TrimSpace(w.AnchorHeadCommitID)
+	if parent == "" || anchor == "" || parent == anchor || parent == strings.TrimSpace(targetCommitID) {
+		return ""
+	}
+	return parent
+}
+
+// walkPublishedCommitReachabilityWitnessed is the seeded walk that may also
+// emit Superseded: visiting the target's parent before the target, on a chain
+// anchored at a HEAD other than that parent. A resumed chunk is contiguous with
+// the anchored prefix (the cursor never skips an unread commit, and visiting
+// the target returns immediately), so reaching P in any chunk of the same
+// anchor proves the target is not on that chain.
+func walkPublishedCommitReachabilityWitnessed(ctx context.Context, targetCommitID, startCommitID string, seedCommitIDs []string, witness publishedCommitSupersededWitness, maxNodes int, parentLookup func(context.Context, string) (string, error)) (publishedCommitReachabilityWalk, error) {
 	targetCommitID = strings.TrimSpace(targetCommitID)
+	supersededAt := witness.parentFor(targetCommitID)
 	startCommitID = strings.TrimSpace(startCommitID)
 	unknown := publishedCommitReachabilityWalk{Outcome: publishedBlockReferenceRepairCommitUnknown}
 	if targetCommitID == "" || startCommitID == "" {
@@ -578,6 +617,9 @@ func walkPublishedCommitReachabilitySeeded(ctx context.Context, targetCommitID, 
 			return unknown, fmt.Errorf("detected commit ancestry cycle at %s", currentCommitID)
 		}
 		visited[currentCommitID] = struct{}{}
+		if supersededAt != "" && currentCommitID == supersededAt {
+			return publishedCommitReachabilityWalk{Outcome: publishedBlockReferenceRepairCommitSuperseded}, nil
+		}
 
 		parentCommitID, err := parentLookup(ctx, currentCommitID)
 		if err != nil {
@@ -862,12 +904,13 @@ func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repai
 		}
 	}
 
+	targetParent := newPublishedBlockReferenceRepairTargetParent(ctx, database, *repair)
 	if repair.ReachabilityAnchorExhausted {
-		return reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx, database, repair, headObservationBudget)
+		return reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx, database, repair, headObservationBudget, targetParent)
 	}
 
 	startCommitID := publishedBlockReferenceRepairProgressCursor(*repair)
-	progress, err := walkPublishedCommitReachabilitySeeded(ctx, repair.CommitID, startCommitID, publishedBlockReferenceRepairWalkSeeds(*repair), publishedCommitReachabilityMaxNodes, publishedBlockReferenceRepairParentLookup(database, repair.RepoID))
+	progress, err := walkPublishedCommitReachabilityWitnessed(ctx, repair.CommitID, startCommitID, publishedBlockReferenceRepairWalkSeeds(*repair), publishedBlockReferenceRepairWitness(*repair, targetParent()), publishedCommitReachabilityMaxNodes, publishedBlockReferenceRepairParentLookup(database, repair.RepoID))
 	outcome, terminal, persistErr := persistPublishedBlockReferenceRepairWalkCursor(database, repair, startCommitID, progress, err)
 	if terminal {
 		return outcome, persistErr
@@ -882,9 +925,32 @@ func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repai
 			}
 			return publishedBlockReferenceRepairCommitUnknown, persistErr
 		}
-		return reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx, database, repair, headObservationBudget)
+		return reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx, database, repair, headObservationBudget, targetParent)
 	}
 	return progress.Outcome, nil
+}
+
+// newPublishedBlockReferenceRepairTargetParent returns a memoized reader of
+// the repair commit's own immutable parent at EACH_QUORUM, for the Superseded
+// witness. It reads only when a walk is about to run, so a visit that does not
+// own a snapshot reads no commit row. Any failure, a missing commit row (for
+// example a crash between repair queueing and the commit insert) or an empty
+// parent disables the witness; it never changes any other outcome.
+func newPublishedBlockReferenceRepairTargetParent(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) func() string {
+	read, parent := false, ""
+	return func() string {
+		if !read {
+			read = true
+			if value, err := publishedBlockReferenceRepairCommitParentFn(ctx, database, repair.RepoID, strings.TrimSpace(repair.CommitID)); err == nil {
+				parent = strings.TrimSpace(value)
+			}
+		}
+		return parent
+	}
+}
+
+func publishedBlockReferenceRepairWitness(repair publishedBlockReferenceRepair, targetParentCommitID string) publishedCommitSupersededWitness {
+	return publishedCommitSupersededWitness{TargetParentCommitID: targetParentCommitID, AnchorHeadCommitID: repair.ReachabilityAnchorHeadCommitID}
 }
 
 // publishedBlockReferenceRepairWalkSeeds returns the commits a resumed chunk
@@ -949,8 +1015,8 @@ func publishedBlockReferenceRepairWalkExhaustedToGenesis(progress publishedCommi
 }
 
 func persistPublishedBlockReferenceRepairWalkCursor(database *db.DB, repair *publishedBlockReferenceRepair, startCommitID string, progress publishedCommitReachabilityWalk, walkErr error) (publishedBlockReferenceRepairCommitOutcome, bool, error) {
-	if progress.Outcome == publishedBlockReferenceRepairCommitReachable {
-		return publishedBlockReferenceRepairCommitReachable, true, nil
+	if progress.Outcome == publishedBlockReferenceRepairCommitReachable || progress.Outcome == publishedBlockReferenceRepairCommitSuperseded {
+		return progress.Outcome, true, nil
 	}
 	nextCursor := strings.TrimSpace(progress.NextCursor)
 	if nextCursor != "" && nextCursor != startCommitID {
@@ -978,7 +1044,7 @@ func persistPublishedBlockReferenceRepairWalkCursor(database *db.DB, repair *pub
 	return progress.Outcome, false, nil
 }
 
-func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context, database *db.DB, repair *publishedBlockReferenceRepair, headObservationBudget int) (publishedBlockReferenceRepairCommitOutcome, error) {
+func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context, database *db.DB, repair *publishedBlockReferenceRepair, headObservationBudget int, targetParent func() string) (publishedBlockReferenceRepairCommitOutcome, error) {
 	// Same 30s context as the exhausted chunk. A newer HEAD is walked
 	// immediately so a pre-HEAD repair can converge without waiting for the
 	// next discovery visit. That second walk is a second 1024-node chunk,
@@ -1045,7 +1111,7 @@ func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context,
 	}
 
 	startCommitID := publishedBlockReferenceRepairProgressCursor(*repair)
-	progress, walkErr := walkPublishedCommitReachabilitySeeded(ctx, repair.CommitID, startCommitID, publishedBlockReferenceRepairWalkSeeds(*repair), publishedCommitReachabilityMaxNodes, publishedBlockReferenceRepairParentLookup(database, repair.RepoID))
+	progress, walkErr := walkPublishedCommitReachabilityWitnessed(ctx, repair.CommitID, startCommitID, publishedBlockReferenceRepairWalkSeeds(*repair), publishedBlockReferenceRepairWitness(*repair, targetParent()), publishedCommitReachabilityMaxNodes, publishedBlockReferenceRepairParentLookup(database, repair.RepoID))
 	outcome, terminal, persistErr := persistPublishedBlockReferenceRepairWalkCursor(database, repair, startCommitID, progress, walkErr)
 	if terminal {
 		return outcome, persistErr
@@ -1624,6 +1690,12 @@ func repairPublishedBlockReferenceRepairVisit(database *db.DB, repair publishedB
 		}
 		return nil
 	}
+	if classifyErr == nil && commitOutcome == publishedBlockReferenceRepairCommitSuperseded {
+		// No renewal on any path: the commit can never be published, and a
+		// renewal would recreate the pub: this settlement removes. A failure
+		// keeps the row, and the next visit re-derives the same witness.
+		return settlePublishedBlockReferenceRepair(database, repair, commitOutcome, classifyErr)
+	}
 	pending, pendingErr := publishedBlockReferenceRepairStillPending(database, repair)
 	if pendingErr != nil {
 		return errors.Join(classifyErr, pendingErr)
@@ -1673,6 +1745,14 @@ func settlePublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 		// UNKNOWN renewal of this same row can still recreate
 		// pub:<repo:commit:fsID> before this delete
 		// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
+	case publishedBlockReferenceRepairCommitSuperseded:
+		// Only the repair-owned pub: and the row. Never fs:<repo:fs_id> (it is
+		// content-addressed and may be a live publication of the same content),
+		// another attempt's pub:<commit>, up:, owners, fs_objects or commits.
+		if err := removePublishedBlockReferenceRepairOwnedLivenessFn(database, repair); err != nil {
+			return fmt.Errorf("remove repair-owned publish-attempt liveness for superseded fs_object %s: %w", repair.FSID, err)
+		}
+		log.Printf("[publish_repair] settling superseded repair repo=%s commit=%s fs_object=%s: HEAD left the commit's parent without it", repair.RepoID, repair.CommitID, repair.FSID)
 	case publishedBlockReferenceRepairCommitUnknown:
 		return tagPublishedBlockReferenceRepairOutcome(errPublishedBlockReferenceRepairRetained, fmt.Errorf("publication outcome for fs_object %s commit %s is unknown; retain queued repair", repair.FSID, repair.CommitID))
 	case publishedBlockReferenceRepairCommitDefinitelyNotReachable:

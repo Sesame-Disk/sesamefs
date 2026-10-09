@@ -249,6 +249,13 @@ contract reconciliation is proposed for explicit decision
 ([evidence](./E1-15C-POST-D-PHYSICAL-LIFE-DISPOSITION.md)). No severity is
 lowered.
 
+E1-15E (production, not a W2 row): the repair worker settles a superseded
+abandoned repair (walk from the SERIAL HEAD anchor reaches the commit's
+parent first, anchor ≠ parent), removing only its own `pub:` and row. Sync
+publications keep their own protection (measured after, before repair and
+before CAS). X1 safety unchanged; PRE-GC retention narrowed, not closed
+([E1-15E](./E1-15E-ABANDONED-REPAIR-SETTLEMENT.md)).
+
 E1-15D (contract decision, not a W2 row): an abandoned v2 commit behind an
 UNKNOWN repair is still publishable. Real Sync `UpdateBranch` auto-merges it
 into HEAD, and after TERMINAL the Sync publication readiness gate rejects it.

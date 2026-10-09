@@ -7543,6 +7543,20 @@ cancellation is only a fallback option
 ([E1-15D](./E1-15D-POST-D-CONTRACT-DECISION.md) §3). Deleting the row
 today, without that authority, is not proposed.
 
+**E1-15E narrowing (2026-10-09):** the repair worker now settles a repair whose
+commit is **superseded**: the resumable walk from its SERIAL HEAD anchor
+reaches the commit's own immutable parent before the commit, and the anchor
+is not that parent. Settlement removes only the repair-owned `pub:` and the
+row ([E1-15E](./E1-15E-ABANDONED-REPAIR-SETTLEMENT.md)). Measured: a natural
+D(P1) is no longer vetoed; Sync publications after or during the settlement
+stay protected by their own references. Still retained (UNKNOWN), so this
+issue stays OPEN but narrowed:
+- HEAD still equal to the commit's parent;
+- the commit row is missing: a crash between repair queueing and
+  `insertCommit`, or a known-loser/pre-HEAD cleanup that deleted the commit
+  and then failed to clear the row;
+- ancestry the resumable walk cannot complete.
+
 #### Problem
 
 The indefinite leak is a **dead/unreachable publication repair row that

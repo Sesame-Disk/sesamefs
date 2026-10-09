@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,17 +183,13 @@ func e113RealFixture(t *testing.T) *e113Fixture {
 	if !up || !pub {
 		t.Fatalf("productive up/pub absent: %v", refs)
 	}
+	// HEAD stays at the attempt's parent: the attempt could still be
+	// fast-forwarded, so its repair is genuinely UNKNOWN. (A competitor that
+	// moved HEAD would make it SUPERSEDED and settle it since E1-15E.)
 	fx.assertHeadUnchanged(t)
-	name := fx.filename
-	fx.filename = "competitor.txt"
-	rec := fx.create(t)
-	fx.filename = name
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("productive competitor: %d %s", rec.Code, rec.Body.String())
-	}
 	f := &e113Fixture{fx: fx, repair: r, head: borrowedFSReadHead(t, fx.database, fx.orgID, fx.repoID)}
-	if f.head == r.commitID {
-		t.Fatal("target accidentally reachable")
+	if f.head == r.commitID || e115dParent(t, fx, r.commitID) != f.head {
+		t.Fatal("UNKNOWN fixture needs HEAD = the attempt's parent")
 	}
 	f.headRoot = e112CommitRoot(t, fx.database, fx.repoID, f.head)
 	f.loserRoot = e112CommitRoot(t, fx.database, fx.repoID, r.commitID)

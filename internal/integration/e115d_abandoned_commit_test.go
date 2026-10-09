@@ -180,18 +180,14 @@ func TestAbandonedCommitPublishability(t *testing.T) {
 				if !published {
 					t.Fatalf("Sync published c1's file without its fs: reference")
 				}
-				// A productive repair visit after the auto-merge: M names H1, not c1,
-				// so the ancestry classifier must still say UNKNOWN and retain R;
-				// the sweep must not touch the fs: Sync published.
+				// A productive repair visit after the auto-merge. M names H1, not
+				// c1, so ancestry alone is UNKNOWN; since E1-15E the walk from M
+				// reaches c1.parent first, so R settles (SUPERSEDED). The settlement
+				// must not touch the fs: Sync published.
 				if rows := w2Repairs(t, fx); len(rows) != 1 || rows[0].commitID != r.commitID || rows[0].fsID != r.fsID {
 					t.Fatalf("after auto-merge only R must be queued: %+v", rows)
 				}
-				sweeper := e115cNewSweeper(t, fx)
-				sweeper.age(t, fx, r)
-				sweeper.sweep(t, 2*time.Hour, e115aRepairOwned(fx, r))
-				if rows := w2Repairs(t, fx); len(rows) != 1 || rows[0].commitID != r.commitID || rows[0].fsID != r.fsID {
-					t.Fatalf("R not retained after post-merge sweep: %+v", rows)
-				}
+				e115eSettle(t, f, r, 2*time.Hour)
 				published = false
 				for _, ref := range f.refsExact(t) {
 					published = published || ref == dbpkg.BlockReferrerForFSObject(fx.repoID, r.fsID)
@@ -199,7 +195,7 @@ func TestAbandonedCommitPublishability(t *testing.T) {
 				if !published || borrowedFSReadHead(t, fx.database, fx.orgID, fx.repoID) != head {
 					t.Fatal("post-merge sweep removed the Sync-published fs: or moved HEAD")
 				}
-				t.Logf("E1-15D RESULT: abandoned v2 commit %s (repair UNKNOWN, writer dead) was published by Sync auto-merge into HEAD %s (parent %s, not %s); its file fs=%s is now HEAD-reachable on exact P1. A later productive sweep still classifies R natively UNKNOWN and retains it; the Sync fs: stays. The repair was protecting a still-publishable commit", r.commitID, head, advanced, r.commitID, r.fsID)
+				t.Logf("E1-15D RESULT: abandoned v2 commit %s (repair UNKNOWN, writer dead) was published by Sync auto-merge into HEAD %s (parent %s, not %s); its file fs=%s is now HEAD-reachable on exact P1. A later productive sweep settles R natively (SUPERSEDED, E1-15E); the Sync fs: stays. The repair was protecting a still-publishable commit",r.commitID, head, advanced, r.commitID, r.fsID)
 			case "sync-promote-after-terminal":
 				e115cCrashAfterD(t, f, "crash-after-queue")
 				p1 := fx.target

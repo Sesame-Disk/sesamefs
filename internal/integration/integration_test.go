@@ -54,7 +54,8 @@ func TestMain(m *testing.M) {
 	// comment could not: R26 was added to docker-compose and missed here, and the
 	// omission was invisible in the standard run only because P4A happens to be set
 	// alongside it.
-	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_E115D_ABANDONED_COMMIT_EVIDENCE") == "1" ||
+	requireEvidence := os.Getenv("SESAMEFS_REQUIRE_E115E_REPAIR_SETTLEMENT_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_E115D_ABANDONED_COMMIT_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E115C_POST_D_PHYSICAL_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E115B_WRITER_POST_D_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_E115A_STALE_VISITOR_EVIDENCE") == "1" ||
@@ -205,6 +206,12 @@ func TestMain(m *testing.M) {
 	if os.Getenv(e17EvidenceEnv) == "1" {
 		if missing := e17Missing(e17Evidence); len(missing) > 0 {
 			fmt.Printf("%s=1 requires all named RecvFS-before-PutBlock legs; missing=%s (check -run filters)\n", e17EvidenceEnv, strings.Join(missing, ","))
+			code = 1
+		}
+	}
+	if os.Getenv(e115eEvidenceEnv) == "1" {
+		if missing := e115eMissing(e115eObserved); len(missing) > 0 {
+			fmt.Printf("%s=1 requires all named E1-15E repair settlement legs; missing=%s (check -run filters)\n", e115eEvidenceEnv, strings.Join(missing, ","))
 			code = 1
 		}
 	}

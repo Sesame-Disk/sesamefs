@@ -60,13 +60,15 @@ func TestE112ProcessChild(t *testing.T) {
 		})
 		defer restore()
 		err := v2pkg.RunPublishedBlockReferenceRepairSweepForIntegration(database)
-		if len(classifications) != 1 || classifications[0] != "unknown" {
-			t.Fatalf("productive sweep missed exact UNKNOWN repair: %v err=%v", classifications, err)
+		// The winner moved HEAD off the loser's parent, so since E1-15E the new
+		// process recovers settlement authority from the canonical chain.
+		// The sweep error may come from other repos' rows in the shared keyspace;
+		// the parent asserts the settlement itself on this repo's durable state.
+		if len(classifications) != 1 || classifications[0] != "superseded" {
+			t.Fatalf("productive sweep must settle the superseded loser repair: %v err=%v", classifications, err)
 		}
-		if err != nil && !strings.Contains(err.Error(), "unknown; retain queued repair") {
-			t.Fatalf("sweep: %v", err)
-		}
-		if err := os.WriteFile(data.Marker+".recovered", []byte("UNKNOWN retained by productive bucket sweep"), 0600); err != nil {
+		t.Logf("recovery sweep error (any repo): %v", err)
+		if err := os.WriteFile(data.Marker+".recovered", []byte("SUPERSEDED settled by productive bucket sweep"), 0600); err != nil {
 			t.Fatal(err)
 		}
 		return
@@ -341,31 +343,38 @@ func TestKnownLoserCrashSafety(t *testing.T) {
 					t.Fatal(err)
 				}
 				data.Phase = "recovery"
-				for visit := 0; visit < 2; visit++ {
-					if err := fx.database.Session().Query(`UPDATE published_block_reference_repairs SET lease_expires_at=? WHERE bucket=? AND org_id=? AND repo_id=? AND commit_id=? AND fs_id=?`, time.Now().Add(-time.Hour), r.bucket, fx.orgID, fx.repoID, r.commitID, r.fsID).Exec(); err != nil {
-						t.Fatal(err)
-					}
-					data.Marker = filepath.Join(t.TempDir(), "recovery")
-					recovery := e112Command(t, data)
-					recoveryOutput, err := recovery.CombinedOutput()
-					t.Logf("new-process productive sweep %d:\n%s", visit+1, recoveryOutput)
-					if err != nil {
-						t.Fatalf("repair restart: %v", err)
-					}
-					e112AwaitFile(t, data.Marker+".recovered")
-					e112AssertRetained(t, fx, r, head, headRoot, loserRoot)
-					refs, err := fx.database.ListBlockReferrers(fx.orgID, fx.blockID)
-					if err != nil || len(refs) == 0 {
-						t.Fatalf("UNKNOWN did not renew real pub: %v %v", refs, err)
-					}
-					renewed := false
-					for _, ref := range refs {
-						renewed = renewed || ref == dbpkg.BlockReferrerForPublishAttempt(fx.repoID+":"+r.commitID+":"+r.fsID)
-					}
-					if !renewed {
-						t.Fatalf("exact repair-owned pub not renewed: %v", refs)
+				data.Marker = filepath.Join(t.TempDir(), "recovery")
+				recovery := e112Command(t, data)
+				recoveryOutput, err := recovery.CombinedOutput()
+				t.Logf("new-process productive sweep:\n%s", recoveryOutput)
+				if err != nil {
+					t.Fatalf("repair restart: %v", err)
+				}
+				e112AwaitFile(t, data.Marker+".recovered")
+				// E1-15E: the crash lost the request-local applied=false, but the
+				// new process re-derives authority (SUPERSEDED) and settles only
+				// R's row and its own pub:; HEAD, both commits and P1 are intact.
+				if rows := w2Repairs(t, fx); len(rows) != 0 {
+					t.Fatalf("superseded loser repair not settled: %+v", rows)
+				}
+				refs, err := fx.database.ListBlockReferrers(fx.orgID, fx.blockID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, ref := range refs {
+					if ref == dbpkg.BlockReferrerForPublishAttempt(fx.repoID+":"+r.commitID+":"+r.fsID) {
+						t.Fatalf("repair-owned pub survived settlement: %v", refs)
 					}
 				}
+				if borrowedFSReadHead(t, fx.database, fx.orgID, fx.repoID) != head || e112CommitRoot(t, fx.database, fx.repoID, head) != headRoot || e112CommitRoot(t, fx.database, fx.repoID, r.commitID) != loserRoot {
+					t.Fatal("HEAD/commit/root changed")
+				}
+				if fx.hasOwnFSReferrer(t) || fx.readTarget(t) != fx.target {
+					t.Fatal("loser promoted fs or changed P1")
+				}
+				w2AssertBytes(t, fx)
+				t.Log("E1-15E: new-process sweep settled the crashed loser's repair (SUPERSEDED)")
+				return
 			}
 			e112AssertRetained(t, fx, r, head, headRoot, loserRoot)
 		})

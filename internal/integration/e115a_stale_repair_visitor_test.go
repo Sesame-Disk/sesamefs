@@ -375,29 +375,65 @@ func e115aCommitD(t *testing.T, f *e114Fixture) {
 	if err != nil || len(refs) == 0 {
 		t.Fatalf("no real up: to expire: %v %v", refs, err)
 	}
-	deadline := time.Now().UTC().Add(3 * time.Second).Truncate(time.Millisecond)
 	for _, ref := range refs {
-		var class string
-		var original time.Time
-		if err := fx.database.Session().Query(`SELECT storage_class,expires_at FROM gc_provisional_block_refs WHERE org_id=? AND block_id=? AND referrer=?`, fx.orgID, fx.blockID, ref).Consistency(gocql.EachQuorum).Scan(&class, &original); err != nil {
-			t.Fatalf("real up: tracker %s missing: %v", ref, err)
+		if !strings.HasPrefix(ref, "up:") {
+			t.Fatalf("E1-15A natural D expects only real up: refs: %v", refs)
 		}
-		f.trackers = append(f.trackers, e112ExpiryRow{ref: ref, expires: original.UTC()}, e112ExpiryRow{ref: ref, expires: deadline})
-		if err := fx.database.AddProvisionalBlockReferenceWithExpiry(fx.orgID, fx.blockID, ref, fx.repoID, class, deadline); err != nil {
-			t.Fatal(err)
+	}
+	e115aNaturalD(t, f, e115aRetireByTTL(t, f, refs))
+}
+
+// e115aRetireByTTL retires the given real references through their own
+// productive write API and Cassandra TTL (up: by the renewal API, pub: by
+// AddBlockReference on the same referrer) and returns how many were up:.
+func e115aRetireByTTL(t *testing.T, f *e114Fixture, refs []string) int {
+	t.Helper()
+	fx := f.fx
+	deadline := time.Now().UTC().Add(3 * time.Second).Truncate(time.Millisecond)
+	ups := 0
+	for _, ref := range refs {
+		switch {
+		case strings.HasPrefix(ref, "up:"):
+			ups++
+			var class string
+			var original time.Time
+			if err := fx.database.Session().Query(`SELECT storage_class,expires_at FROM gc_provisional_block_refs WHERE org_id=? AND block_id=? AND referrer=?`, fx.orgID, fx.blockID, ref).Consistency(gocql.EachQuorum).Scan(&class, &original); err != nil {
+				t.Fatalf("real up: tracker %s missing: %v", ref, err)
+			}
+			f.trackers = append(f.trackers, e112ExpiryRow{ref: ref, expires: original.UTC()}, e112ExpiryRow{ref: ref, expires: deadline})
+			if err := fx.database.AddProvisionalBlockReferenceWithExpiry(fx.orgID, fx.blockID, ref, fx.repoID, class, deadline); err != nil {
+				t.Fatal(err)
+			}
+		case strings.HasPrefix(ref, "pub:"):
+			if f.refTTL(t, ref) <= 0 {
+				t.Fatalf("pub: %s not TTL-bound", ref)
+			}
+			if err := fx.database.AddBlockReference(fx.orgID, fx.blockID, ref, fx.repoID, 2); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("unexpected saving reference %s in %v", ref, refs)
 		}
 	}
 	for _, ref := range refs {
 		f.awaitAbsent(t, ref, deadline)
 	}
+	return ups
+}
+
+// e115aNaturalD: with every real reference retired, productive Phase 0/1 and
+// the worker must reach exact COMMITTED D(P) for fx.target.
+func e115aNaturalD(t *testing.T, f *e114Fixture, ups int) {
+	t.Helper()
+	fx := f.fx
 	if live, err := fx.database.BlockHasReferencesGlobal(fx.orgID, fx.blockID); err != nil || live {
 		t.Fatalf("global EQ refs not zero: %t %v", live, err)
 	}
 	scope, cleaned := f.phase0(t)
 	candidates := gcCandidateIdentitiesForTest(t, fx.orgID, fx.blockID)
 	f.candidates = append(f.candidates, candidates...)
-	if cleaned != len(refs) || len(candidates) != 1 || candidates[0].Target != fx.target {
-		t.Fatalf("Phase 0 natural candidate: listed=%d cleaned=%d/%d candidates=%+v", scope.provisional, cleaned, len(refs), candidates)
+	if cleaned != ups || len(candidates) != 1 || candidates[0].Target != fx.target {
+		t.Fatalf("Phase 0 natural candidate: listed=%d cleaned=%d/%d candidates=%+v", scope.provisional, cleaned, ups, candidates)
 	}
 	phase1 := f.scope()
 	enqueued, err := gcpkg.NewScanner(phase1, gcpkg.NewQueue(phase1), &gcpkg.Stats{}, config.GCConfig{}).ScanOrphanedBlocksOnce(context.Background())
@@ -417,7 +453,7 @@ func e115aCommitD(t *testing.T, f *e114Fixture) {
 	if !owned.visited || scanErr != nil || phase != gcpkg.BlockDeleteLifecyclePhasePublished || class != fx.target.StorageClass || key != fx.target.StorageKey || orphanErr != nil || !orphanFound || orphan.RecoveryState != gcpkg.S3OrphanRecoveryStateCommitted || rootErr != nil || !rootFound || existsErr != nil || exists {
 		t.Fatalf("productive GC did not reach exact COMMITTED D(P1): n=%d err=%v visited=%t phase=%s scan=%v orphan=%t/%v root=%t/%v canonical=%t/%v", n, workerErr, owned.visited, phase, scanErr, orphanFound, orphanErr, rootFound, rootErr, exists, existsErr)
 	}
-	t.Logf("E1-15A natural D: %d up: retired by TTL; Phase 0 candidate at exact P1; worker n=%d reached exact COMMITTED D(P1)=(%s,%s) claim=%s; canonical retired", len(refs), n, class, key, claim)
+	t.Logf("E1-15A natural D: %d up: retired by TTL; Phase 0 candidate at exact P1; worker n=%d reached exact COMMITTED D(P1)=(%s,%s) claim=%s; canonical retired", ups, n, class, key, claim)
 }
 
 func e115aVerifyNoRoot(t *testing.T, database *dbpkg.DB, fx *w2CreateFileFixture) {

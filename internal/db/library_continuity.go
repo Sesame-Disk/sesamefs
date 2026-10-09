@@ -117,7 +117,9 @@ func CommitLibraryContinuityWitness(session *gocql.Session, orgID, libraryID, ob
 //
 // This is a DB authority primitive only; no current HEAD writer or productive
 // publication funnel calls it. PC-D1B must complete the proof precondition
-// before a future caller uses it.
+// before a future caller uses it. A caller must also install only a child of
+// observedHead: the E1-15E superseded repair witness relies on HEAD never
+// returning to an earlier commit.
 func AdvanceLibraryCertifiedFrontier(session *gocql.Session, orgID, libraryID, observedHead, nextHead, contractVersion string) (LibraryContinuityCASResult, error) {
 	if session == nil {
 		return LibraryContinuityCASResult{Outcome: LibraryContinuityCASUnknown}, fmt.Errorf("%w: nil Cassandra session", ErrInvalidLibraryContinuityInput)

@@ -1,6 +1,27 @@
 # Current Work
 
-## Active slice: E1-15D post-D contract decision and repair cancellation authority
+## Active slice: E1-15E superseded abandoned repair settlement
+
+Base main@1b39d6a0b2f9 (#274 merged). Branch
+claude/e1-15e-abandoned-repair-settlement; frozen plan ab294c10c. Option A of
+E1-15D §3, implemented. The resumable classifier emits SUPERSEDED when the
+walk from its SERIAL HEAD anchor reaches the repair commit's immutable parent
+(EACH_QUORUM) before the commit, and the anchor is not that parent. HEAD
+monotonicity makes this permanent. Settlement removes only the repair-owned
+`pub:` and the row.
+
+- RED on main: 5/6 legs.
+- GREEN: E1-15E 6/6.
+- Amended suites, because their repair now settles or their UNKNOWN fixture
+  had to keep HEAD at the parent: E1-15D, E1-15C C1, E1-12 crash-restart,
+  E1-11, E1-13.
+- Race 18/18, 0 data races. Unit mutations 4/4. go-all-test exit 0
+  (integration 1587.426s; API 20/20; OIDC 25/25). Both backends clean.
+
+Still UNKNOWN: HEAD = parent, a missing commit row. Retention is narrowed,
+not closed. [Plan/evidence](docs/E1-15E-ABANDONED-REPAIR-SETTLEMENT.md).
+
+## Previous merged slice: E1-15D post-D contract decision and repair cancellation authority (PR #274)
 
 Base main@24372ba95fad (#273 merged). Branch claude/e1-15d-post-d-contract-decision;
 frozen plan e49a8362f. Decision proposal plus one evidence pair, with no

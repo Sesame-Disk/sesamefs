@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -181,18 +180,13 @@ func TestCurrentRuntimeRepairLiveness(t *testing.T) {
 				t.Fatalf("repair must be non-expiring: TTL=%v err=%v", repairTTL, err)
 			}
 			if unknown {
+				// HEAD stays at the interrupted attempt's parent, so the attempt
+				// could still be fast-forwarded: its actual ancestry yields UNKNOWN,
+				// without CQL. (A competitor moving HEAD would make it SUPERSEDED
+				// and settle it since E1-15E.)
 				fx.assertHeadUnchanged(t)
-				// A real independent empty-file publication advances HEAD away from the
-				// interrupted attempt. Its actual ancestry yields UNKNOWN, without CQL.
-				name := fx.filename
-				fx.filename = "competitor.txt"
-				if rec := fx.create(t); rec.Code != http.StatusCreated {
-					t.Fatalf("competitor: %d %s", rec.Code, rec.Body.String())
-				}
-				fx.filename = name
-				head = borrowedFSReadHead(t, fx.database, fx.orgID, fx.repoID)
-				if head == r.commitID || len(w2Repairs(t, fx)) != 1 {
-					t.Fatal("UNKNOWN control accidentally published/settled original attempt")
+				if head == r.commitID || e115dParent(t, fx, r.commitID) != head || len(w2Repairs(t, fx)) != 1 {
+					t.Fatal("UNKNOWN control needs HEAD = the attempt's parent and its repair")
 				}
 			} else {
 				if head != r.commitID {
