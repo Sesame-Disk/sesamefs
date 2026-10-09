@@ -7557,6 +7557,13 @@ issue stays OPEN but narrowed:
   and then failed to clear the row;
 - ancestry the resumable walk cannot complete.
 
+**E1-15F (2026-10-09):** SUPERSEDED was validated on real three-DC Cassandra
+([E1-15F](./E1-15F-SUPERSEDED-CROSS-DC.md)). One defect from #275 was fixed: a
+failed EACH_QUORUM read of the commit's parent let the walk pass the parent
+without the witness, which left the repair unsettled until HEAD moved again
+(liveness only, safe direction). That visit now stays UNKNOWN without
+walking.
+
 #### Problem
 
 The indefinite leak is a **dead/unreachable publication repair row that

@@ -86,3 +86,76 @@ historical 3-DC matrix, and E1/X1 closure. E1/X1 stay OPEN; GC stays OFF.
 ## Validation
 
 Accepted results are recorded below. Nothing is inferred from this plan.
+
+### Fix (7f6ba1ee9): unit RED → GREEN
+
+- **RED** on #275 code: `TestSupersededWitnessSurvivesTransientParentReadFailure`
+  failed in both variants after the read recovered.
+  - genesis: `anchor=h2 exhausted=true`;
+  - bounded chunk: `cursor=c-1024` (past P), then exhausted.
+- **GREEN:** `go test -race ./internal/api/v2 ./internal/api ./internal/db`
+  PASS, including the existing head-observation budget test. A losing
+  re-anchor still reads no commit row.
+- **Mutations:** `scripts/e115e-superseded-mutation.sh` now has 5 mutations;
+  the new `parent-abort` mutation turns the test RED.
+
+### 3-DC evidence (`scripts/e115f-superseded-3dc-validation.sh`)
+
+Two full runs on real three-DC Cassandra, both exit 0, 9/9 phases each. One
+further attempt never started because Docker Hub's token endpoint failed
+(HTTP 500/504) during `docker build`; that is infrastructure, not evidence.
+Phase results:
+
+- **Gate negatives (2/2):** a phase without ids FAILs; an unset phase SKIPs,
+  and the runner rejects a SKIP or a missing `E115F_PHASE_DONE` marker.
+- **M2** (HEAD = P, sweep from dc-asia): native `unknown/<nil>`. From dc-eu at
+  EACH_QUORUM, R is present and R's own `pub:` was renewed.
+- **M4a** (dc-eu stopped, sweep from dc-na): `unknown/read parent of repair
+  commit … for the superseded witness: Cannot achieve consistency level
+  EACH_QUORUM in DC dc-eu`. The visit stopped at the new guard before
+  walking. R and its `pub:` are retained.
+  - Whole-DC outage also fails the walk's own EACH_QUORUM reads, so #275's
+    code would have retained here too. This leg proves fail-closed
+    retention; the fix is proven by the unit RED.
+- **M4a recovery** (dc-eu restarted, sweep from dc-asia): one visit,
+  `superseded/<nil>`, settled.
+- **M1**, verified from dc-na and from dc-eu at EACH_QUORUM:
+  - R row and R's own `pub:` are gone;
+  - staging `pub:<c1>` and the legitimate `fs:<repo:fs>` are kept;
+  - SERIAL HEAD = H1; commits c1 and H1 still have parent P.
+- **M3:** c2 (parent H1) published by the production SERIAL CAS from dc-eu
+  (H1 → c2 → H2). A sweep from dc-na returned native `reachable/<nil>`. From
+  dc-asia at EACH_QUORUM, `fs:<repo:fs2>` is promoted, R2 is gone, and R2's
+  own `pub:` is gone.
+
+### Standard regression
+
+- Docker go-all-test on 5062b7482, 2026-10-09 16:50–17:26 local: exit 0.
+  Integration 1827.132s (76% of 40m); API 20/20; OIDC 25/25. There are 76
+  SKIPs: the usual 75 plus the phase-gated 3-DC test, which SKIPs without
+  `E115F_3DC_PHASE`.
+  - The first attempt failed while building images: Docker Hub's token
+    endpoint returned 504. It ran no tests; the retry is the accepted run.
+- Afterwards both backends report `CLEANUP_STATUS: clean`, and no 3-DC
+  container is left behind.
+
+### Audit
+
+- **Production change:** two early returns plus the memoized read in
+  `publish_repair.go`. Any parent-read error other than `ErrNotFound` now
+  stops the visit before it walks, at both walk sites (the anchored walk
+  and the post-genesis re-anchor walk).
+- **No progress is persisted after a failed read.** The cursor is not
+  advanced and exhaustion is not marked. A re-anchor CAS that already
+  applied leaves a fresh, non-exhausted anchor, which the next visit walks
+  with the witness.
+- **Trade-off:** REACHABLE detection may be deferred one visit while the
+  parent read is unavailable. The walk's reads are also EACH_QUORUM, so it
+  would usually fail in the same conditions.
+- **Untouched:** Sync, writers, GC, schema and hot paths.
+- **Fixtures:** the 3-DC test fabricates no classification, settlement or
+  HEAD. Its only fixtures are the library identity rows and `fs_objects`
+  content rows.
+- No unresolved introduced P0/P1/P2. E1/X1 stay OPEN and GC stays OFF.
+  E1-15F is CLOSED-EVIDENCE only for SUPERSEDED in this topology.
+

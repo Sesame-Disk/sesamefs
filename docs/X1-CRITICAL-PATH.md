@@ -254,7 +254,10 @@ abandoned repair (walk from the SERIAL HEAD anchor reaches the commit's
 parent first, anchor ≠ parent), removing only its own `pub:` and row. Sync
 publications keep their own protection (measured after, before repair and
 before CAS). X1 safety unchanged; PRE-GC retention narrowed, not closed
-([E1-15E](./E1-15E-ABANDONED-REPAIR-SETTLEMENT.md)).
+([E1-15E](./E1-15E-ABANDONED-REPAIR-SETTLEMENT.md)). E1-15F validated it on
+real 3-DC Cassandra (HEAD = parent retains; one DC down retains; recovery
+settles; REACHABLE promotes) and fixed a parent-read liveness defect
+([E1-15F](./E1-15F-SUPERSEDED-CROSS-DC.md)). X1 and E1 stay OPEN; GC stays OFF.
 
 E1-15D (contract decision, not a W2 row): an abandoned v2 commit behind an
 UNKNOWN repair is still publishable. Real Sync `UpdateBranch` auto-merges it
