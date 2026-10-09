@@ -7531,6 +7531,16 @@ Proposed, pending explicit decision: reconsider this as a pre-activation
 convergence gate (destructive GC would otherwise accumulate permanently
 uncollectable blocks). Scope line above is unchanged until decided.
 
+**E1-15D correction (2026-10-09):** such a repair is *abandoned*, not provably
+dead. Real Sync `UpdateBranch?head=<its commit>` auto-merges the commit's
+content into HEAD even after HEAD moved on, so the repair protects a commit
+that can still be published. No authority exists today to cancel it:
+`DefinitelyNotReachable` has no emitter, and time is not authority. A safe
+settlement first needs a commit-level cancellation that Sync promotion
+checks atomically
+([E1-15D](./E1-15D-POST-D-CONTRACT-DECISION.md) §3). Deleting the row
+without that would drop protection for a publishable commit.
+
 #### Problem
 
 The indefinite leak is a **dead/unreachable publication repair row that
