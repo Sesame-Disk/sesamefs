@@ -211,6 +211,17 @@ so the next E1 PR must raise or split the budget before adding legs. The
   `fs:<repo:fs_id>`. It may only drop its own repair-owned `pub:` and the row,
   and only on authority that the attempt can never publish.
 
+## Amendment after E1-15D (2026-10-09)
+
+[E1-15D](./E1-15D-POST-D-CONTRACT-DECISION.md) measured that the
+abandoned commit c1 behind R can still be published: real Sync
+`UpdateBranch?head=c1` auto-merges its content into HEAD. "Dead repair" above
+therefore means *abandoned*, not *provably unpublishable*. The C2 veto of
+D(P2) protects a still-publishable commit rather than being pure dead
+retention. The retention harm stands, but its cure is a settlement backed by
+durable authority (E1-15D §3, design open), not deleting R today. Physical
+results are unchanged.
+
 ## Reconciliation proposal (for an explicit decision; nothing is changed)
 
 1. Make X1 safety the D0 physical invariant: after D, no operation may

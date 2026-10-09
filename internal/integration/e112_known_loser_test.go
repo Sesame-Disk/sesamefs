@@ -257,7 +257,15 @@ func TestKnownLoserCrashSafety(t *testing.T) {
 				t.Fatal(err)
 			}
 			e112AwaitFile(t, data.Marker+".loser")
-			observed, err := os.ReadFile(data.Marker + ".loser")
+			// The child creates the marker before writing its body: Stat can win
+			// that race, so wait for the content rather than misreading "".
+			var observed []byte
+			var err error
+			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+				if observed, err = os.ReadFile(data.Marker + ".loser"); err == nil && len(observed) > 0 {
+					break
+				}
+			}
 			if err != nil || string(observed) != r.commitID {
 				t.Fatalf("wrong definitive loser: %s %v", observed, err)
 			}

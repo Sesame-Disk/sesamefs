@@ -249,6 +249,16 @@ contract reconciliation is proposed for explicit decision
 ([evidence](./E1-15C-POST-D-PHYSICAL-LIFE-DISPOSITION.md)). No severity is
 lowered.
 
+E1-15D (contract decision, not a W2 row): an abandoned v2 commit behind an
+UNKNOWN repair is still publishable. Real Sync `UpdateBranch` auto-merges it
+into HEAD, and after TERMINAL the Sync publication readiness gate rejects it.
+Proposed for explicit approval: X1 = physical invariant; post-D references
+and abandoned repairs = PRE-GC convergence; a settlement needs durable
+authority over the original attempt and a concurrency analysis against
+Sync promotion, with global commit cancellation only as a fallback
+([decision](./E1-15D-POST-D-CONTRACT-DECISION.md)). No severity is changed
+until approved.
+
 Not W2 exit rows (follow-ups, may be reclassified in E1):
 `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`,
 `ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01`,

@@ -1,6 +1,26 @@
 # Current Work
 
-## Active slice: E1-15C post-D references, terminal retirement and P2 rematerialization
+## Active slice: E1-15D post-D contract decision and repair cancellation authority
+
+Base main@24372ba95fad (#273 merged). Branch claude/e1-15d-post-d-contract-decision;
+frozen plan e49a8362f. Decision proposal plus one evidence pair, with no
+production change. HEAD-writer audit: all writers are CAS moves to a child of
+the current HEAD, so HEAD is monotonic. A real writer crash leaves R and
+commit c1; real Sync `UpdateBranch?head=c1` auto-merges c1 into HEAD (200),
+so R protected a still-publishable commit. After TERMINAL, Sync's publication
+readiness gate rejects it. Race 6/6, 0 data races, gates PASS. Integration
+budget raised 30m→40m. Proposed for approval: X1 = physical invariant;
+convergence is a PRE-GC requirement; no cancellation authority exists today;
+the next PR evaluates the minimal settlement first, global commit
+cancellation only as a fallback. E1-15C wording amended ("abandoned", not
+"dead"). No severity changed. Cross-audit follow-up: post-merge sweep
+classifies R natively UNKNOWN and retains it (race 6/6 again). Fixed an
+E1-12 marker-read race found by the first standard run. go-all-test exit 0
+(integration 1736.896s, 72% of 40m; API 20/20, OIDC 25/25); both backends
+clean. Final scoped audit: no unresolved introduced P0/P1/P2.
+[Plan/evidence](docs/E1-15D-POST-D-CONTRACT-DECISION.md).
+
+## Previous merged slice: E1-15C post-D references, terminal retirement and P2 rematerialization (PR #273)
 
 Base main@304f6da8f7c30e4ad816d17d061dcde6816c0854 (#272 merged).
 Branch claude/e1-15c-post-d-physical-life; frozen plan 11cbdb6b5. Evidence only,

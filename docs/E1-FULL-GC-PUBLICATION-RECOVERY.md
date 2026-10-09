@@ -1,6 +1,6 @@
 # E1 — Full-GC publication and recovery evaluation
 
-Status: ACTIVE; E1-15C on claude/e1-15c-post-d-physical-life, following merged #272 (main@304f6da8f7c3). E1-15C measures no physical (D0 §13) RED from post-D refs on Office; it shows that dead repairs veto later lives of L; a contract reconciliation is pending a decision. E1-15B confirms post-D writer staging liveness on crash (P1 PRE-X1 OPEN, characterized). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; E1-15A found a stale-renewal post-D RED and compensated it (PARTIAL-FIX / CLOSED-EVIDENCE only when the global check and withdrawal succeed; strict guarantee OPEN P1 PRE-X1); W2-12/13/14, E1-15 overall and E1/X1 remain OPEN.
+Status: ACTIVE; E1-15D on claude/e1-15d-post-d-contract-decision, following merged #273 (main@24372ba95fad). E1-15D shows abandoned commits stay publishable via Sync auto-merge, and proposes the contract split and cancellation authority for approval. Before it, E1-15C on #273, E1-15C measures no physical (D0 §13) RED from post-D refs on Office; it shows that dead repairs veto later lives of L; a contract reconciliation is pending a decision. E1-15B confirms post-D writer staging liveness on crash (P1 PRE-X1 OPEN, characterized). E1-11 and the measured E1-12/E1-13 subsets have pre-D evidence; the measured E1-14 subset shows `pub:` expiry alone reaches no candidate; E1-15A found a stale-renewal post-D RED and compensated it (PARTIAL-FIX / CLOSED-EVIDENCE only when the global check and withdrawal succeed; strict guarantee OPEN P1 PRE-X1); W2-12/13/14, E1-15 overall and E1/X1 remain OPEN.
 Matrix frozen before E1 runtime edits: 2026-10-03. Base main@eabd93bee includes merged G5 PR #248 and the pinned SILO backend from PR #249. Scope: supported greenfield deployment with one compatible release. Destructive GC remains OFF.
 
 Tested storage backend: `docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z`, a MinIO-compatible S3 backend. The Compose service remains named `minio`; this ledger does not claim tests against the archived MinIO server image.
@@ -494,3 +494,21 @@ every real reference of an unreferenced P2 has expired, the productive worker
 vetoes D(P2) only because of the dead repair. No physical RED on Office; the
 strict E1 reading stays RED; a contract reconciliation and dead-repair
 settlement as the next step are proposed for explicit decision.
+
+## E1-15D — contract decision and repair cancellation authority
+
+[E1-15D](./E1-15D-POST-D-CONTRACT-DECISION.md) audits every HEAD writer: all
+are CAS moves to a child of the current HEAD, so HEAD is monotonic. It also
+lists the publication paths for an existing commit. Evidence: after a real
+writer crash leaves R and commit c1, real Sync `UpdateBranch?head=c1`
+auto-merges c1's content into HEAD (200), so R protected a still-publishable
+commit. After P1 is TERMINAL, the same promotion is rejected by the Sync
+publication readiness gate (attributed via the handler log). Proposed for
+approval: X1 = physical invariant, post-D references and abandoned repairs =
+PRE-GC convergence. A cancellation-authority matrix records that no
+authority exists today. A post-merge productive sweep still classifies R
+natively UNKNOWN and retains it. The next PR evaluates the minimal
+settlement first (durable authority over the original attempt plus a
+concurrency analysis against Sync promotion, which takes its own
+protection); global commit cancellation is a fallback, not a requirement.
+A settlement never removes `fs:<repo:fs_id>`. No severity changed.
