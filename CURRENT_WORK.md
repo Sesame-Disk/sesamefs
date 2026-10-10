@@ -1,6 +1,26 @@
 # Current Work
 
-## Active slice: E1-15E superseded abandoned repair settlement
+## Active slice: E1-15F SUPERSEDED across datacenters
+
+Base main@e7a83ea789e8 (#275 merged). Branch claude/e1-15f-superseded-cross-dc;
+frozen plan 7bbce0eec.
+
+- **Fix:** a #275 liveness defect. A failed EACH_QUORUM read of the commit's
+  parent let the walk pass the parent without the witness, which left the
+  repair UNKNOWN until HEAD moved. The visit now stays UNKNOWN without
+  walking. Unit RED → GREEN; 5/5 mutations.
+- **Real 3-DC evidence, two runs, 9/9 phases each:**
+  - HEAD = parent retains;
+  - with dc-eu down, the visit stops at the witness read and retains;
+  - after recovery, a dc-asia sweep settles SUPERSEDED, verified from
+    dc-na and dc-eu at EACH_QUORUM;
+  - REACHABLE promotes.
+- **Regression:** go-all-test exit 0 (integration 1827.132s; API 20/20;
+  OIDC 25/25); backends clean.
+
+[Plan/evidence](docs/E1-15F-SUPERSEDED-CROSS-DC.md).
+
+## Previous merged slice: E1-15E superseded abandoned repair settlement (PR #275)
 
 Base main@1b39d6a0b2f9 (#274 merged). Branch
 claude/e1-15e-abandoned-repair-settlement; frozen plan ab294c10c. Option A of

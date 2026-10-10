@@ -257,3 +257,53 @@ func TestSupersededWitnessHeadWriterSetIsPinned(t *testing.T) {
 		t.Fatalf("production HEAD writers = %v, want %v; re-audit the E1-15E superseded witness", found, want)
 	}
 }
+
+// E1-15F: a transient failure of only the target-parent read must not let the
+// visit walk past P without the witness (genesis exhaustion, or a bounded
+// cursor beyond P). A later visit with the read working settles, HEAD unchanged.
+func TestSupersededWitnessSurvivesTransientParentReadFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		parents map[string]string
+		head    string
+		target  string
+	}{
+		{name: "genesis", parents: supersededParents(nil), head: "h2", target: "c1"},
+		{name: "bounded-chunk", parents: func() map[string]string {
+			parents := linearPublishedCommitParents(publishedCommitReachabilityMaxNodes + 4)
+			parents["abandoned"] = "c-2"
+			return parents
+		}(), head: "c-0", target: "abandoned"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			memory := &publishedRepairProgressMemory{}
+			installPublishedRepairResumableHooks(t, memory, tt.head, tt.parents)
+			calls := &supersededSettleCalls{}
+			installSupersededSettleHooks(t, calls)
+			injected := errors.New("injected EACH_QUORUM unavailable")
+			failTarget := true
+			publishedBlockReferenceRepairCommitParentFn = func(ctx context.Context, database *db.DB, repoID, commitID string) (string, error) {
+				if commitID == tt.target && failTarget {
+					return "", injected
+				}
+				parent, ok := tt.parents[commitID]
+				if !ok {
+					return "", fmt.Errorf("missing commit %s", commitID)
+				}
+				return parent, nil
+			}
+			repair := newTestPublishedBlockReferenceRepair(tt.target)
+			if err := repairPublishedBlockReferenceRepair(nil, repair); err == nil || calls.deletes != 0 {
+				t.Fatalf("visit with failed parent read = %v calls=%+v, want retained", err, calls)
+			}
+			failTarget = false
+			for visit := 0; visit < 2 && calls.deletes == 0; visit++ {
+				_ = repairPublishedBlockReferenceRepair(nil, repair)
+			}
+			if calls.removes != 1 || calls.deletes != 1 {
+				anchor, cursor := memory.snapshot()
+				t.Fatalf("recovered visits did not settle: calls=%+v anchor=%s cursor=%s exhausted=%v", calls, anchor, cursor, memory.exhaustedSnapshot())
+			}
+		})
+	}
+}

@@ -32,4 +32,7 @@ run_red renew '^TestSupersededRepairSettlesOwnedPubThenRow$' 'want remove+delete
 # Without the witness the resumable classifier is back to UNKNOWN.
 run_red witness '^TestSupersededRepairSettlesOwnedPubThenRow$' 'want settled' \
  's/if supersededAt != "" && currentCommitID == supersededAt \{/if false \&\& supersededAt != "" \&\& currentCommitID == supersededAt { \/\/ E1-15E M-witness/' 'E1-15E M-witness'
+# E1-15F: a failed parent read must stop the visit before it walks past P.
+run_red parent-abort '^TestSupersededWitnessSurvivesTransientParentReadFailure$' 'recovered visits did not settle' \
+ 's/if parentErr != nil \{/if false \&\& parentErr != nil { \/\/ E1-15F M-parent-abort/g' 'E1-15F M-parent-abort'
 echo 'PASS: every E1-15E witness/settlement guard is load-bearing'
