@@ -499,7 +499,8 @@ settlement as the next step are proposed for explicit decision.
 
 [E1-15F](./E1-15F-SUPERSEDED-CROSS-DC.md) runs the production sweep on real
 three-DC Cassandra. Commits, HEAD, repairs and refs go through production
-functions; only identity rows are fixtures. Results:
+functions. Only library identity and fs_objects content rows are CQL
+fixtures. Results:
 
 - HEAD = parent: UNKNOWN, retained.
 - One DC down: UNKNOWN on the witness read, retained.
