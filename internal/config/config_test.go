@@ -41,6 +41,7 @@ func clearLoadEnvOverrides(t *testing.T) {
 		"SEAFHTTP_TOKEN_TTL", "SEAFHTTP_ZIP_MAX_ENTRIES",
 		"SEAFHTTP_ZIP_MAX_DEPTH", "SEAFHTTP_ZIP_MAX_BYTES",
 		"SEAFHTTP_RECV_FS_MAX_BYTES",
+		"SEAFHTTP_RECV_FS_MAX_OBJECT_BYTES", "SEAFHTTP_RECV_FS_MAX_INFLATED_BYTES",
 		"SEAFHTTP_SYNC_BLOCK_MAX_BYTES", "SEAFHTTP_SYNC_BLOCK_MAX_INFLIGHT_PER_NODE",
 		"SEAFHTTP_SYNC_BLOCK_MAX_INFLIGHT_PER_USER", "SEAFHTTP_SYNC_BLOCK_ADMISSION_WAIT",
 		"SEAFHTTP_SYNC_BLOCK_MAX_WAITERS_PER_NODE", "SEAFHTTP_SYNC_BLOCK_MAX_WAITERS_PER_USER",
@@ -1240,6 +1241,104 @@ func TestEnvOverrideRecvFSMaxBytes(t *testing.T) {
 		cfg.SeafHTTP.RecvFSMaxBytes = 0
 		if err := cfg.Validate(); err == nil {
 			t.Fatal("Validate() = nil for recv_fs_max_bytes: 0, want it rejected")
+		}
+	})
+}
+
+// TestEnvOverrideRecvFSInflateCaps pins the two decompressed-side recv-fs caps
+// (ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01) to the same rules as the body
+// cap: malformed values are reported, and zero is not "unlimited". They add one
+// rule of their own: the batch cap may not be below the object cap.
+func TestEnvOverrideRecvFSInflateCaps(t *testing.T) {
+	clearLoadEnvOverrides(t)
+
+	newCfg := func() *Config {
+		cfg := DefaultConfig()
+		cfg.Auth.DevMode = true
+		cfg.DownloadAdmission.Enabled = false
+		return cfg
+	}
+
+	t.Run("defaults are used when nothing overrides them", func(t *testing.T) {
+		cfg := newCfg()
+		cfg.applyEnvOverrides()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+		if cfg.SeafHTTP.RecvFSMaxObjectBytes != DefaultRecvFSMaxObjectBytes {
+			t.Fatalf("RecvFSMaxObjectBytes = %d, want the %d default", cfg.SeafHTTP.RecvFSMaxObjectBytes, DefaultRecvFSMaxObjectBytes)
+		}
+		if cfg.SeafHTTP.RecvFSMaxInflatedBytes != DefaultRecvFSMaxInflatedBytes {
+			t.Fatalf("RecvFSMaxInflatedBytes = %d, want the %d default", cfg.SeafHTTP.RecvFSMaxInflatedBytes, DefaultRecvFSMaxInflatedBytes)
+		}
+	})
+
+	t.Run("valid values override the defaults", func(t *testing.T) {
+		cfg := newCfg()
+		t.Setenv("SEAFHTTP_RECV_FS_MAX_OBJECT_BYTES", "33554432")
+		t.Setenv("SEAFHTTP_RECV_FS_MAX_INFLATED_BYTES", "134217728")
+
+		cfg.applyEnvOverrides()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+		if cfg.SeafHTTP.RecvFSMaxObjectBytes != 32*1024*1024 {
+			t.Fatalf("RecvFSMaxObjectBytes = %d, want %d", cfg.SeafHTTP.RecvFSMaxObjectBytes, 32*1024*1024)
+		}
+		if cfg.SeafHTTP.RecvFSMaxInflatedBytes != 128*1024*1024 {
+			t.Fatalf("RecvFSMaxInflatedBytes = %d, want %d", cfg.SeafHTTP.RecvFSMaxInflatedBytes, 128*1024*1024)
+		}
+	})
+
+	for _, env := range []string{"SEAFHTTP_RECV_FS_MAX_OBJECT_BYTES", "SEAFHTTP_RECV_FS_MAX_INFLATED_BYTES"} {
+		t.Run(env+" malformed value is reported, not dropped", func(t *testing.T) {
+			cfg := newCfg()
+			t.Setenv(env, "16MiB")
+
+			cfg.applyEnvOverrides()
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate() = nil; a malformed override must not fall back to the default silently")
+			}
+			if !strings.Contains(err.Error(), env) {
+				t.Fatalf("Validate() error = %v, want it to name %s", err, env)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name  string
+		set   func(*Config)
+		field string
+	}{
+		{"zero object cap", func(c *Config) { c.SeafHTTP.RecvFSMaxObjectBytes = 0 }, "seafhttp.recv_fs_max_object_bytes"},
+		{"negative object cap", func(c *Config) { c.SeafHTTP.RecvFSMaxObjectBytes = -1 }, "seafhttp.recv_fs_max_object_bytes"},
+		{"zero batch cap", func(c *Config) { c.SeafHTTP.RecvFSMaxInflatedBytes = 0 }, "seafhttp.recv_fs_max_inflated_bytes"},
+		{"negative batch cap", func(c *Config) { c.SeafHTTP.RecvFSMaxInflatedBytes = -1 }, "seafhttp.recv_fs_max_inflated_bytes"},
+		{"batch cap below object cap", func(c *Config) {
+			c.SeafHTTP.RecvFSMaxObjectBytes = 2 * 1024 * 1024
+			c.SeafHTTP.RecvFSMaxInflatedBytes = 2*1024*1024 - 1
+		}, "seafhttp.recv_fs_max_inflated_bytes"},
+	} {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			cfg := newCfg()
+			tc.set(cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("Validate() = nil for %s, want it rejected", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("Validate() error = %v, want it to name %s", err, tc.field)
+			}
+		})
+	}
+
+	t.Run("batch cap equal to object cap is accepted", func(t *testing.T) {
+		cfg := newCfg()
+		cfg.SeafHTTP.RecvFSMaxObjectBytes = 2 * 1024 * 1024
+		cfg.SeafHTTP.RecvFSMaxInflatedBytes = 2 * 1024 * 1024
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
 		}
 	})
 }
