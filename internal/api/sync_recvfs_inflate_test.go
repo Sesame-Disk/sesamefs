@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -368,5 +369,28 @@ func TestRecvFSPreservesLegitimateBatch(t *testing.T) {
 		if !syncStringSlicesEqual(got.wireBlockIDs, s.blockIDs) {
 			t.Fatalf("object %s block ids changed in storage", fsID)
 		}
+	}
+}
+
+// TestRecvFSMaxInt64CapsDoNotOverflow pins the sentinel read at the top of the
+// int64 range. Validate accepts math.MaxInt64 for both caps; limit+1 then
+// overflowed to a negative LimitReader that read nothing, so a valid object
+// came back empty and failed its fs_id check instead of being stored.
+func TestRecvFSMaxInt64CapsDoNotOverflow(t *testing.T) {
+	fsID, jsonData := recvFSExactDirObject(t, 4096, 'a')
+	body := packSyncFSObjectForUnit(t, fsID, jsonData)
+
+	got, err := inflateRecvFSObject(body[44:], math.MaxInt64)
+	if err != nil || !bytes.Equal(got, jsonData) {
+		t.Fatalf("inflate at MaxInt64 = (%d bytes, %v), want the %d-byte object", len(got), err, len(jsonData))
+	}
+
+	stored := captureRecvFSStores(t)
+	w := postRecvFSBody(t, recvFSHandlerWithCaps(math.MaxInt64, math.MaxInt64), body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if _, ok := (*stored)[fsID]; !ok || len(*stored) != 1 {
+		t.Fatalf("stored %d object(s), want exactly %s", len(*stored), fsID)
 	}
 }

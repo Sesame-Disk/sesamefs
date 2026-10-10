@@ -175,8 +175,10 @@ stays in [KNOWN_ISSUES.md](./KNOWN_ISSUES.md).
 
 - `ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01` — **Fixed 2026-10-05** (HIGH,
   single-node). `recv-fs` now bounds the decompressed side: 16 MiB per object (the
-  largest fs object Cassandra accepts in one request, measured) and 64 MiB per
-  request (a stock client's 1 MiB batch plus one object at the cap). Over either
+  default Cassandra CQL request limit; an inflation bound, not a persistence
+  guarantee) and 64 MiB per request (representative client batches; a highly
+  repetitive batch under the client's 1 MiB compressed threshold can still
+  exceed it). Over either
   cap is a 413, never a truncated object. One ~1 MiB request inflating to 256 MiB
   cost 1950.6 MiB of allocation before and 102.9 MiB after. The aggregate across
   concurrent requests remains `ISSUE-SYNC-METADATA-CONCURRENCY-01`.

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -1885,7 +1886,15 @@ func inflateRecvFSObject(compressed []byte, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	defer zr.Close()
-	data, err := io.ReadAll(io.LimitReader(zr, limit+1))
+	// Read one sentinel byte past limit to detect an oversized object. At
+	// math.MaxInt64 (a valid configuration) limit+1 would overflow to a
+	// negative count that reads nothing, so there no sentinel is added; no
+	// object can be longer than that anyway.
+	readLimit := limit
+	if readLimit < math.MaxInt64 {
+		readLimit++
+	}
+	data, err := io.ReadAll(io.LimitReader(zr, readLimit))
 	if int64(len(data)) > limit {
 		return data, errRecvFSInflateLimit
 	}

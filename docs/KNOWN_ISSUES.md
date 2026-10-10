@@ -10228,20 +10228,27 @@ object is skipped as before, but it can no longer buy uncounted inflate work.
 
 The caps are measured, as this entry asked, not guessed:
 
-- **Object cap = what Cassandra can store.** A received object is written in one
-  CQL request, and Cassandra 5.0.9's defaults reject requests over 16 MiB.
+- **Object cap = at Cassandra's default CQL request limit.** A received object is
+  written in one CQL request, and Cassandra 5.0.9's defaults reject requests over
+  16 MiB. The limit covers the whole request, not only the JSON.
   Measured on the two-DC `docker-compose.mr-cluster.yaml` stack through the real
   `recv-fs` route on unmodified `main`: directory objects of 4/8/12/15/15.9 MiB
   JSON stored (200), while 16.1/17/24 MiB failed 500 with "Request is too big:
-  length 16882132 exceeds maximum allowed length 16777216". Anything over the cap
-  could only be inflated and then fail to store. That is about 380k block ids per
+  length 16882132 exceeds maximum allowed length 16777216". Exactly 16 MiB was
+  not measured. The cap bounds inflation; it is not a persistence guarantee, since
+  an object just under it can still be rejected once the request's overhead is
+  added, while anything over it could only be inflated and then fail to store.
+  The cap is about 380k block ids per
   file object, a ~2 TiB file at the stock client's 6 MiB minimum CDC block.
-- **Request cap = a stock client batch plus headroom.** Seafile's
+- **Request cap = representative client batches plus headroom.** Seafile's
   `send_fs_objects` (daemon/http-tx-mgr.c) stops packing a batch once it reaches
-  `MAX_OBJECT_PACK_SIZE` (1 MiB) compressed. A real batch is therefore under 1 MiB of
-  compressed objects plus one more object of any size. 64 MiB covers that last
-  object at the 16 MiB cap plus 48 MiB for the rest. Real fs JSON (random hex ids)
-  compresses about 2:1, so that is far beyond a real batch.
+  `MAX_OBJECT_PACK_SIZE` (1 MiB) compressed. That bounds the compressed size, not
+  the inflated one. Fs JSON with distinct random hex ids compresses about 2:1, so
+  representative batches stay far below 64 MiB. It is not a guarantee for every
+  batch the protocol allows: six distinct file objects of 270k repeated block ids
+  each (11.07 MiB apiece, within the object cap) pack into ~199 KiB and inflate to
+  66.43 MiB, which gets a 413. That is the intended safety behaviour; the cap is
+  kept, and raising it needs evidence of real batches that hit it.
 
 Measured effect of one ~1 MiB request whose single valid, correctly addressed
 directory object inflates to 256 MiB:

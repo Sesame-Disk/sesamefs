@@ -80,9 +80,12 @@ peak from 109 to 815 MiB, then failed at storage. Two new required caps,
 `seafhttp.recv_fs_max_inflated_bytes` (64 MiB per request), are enforced through
 a `limit+1` read. Over either cap is a 413; nothing is truncated, and bytes
 inflated by objects that fail to decompress still count. Both defaults are
-measured. The object cap equals the largest fs object Cassandra 5.0.9 accepts in
-one request: 15.9 MiB stored, 16.1 MiB rejected on the real route. The request
-cap fits a stock Seafile client's 1 MiB batch plus one object at the cap. No
+measured. The object cap sits at Cassandra 5.0.9's default 16 MiB CQL request
+limit (15.9 MiB stored, 16.1 MiB rejected on the real route); it bounds
+inflation and does not guarantee persistence just under it. The request cap
+covers representative client batches, not every batch packed under the
+client's 1 MiB compressed threshold (a repetitive one inflating past 64 MiB
+gets a 413). math.MaxInt64 caps no longer overflow the sentinel read. No
 GC/X1 code is touched. The aggregate across concurrent requests remains
 `ISSUE-SYNC-METADATA-CONCURRENCY-01`.
 Files: `internal/api/sync.go`, `internal/api/sync_recvfs_inflate_test.go`,

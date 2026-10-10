@@ -622,13 +622,16 @@ type SeafHTTPConfig struct {
 	// inflate to ~126 GiB (ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01). An
 	// object over the cap is rejected 413, never truncated.
 	//
-	// The default is anchored on what can be persisted, not on a guess. A
-	// received object is written in one CQL request, and Cassandra's default
-	// limits reject any request over 16 MiB. Measured on Cassandra 5.0.9
+	// The default sits at Cassandra's default 16 MiB CQL request limit. A
+	// received object is written in one CQL request, and that limit applies to
+	// the whole request, not only the JSON. Measured on Cassandra 5.0.9
 	// (2026-10-05): a 15.9 MiB object was stored, while a 16.1 MiB one failed
 	// with "Request is too big: length 16882132 exceeds maximum allowed length
-	// 16777216". An object over this cap could only be inflated and then fail
-	// to store. Raise this together with the cluster's limits, never alone.
+	// 16777216"; exactly 16 MiB was not measured. This is an inflation bound,
+	// not a persistence guarantee: an object just under it can still be
+	// rejected once the request's overhead is added, while one over it could
+	// only be inflated and then fail to store. Raise this together with the
+	// cluster's limits, never alone.
 	RecvFSMaxObjectBytes int64 `yaml:"recv_fs_max_object_bytes"`
 
 	// RecvFSMaxInflatedBytes bounds the decompressed bytes of all objects in one
@@ -637,10 +640,12 @@ type SeafHTTPConfig struct {
 	// just under that cap. Must be at least recv_fs_max_object_bytes.
 	//
 	// Stock Seafile clients stop packing a recv-fs batch once it reaches 1 MiB
-	// compressed (MAX_OBJECT_PACK_SIZE in seafile's http-tx-mgr.c), so a real
-	// batch is under 1 MiB of compressed objects plus one more object of any
-	// size. The default leaves room for that last object at the per-object cap
-	// plus several times the inflated size of the rest.
+	// compressed (MAX_OBJECT_PACK_SIZE in seafile's http-tx-mgr.c). That bounds
+	// the compressed size, not the inflated one, so this cap covers the
+	// representative batches measured, not every batch the protocol allows:
+	// six distinct file objects of 270k repeated block ids each pack into
+	// ~199 KiB and inflate to 66.4 MiB, which gets a 413. That rejection is
+	// the intended safety behaviour; raise the cap only with evidence.
 	RecvFSMaxInflatedBytes int64 `yaml:"recv_fs_max_inflated_bytes"`
 
 	// SyncBlockMaxInflightPerNode caps concurrent block uploads that have been
