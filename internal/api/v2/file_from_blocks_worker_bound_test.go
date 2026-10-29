@@ -165,3 +165,94 @@ func TestVerifyManifestBlocksPropagatesClassificationError(t *testing.T) {
 		t.Fatalf("err = %v, want the classification error propagated verbatim", err)
 	}
 }
+
+func TestPublicationChecksCancellationWhileSaturated(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{}, blockVerifyConcurrency)
+	release := make(chan struct{})
+	completed := make(chan struct{})
+	var once sync.Once
+	var calls atomic.Int32
+	baseline := runtime.NumGoroutine()
+	done := make(chan error, 1)
+	go func() {
+		defer close(completed)
+		done <- runBoundedPublicationChecksWithContext(ctx, maxManifestBlocks, func(context.Context, int) error {
+			if calls.Add(1) <= blockVerifyConcurrency {
+				started <- struct{}{}
+			}
+			<-release
+			return nil
+		})
+	}()
+	defer func() {
+		cancel()
+		once.Do(func() { close(release) })
+		<-completed
+	}()
+	waitForWorkerWave(t, started)
+	delta := runtime.NumGoroutine() - baseline
+	if delta > blockVerifyConcurrency+32 {
+		t.Errorf("goroutine fan-out = %d; expected a bounded worker wave", delta)
+	}
+	t.Logf("%d queued tasks: active callbacks=%d; extra goroutines=%d", maxManifestBlocks, calls.Load(), delta)
+	cancel()
+	once.Do(func() { close(release) })
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancel error=%v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled runner did not return")
+	}
+	if calls.Load() != blockVerifyConcurrency {
+		t.Fatalf("queued work ran after cancel: %d calls", calls.Load())
+	}
+}
+
+func TestVerifyManifestBlocksCanceledContextSpawnsNoWorkers(t *testing.T) {
+	old := classifyBlockForCommitFn
+	defer func() { classifyBlockForCommitFn = old }()
+	classifyBlockForCommitFn = func(*FileHandler, string, string, string, int64, bool) (int, string, blockCommitLivenessProvenance, db.BlockPhysicalLocation, error) {
+		t.Error("classification after cancellation")
+		return 0, "", blockCommitLivenessNone, db.BlockPhysicalLocation{}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, _, err := (&FileHandler{}).verifyManifestBlocks(ctx, "org", "up:s", []string{hex64(1)}, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
+	}
+	if err := runBoundedPublicationChecksWithContext(ctx, 0, func(context.Context, int) error { t.Fatal("empty set ran"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsureCommitBlockOwnLivenessDedupValidationAndErrors(t *testing.T) {
+	old := registerUploadedBlockAddProvisionalRefFn
+	defer func() { registerUploadedBlockAddProvisionalRefFn = old }()
+	var calls atomic.Int32
+	registerUploadedBlockAddProvisionalRefFn = func(*FSHelper, string, string, string, string, string, time.Time) error { calls.Add(1); return nil }
+	good := commitBlockPlacement{blockID: hex64(1), storageClass: "hot", storageKey: "key"}
+	h := &FileHandler{}
+	if err := h.ensureCommitBlockOwnLiveness(nil, "org", "repo", "session", []commitBlockPlacement{good, good}); err != nil || calls.Load() != 1 {
+		t.Fatalf("dedup err=%v calls=%d", err, calls.Load())
+	}
+	calls.Store(0)
+	bad := commitBlockPlacement{blockID: hex64(2), storageClass: "hot"}
+	if err := h.ensureCommitBlockOwnLiveness(context.Background(), "org", "repo", "session", []commitBlockPlacement{good, bad}); !errors.Is(err, db.ErrBlockMetadataPermanent) || calls.Load() != 0 {
+		t.Fatalf("invalid placement: err=%v calls=%d", err, calls.Load())
+	}
+	sentinel := errors.New("storage unavailable")
+	registerUploadedBlockAddProvisionalRefFn = func(*FSHelper, string, string, string, string, string, time.Time) error { return sentinel }
+	if err := h.ensureCommitBlockOwnLiveness(context.Background(), "org", "repo", "session", []commitBlockPlacement{good}); !errors.Is(err, sentinel) || !errors.Is(err, ErrBlockMaterializationTransient) {
+		t.Fatalf("transient wrapping: %v", err)
+	}
+	registerUploadedBlockAddProvisionalRefFn = func(*FSHelper, string, string, string, string, string, time.Time) error {
+		return db.ErrBlockMetadataPermanent
+	}
+	if err := h.ensureCommitBlockOwnLiveness(context.Background(), "org", "repo", "session", []commitBlockPlacement{good}); !errors.Is(err, db.ErrBlockMetadataPermanent) || errors.Is(err, ErrBlockMaterializationTransient) {
+		t.Fatalf("permanent wrapping: %v", err)
+	}
+}

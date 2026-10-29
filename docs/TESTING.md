@@ -412,6 +412,30 @@ The region pair must run with `WEB_UPLOADS_ENABLE_WEB_BLOCK_UPLOAD=true` and
 `WEB_UPLOADS_BLOCK_UPLOAD_BLOCK_SIZE_MB=1`; the commit validator requires every
 non-final block to be exactly the configured size.
 
+Independent Docker revalidation on 2026-10-29, PR #321 runtime at
+`c868020ea`, including `main@cc18c3f5a`:
+
+- Full short Go suite and `go vet ./...`: pass. The full API v2 package also
+  passes `-race -short`; five DB-dependent permission/share tests are skipped.
+- Existing fan-out/publication regressions pass ten repetitions under `-race`.
+  A control restoring main's runtime (retaining only the classification test
+  seam) fails both fan-out regressions, with 8,851 and 38,050 extra goroutines
+  observed during the held first wave. These are samples, not maxima.
+- Additional controls pass ten repetitions under `-race`: cancellation while
+  saturated, precanceled verification, empty input, deduplication, rejection of
+  invalid placement before writes, and permanent/transient error propagation.
+  With 131,072 queued tasks, the saturation control observes 20 active callbacks
+  and 21 extra goroutines including its coordinator.
+- The public e2e passes against an isolated two-DC Cassandra 5.0.9 cluster and
+  two regional S3 instances: 32 distinct blocks, 33,554,432 bytes read identically
+  through USA and EU. Both APIs use `GC_ENABLED=false`; no host ports are
+  published. Owned containers, networks and volumes are removed afterward.
+
+The bound is per request/phase, not node-wide. Already-started DB operations
+retain their existing timeout behavior. No throughput or memory-byte benchmark,
+full tagged integration suite, three-DC/native-fault run, destructive GC or
+actual desktop/mobile client validation is claimed by this revalidation.
+
 ### Frontend Tests (`frontend`)
 
 Requires: Docker compose test profile

@@ -259,7 +259,7 @@ func waitForContent(t *testing.T, c *apiClient, repoID, filename string, want []
 	t.Fatalf("content for %s did not converge: %v", filename, last)
 }
 
-// TestFileFromBlocksMultiRegion commits a 256-block file through the USA region
+// TestFileFromBlocksMultiRegion commits a 32-block file through the USA region
 // and reads it back through both USA and EU. This is the end-to-end guard for
 // the commit path changed by the bounded worker fan-out.
 func TestFileFromBlocksMultiRegion(t *testing.T) {
