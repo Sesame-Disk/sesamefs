@@ -3,11 +3,74 @@
 ## Internal deployment readiness verification (2026-11-06)
 
 [Dated verification on main@a21f4203d](./PROD-READINESS-VERIFICATION-20261106.md):
-the application path works on the production compose with GC off. By maintainer
-decision the next step is a **disposable internal pilot on three DCs**, with backup
+the application path works on the production compose with GC off; the three-DC rehearsal
+found a failing first bootstrap and uploads failing under simulated WAN latency, and data
+integrity held. By maintainer decision the next step is a **disposable internal pilot on three DCs**, with backup
 deferred and the two go-live blockers accepted for that pilot and fixed along the way.
 Issues below are new registrations of pre-existing conditions. No existing severity
 changes and nothing closes. PRE-GC/A1 OPEN, GC OFF.
+
+### ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01: First three-DC bootstrap fails before creating the application role
+
+**Status:** OPEN (2026-11-06), reproduced 2 of 2 fresh runs. **Severity:** P1 / deployment;
+pre-existing. **Affected:** `cassandra-bootstrap` in `docker-compose.prod.yml`.
+
+`ALTER KEYSPACE system_auth` raises replication to three DCs, and `CREATE ROLE` in the same
+`cqlsh` session then fails with `User cassandra does not have sufficient privileges`, so
+`GRANT` fails too and the service exits 2. Every backend then crash-loops on bad
+credentials. **Workaround:** run the bootstrap again until `sesamefs_app` exists; a retry
+succeeded both times, after 30 seconds and after about 17 minutes, without a repair. Cause not
+isolated. [Evidence](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal).
+
+### ISSUE-CASSANDRA-TIMEOUTS-WAN-01: Shipped Cassandra timeouts fail uploads under WAN latency
+
+**Status:** OPEN (2026-11-06), measured with simulated latency on one host. **Severity:** P1 /
+availability on multi-DC; pre-existing. **Affected:** `docker-compose.prod.yml`, which leaves
+`cas_contention_timeout` at 1000 ms and `write_request_timeout` at 2000 ms with no setting.
+
+At about 80 ms RTT, one user's sequential 64 KB uploads succeeded 5 of 12 times with shipped
+timeouts and 12 of 12 with 5 s for both. Single-run numbers. This does not fix contention on
+one library, which stays with `ISSUE-SEAFHTTP-UPLOAD-FINALIZE-LEASE-ERROR-500-01`.
+`paxos_variant: v2` made contention worse on 5.0.9.
+[Evidence](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal).
+
+### ISSUE-HEALTH-PING-FALSE-OK-01: `/ping` answers 200 through nginx with the backend down
+
+**Status:** OPEN (2026-11-06), reproduced. **Severity:** P2 / operations; pre-existing.
+**Affected:** `frontend/nginx.conf`.
+
+The frontend nginx has no `/ping` location, so the SPA answers 200 with HTML, including while
+every backend crash-loops. A load balancer or monitor using it never sees an outage. Use
+`/api2/ping`, which answers `pong` and fails when the backend is down. DEPLOY corrected.
+
+### ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01: First boot on three DCs restarts repeatedly before converging
+
+**Status:** OPEN (2026-11-06), measured. **Severity:** P2 / operations; pre-existing.
+**Affected:** `Migrator.apply`.
+
+With authentication on three DCs, applying `001` from one backend needed 20 process restarts
+over about 3.5 minutes: statements time out, the process exits, and `restart: unless-stopped`
+resumes through idempotent statements. It converged with identical table ids. Not observed on
+one DC; rare on the three-DC fixture without authentication, in one of two trials. Cause not
+isolated. Start one backend first and expect the restarts.
+
+### ISSUE-TAG-CLEANUP-COUNTER-BATCH-01: Permanent delete always fails its tag cleanup
+
+**Status:** OPEN (2026-11-06), reproduced. **Severity:** P2 / current runtime; pre-existing.
+**Affected:** `CleanupAllLibraryTags` in `internal/api/v2/tags.go`.
+
+One logged batch mixes counter tables (`repo_tag_counters`, `file_tag_counters`) with regular
+tables, so Cassandra rejects it: `Counter and non-counter mutations cannot exist in the same
+batch`. Callers only log it, so tag rows remain after a permanent delete. Fix with a
+real-Cassandra RED/GREEN.
+
+### ISSUE-LOG-PRINTF-LEVEL-01: Upload failures log at INFO
+
+**Status:** OPEN (2026-11-06), measured. **Severity:** P2 / operations; pre-existing.
+
+Messages from `log.Printf` become `level=INFO`, including `[HandleUpload] CRITICAL` and
+`Unexpected upload failure`: 170 of 170 in one backend log. Only the access-log line carries
+`ERROR`, without the cause. Alerts on log level miss the reason; alert on 5xx and search text.
 
 ### ISSUE-BACKUP-RESTORE-MISSING-01: No backup or restore procedure exists
 
@@ -32,8 +95,9 @@ within `gc_grace_seconds`. Define and schedule repair, then record how it was ve
 
 ### ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01: Web login state is held per process
 
-**Status:** OPEN (2026-11-06), code-verified, **not reproduced**. **Severity:** High for
-any multi-instance rollout behind one hostname; no single-backend impact.
+**Status:** OPEN (2026-11-06), reproduced between two regional backends:
+`invalid state: state not found`. **Severity:** High for any multi-instance rollout behind
+one hostname; no single-backend impact.
 **Affected:** `OIDCClient.storeState`, `consumeState` in `internal/auth/oidc.go`.
 
 `GetAuthorizationURL` stores the state, nonce and PKCE verifier in an in-memory map.
@@ -11238,6 +11302,9 @@ Decide SoT (IdP wins / admin wins / last-write-wins with audit) in
 
 ### ISSUE-UPLOAD-PER-BLOCK-PAXOS-01: One `SERIAL` LWT/Paxos transaction per block on upload
 
+**2026-11-06 simulated measurement, not a production number:** a 64 KB web upload took about 2.8 s at
+80 ms RTT and 276 ms at none, on [one host](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal).
+
 **Status**: 🟡 Open — deferred PR-11 pending measurement
 **Severity**: High (perf), not a correctness blocker
 **Affected**: metadata-registering upload paths (`InstallBlockMetadata` and
@@ -11454,6 +11521,9 @@ section of `ISSUE-RATE-LIMIT-UPLOAD-DOWNLOAD-01`.
 ---
 
 ### ISSUE-READ-AFTER-WRITE-CROSS-DC-01: Read-after-write across DCs
+
+**2026-11-06, reproduced on [one host](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal):** a library
+created in another region answered 503/500 at first; a soft delete at NA still read as not deleted at EU after 2 s.
 
 **Status**: 🟡 Open
 **Severity**: Medium (availability)
@@ -12203,6 +12273,9 @@ Very large directories may approach request timeouts. This has **not** been meas
 Do not weaken the per-file admission or turn a missing object into an empty directory.
 
 ## ISSUE-SEAFHTTP-UPLOAD-FINALIZE-LEASE-ERROR-500-01
+
+**2026-11-06:** reproduced on the [production compose](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal);
+45 uploads into one library from three regions succeeded 15–22 times with shipped timeouts.
 
 **Status:** OPEN. **Severity:** P2 / CURRENT-RUNTIME availability follow-up, multi-DC; pre-existing. The measured lease-acquisition failures precede HEAD publication. No X1 safety closure or violation follows from these availability results.
 

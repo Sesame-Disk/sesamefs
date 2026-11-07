@@ -85,7 +85,7 @@ development/integration stack. Production behavior is defined by
 docker network inspect sfs-net >/dev/null 2>&1 || docker network create sfs-net
 ```
 
-- Public health checks for operators and load balancers are `GET /ping` and the compatibility endpoint `GET /api2/ping`.
+- The public health check for operators and load balancers is `GET /api2/ping`. Do not use `GET /ping` through nginx: it answers 200 with the SPA even when the backend is down (`ISSUE-HEALTH-PING-FALSE-OK-01`).
 - `GET /ready` and metrics are intentionally internal-only. Run them from the node itself, from a private network, or with `docker compose exec sesamefs ...`.
 - For upload finalize monitoring, alerting, and dashboard queries, see [Upload Concurrency Observability](./UPLOAD-CONCURRENCY-OBSERVABILITY.md).
 - Published images are the deployment artifact. Production rollouts should update `SESAMEFS_IMAGE` and `FRONTEND_IMAGE` with full image references, pull the new images, and restart the services. `--build` is not part of the normal prod path.
@@ -964,9 +964,6 @@ FILES_HOST=https://na.files.yourdomain.com
 OFFICE_HOST=https://na.office.yourdomain.com
 
 # Public liveness (should return: pong)
-curl "$FILES_HOST/ping"
-
-# Legacy compatibility liveness for older monitors/clients
 curl "$FILES_HOST/api2/ping"
 
 # Public process liveness
@@ -1793,6 +1790,10 @@ If every line is `[OK]`, proceed to Step M4.
   docker compose -f docker-compose.prod.yml --profile bootstrap up cassandra-bootstrap
   ```
 
+  > **Check the result.** On a fresh three-DC cluster this first run has failed with exit 2
+  > and `sufficient privileges` (`ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01`). Run it again,
+  > from the same node, until it exits 0 and `sesamefs_app` exists.
+  >
   > Do **not** target `cassandra-bootstrap` on more than one node. In a
   > multi-DC cluster that would reapply auth/keyspace/replication changes from
   > multiple places and can leave Cassandra metadata inconsistent.
@@ -1825,7 +1826,9 @@ If every line is `[OK]`, proceed to Step M4.
 
   > The migrator takes no cross-process lock. In a [three-DC trial](./PROD-READINESS-VERIFICATION-20261106.md#simultaneous-first-boot)
   > with all backends started at once, processes could time out and exit, then
-  > converge on restart. Starting one first avoids that.
+  > converge on restart. Starting one first limits that, but it still restarted 20 times
+  > on an authenticated three-DC cluster before converging
+  > (`ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01`). Wait for the log line above.
 
 ### Step M5 — Verify
 
@@ -1839,7 +1842,6 @@ for url in https://na.files.yourdomain.com \
            https://eu.files.yourdomain.com \
            https://asia.files.yourdomain.com; do
   echo "── $url"
-  curl -fsS "$url/ping"   && echo
   curl -fsS "$url/api2/ping" && echo
 done
 
@@ -2035,6 +2037,10 @@ username+password) **always returns 401** when `AUTH_DEV_MODE=false`.
   and early production. For HA, deploy multi-region (see above).
 - **No backup or restore procedure exists** (`ISSUE-BACKUP-RESTORE-MISSING-01`) —
   put one in place and test a restore before storing data that must survive.
+- **Shipped Cassandra timeouts fail uploads under WAN latency** (`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`) —
+  in a simulated 80 ms RTT rehearsal, raising `cas_contention_timeout` and `write_request_timeout`
+  to 5 s fixed sequential uploads. The compose has no setting for them yet.
+- **Upload failures log at INFO** (`ISSUE-LOG-PRINTF-LEVEL-01`) — alert on HTTP 5xx, not log level.
 - **No scheduled `nodetool repair` procedure exists** (`ISSUE-CASSANDRA-REPAIR-RUNBOOK-01`) —
   multi-DC deployments need one; the repair steps above cover only adding a DC.
 - **Existing-library migration is still manual** — the current feature set stores a

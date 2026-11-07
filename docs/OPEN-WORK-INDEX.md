@@ -5,7 +5,9 @@
 [Dated verification on main@a21f4203d](./PROD-READINESS-VERIFICATION-20261106.md):
 the application path works on the production compose with GC off. Maintainer decision:
 **disposable internal pilot on three DCs**, backup deferred, the two go-live blockers
-accepted for that pilot and fixed along the way. New pre-existing registrations are in
+accepted for that pilot and fixed along the way. The three-DC rehearsal found two items to
+fix or work around first: `ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01` and
+`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`. New pre-existing registrations are in
 [KNOWN_ISSUES](./KNOWN_ISSUES.md#internal-deployment-readiness-verification-2026-11-06).
 No gate closes. PRE-GC/A1 OPEN, GC OFF.
 
@@ -434,7 +436,7 @@ provenance boundary).
 |---|---|---|---|
 | `ISSUE-UPLOAD-CHUNK-MULTINODE-01` | HIGH | Chunked-upload state is node-local; non-sticky routing silently loses files | Readiness B1 — **multi-instance only** |
 | `ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01` | HIGH | Desktop-SSO pending token is in-memory per process | Readiness B5 — **multi-instance only** |
-| `ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01` | HIGH | Web login state and PKCE verifier are in-memory per process | [Verification 2026-11-06](./PROD-READINESS-VERIFICATION-20261106.md), code-verified, not reproduced — **multi-instance only** |
+| `ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01` | HIGH | Web login state and PKCE verifier are in-memory per process | [Verification 2026-11-06](./PROD-READINESS-VERIFICATION-20261106.md), reproduced across two regions — **multi-instance only** |
 
 The single-node HIGH rows are **not duplicated here**; their canonical rows live
 in the High/Medium table below, per rule 4.
@@ -599,6 +601,12 @@ logical-block PK replacement, and X1 remain open.
 | `ISSUE-GC-DRYRUN-OVERRIDE-STICKY-01` | MEDIUM | The `dry_run` field of `POST /admin/gc/run` is not scoped to the run it accompanies: an accepted trigger replaces the node's runtime mode for the life of the process, so one superadmin call can lower a configured `GC_DRY_RUN=true` — the rung directly below `GC_ENABLED` — and it stays lowered, unaudited. Unreachable while GC is disabled fleet-wide; live from the moment destructive GC is activated | Verified preexisting 2026-08-23 (inherited from `main`, not the 2026-08-22 branch, which only stopped a *refused* trigger from committing the override). See [known issue](./KNOWN_ISSUES.md) |
 | `ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01` | HIGH | `pack-fs` materializes the whole response: ~409k repeats of one valid id, `PermissionR` only. `check-fs` shares the fan-out | Found auditing X9; the fs-id equivalent of the closed X11 |
 | `ISSUE-SYNC-RECVFS-NOT-WRITE-ONCE-01` | HIGH (P1) ✅ Fixed by merged PR #208 | `RecvFS` validates lowercase `fs_id`, compares logical SHA-1 identity across legacy/canonical layouts, completes pre-existing placeholders, rejects semantic conflicts, fails closed on storage errors, and avoids new child upserts/Paxos | [known issue](./KNOWN_ISSUES.md#issue-sync-recvfs-not-write-once-01) · PR #208 merged; #206 is being revalidated on main |
+| `ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01` | P1 deploy | First three-DC bootstrap fails before creating the application role; running it again works | [known issue](./KNOWN_ISSUES.md#issue-cassandra-bootstrap-3dc-role-01-first-three-dc-bootstrap-fails-before-creating-the-application-role) |
+| `ISSUE-CASSANDRA-TIMEOUTS-WAN-01` | P1 availability | Shipped Cassandra timeouts fail most sequential uploads at simulated 80 ms RTT; 5 s fixes that shape | [known issue](./KNOWN_ISSUES.md#issue-cassandra-timeouts-wan-01-shipped-cassandra-timeouts-fail-uploads-under-wan-latency) |
+| `ISSUE-HEALTH-PING-FALSE-OK-01` | P2 ops | `/ping` answers 200 through nginx with the backend down; use `/api2/ping` | [known issue](./KNOWN_ISSUES.md#issue-health-ping-false-ok-01-ping-answers-200-through-nginx-with-the-backend-down) |
+| `ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01` | P2 ops | First boot on three DCs restarts repeatedly, then converges | [known issue](./KNOWN_ISSUES.md#issue-migrator-first-boot-3dc-restarts-01-first-boot-on-three-dcs-restarts-repeatedly-before-converging) |
+| `ISSUE-TAG-CLEANUP-COUNTER-BATCH-01` | P2 | Permanent delete always fails its tag cleanup | [known issue](./KNOWN_ISSUES.md#issue-tag-cleanup-counter-batch-01-permanent-delete-always-fails-its-tag-cleanup) |
+| `ISSUE-LOG-PRINTF-LEVEL-01` | P2 ops | Upload failures log at INFO, so level-based alerts miss the cause | [known issue](./KNOWN_ISSUES.md#issue-log-printf-level-01-upload-failures-log-at-info) |
 | `ISSUE-BACKUP-RESTORE-MISSING-01` | P1, deferred while pilot data is disposable | No backup, restore runbook or restore drill exists; required as soon as data must survive | [known issue](./KNOWN_ISSUES.md#issue-backup-restore-missing-01-no-backup-or-restore-procedure-exists) |
 | `ISSUE-CASSANDRA-REPAIR-RUNBOOK-01` | P2 ops | No scheduled `nodetool repair` procedure; applies from the first three-DC deployment | [known issue](./KNOWN_ISSUES.md#issue-cassandra-repair-runbook-01-no-scheduled-repair-procedure-for-multi-dc) |
 | `ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01` | P2 config | No container memory limit: download admission uses the reference fallback and one process can exhaust a shared host | [known issue](./KNOWN_ISSUES.md#issue-prod-compose-no-memory-limit-01-production-compose-sets-no-container-memory-limit) |
