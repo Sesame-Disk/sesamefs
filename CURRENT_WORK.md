@@ -1,6 +1,15 @@
 # Current Work
 
-## Active slice: internal deployment readiness verification (2026-11-06)
+## Active slice: three-DC bootstrap convergence and Cassandra timeouts (2026-11-07)
+
+`docker-compose.prod.yml` only. The bootstrap retries its idempotent statements until the
+application role holds its grants; Cassandra's `cas_contention_timeout` and
+`write_request_timeout` default to 5 s, configurable and validated. RED on current main: exit 2 in 6 of 6 fresh three-DC runs. GREEN: 3 of 3 fresh three-DC runs exit 0, each converging on attempt 2 (the last one with the final check); reruns on a configured three-DC cluster exit 0 on attempt 1, 4 of 4 after a pipefail correction to the check (2 of 2 failed before it); one DC converges on attempt 1 and reruns cleanly.
+Closes `ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01` and the settings part of
+`ISSUE-CASSANDRA-TIMEOUTS-WAN-01` on merge. Stacked on the verification PR below. No gate
+closes; PRE-GC/A1 OPEN, ordinary GC OFF.
+
+## Previous slice: internal deployment readiness verification (2026-11-06)
 
 [Verification on main@a21f4203d](docs/PROD-READINESS-VERIFICATION-20261106.md),
 documentation only. Maintainer decision: **disposable internal pilot on three DCs**,

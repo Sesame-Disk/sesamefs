@@ -35,6 +35,9 @@ OPEN and GC stays OFF on every replica in every DC.
 
 ### Before first traffic
 
+**Update 2026-11-07:** the first two rows are addressed by the bootstrap-convergence change; status in
+[KNOWN_ISSUES](./KNOWN_ISSUES.md#issue-cassandra-bootstrap-3dc-role-01-first-three-dc-bootstrap-fails-before-creating-the-application-role).
+
 | Item | Why |
 |---|---|
 | **Fix or work around the first bootstrap** | [`ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01`](./KNOWN_ISSUES.md#issue-cassandra-bootstrap-3dc-role-01-first-three-dc-bootstrap-fails-before-creating-the-application-role): failed 3 of 3 fresh runs. Run it again until it exits 0 and the role exists |

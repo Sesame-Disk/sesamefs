@@ -1231,6 +1231,9 @@ Settings that **cannot** be set via env vars and must be in this file:
 | `CASSANDRA_LOCAL_DC` | `database.local_dc` | |
 | `CASSANDRA_USERNAME` | `database.username` | Required by the prod compose bootstrap. Use a dedicated non-superuser role. |
 | `CASSANDRA_PASSWORD` | `database.password` | Required by the prod compose bootstrap. |
+| `CASSANDRA_CAS_CONTENTION_TIMEOUT` | Cassandra `cas_contention_timeout` (prod compose) | Default `5000ms`. Written into `cassandra.yaml` on every start; an invalid value stops Cassandra from starting. |
+| `CASSANDRA_WRITE_REQUEST_TIMEOUT` | Cassandra `write_request_timeout` (prod compose) | Default `5000ms`. Same rules. |
+| `CASSANDRA_BOOTSTRAP_ATTEMPTS` | `cassandra-bootstrap` (prod compose) | Default `12`, 15 s apart. |
 | `S3_BUCKET` | `storage.backends.hot.bucket` | Single-region legacy path only. A non-empty value activates the backend and requires `S3_REGION`. |
 | `S3_REGION` | `storage.backends.hot.region` | Required when `S3_BUCKET` activates the single-region legacy backend. No runtime region fallback is applied. |
 | `S3_ENDPOINT` | `storage.backends.hot.endpoint` | Single-region legacy path; empty = real AWS |
@@ -1790,9 +1793,11 @@ If every line is `[OK]`, proceed to Step M4.
   docker compose -f docker-compose.prod.yml --profile bootstrap up cassandra-bootstrap
   ```
 
-  > **Check the result.** On a fresh three-DC cluster this first run has failed with exit 2
-  > and `sufficient privileges` (`ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01`). Run it again,
-  > from the same node, until it exits 0 and `sesamefs_app` exists.
+  > The bootstrap retries every 15 s until the application role holds its grants, up to
+  > `CASSANDRA_BOOTSTRAP_ATTEMPTS` (default 12). On a fresh three-DC cluster the first attempt
+  > usually fails right after the `system_auth` change and the second converges
+  > (`ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01`). A non-zero exit means it never converged:
+  > read its log before running it again. Running it on a configured cluster is safe.
   >
   > Do **not** target `cassandra-bootstrap` on more than one node. In a
   > multi-DC cluster that would reapply auth/keyspace/replication changes from
@@ -2037,11 +2042,11 @@ username+password) **always returns 401** when `AUTH_DEV_MODE=false`.
   and early production. For HA, deploy multi-region (see above).
 - **No backup or restore procedure exists** (`ISSUE-BACKUP-RESTORE-MISSING-01`) —
   put one in place and test a restore before storing data that must survive.
-- **Shipped Cassandra timeouts fail uploads under WAN latency** (`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`) —
-  in a simulated 80 ms RTT rehearsal, concurrent uploads from different regions succeeded 22 of 72
-  times; raising `cas_contention_timeout` and `write_request_timeout` to 5 s gave 62 of 72. The
-  compose has no setting for them yet. The underlying contention is
-  `ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01`.
+- **Concurrent writers in different regions still contend** (`ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01`) —
+  the production compose raises Cassandra's `cas_contention_timeout` and `write_request_timeout`
+  from the image's 1 s / 2 s to 5 s (`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`). In a simulated 80 ms RTT
+  rehearsal, concurrent uploads from different regions then succeeded 24 and 31 of 36 in two runs,
+  against 12 and 10 of 36 with the image values.
 - **Upload failures log at INFO** (`ISSUE-LOG-PRINTF-LEVEL-01`) — alert on HTTP 5xx, not log level.
 - **No scheduled `nodetool repair` procedure exists** (`ISSUE-CASSANDRA-REPAIR-RUNBOOK-01`) —
   multi-DC deployments need one; the repair steps above cover only adding a DC.

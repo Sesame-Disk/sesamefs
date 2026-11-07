@@ -12,8 +12,11 @@ changes and nothing closes. PRE-GC/A1 OPEN, GC OFF.
 
 ### ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01: First three-DC bootstrap fails before creating the application role
 
-**Status:** OPEN (2026-11-06), reproduced 3 of 3 fresh runs. **Severity:** P1 / deployment;
-pre-existing. **Affected:** `cassandra-bootstrap` in `docker-compose.prod.yml`.
+**Status:** CLOSED-FIX on merge of the bootstrap-convergence change (2026-11-07); OPEN until
+then. The bootstrap now retries its idempotent statements until the application role holds its
+grants, up to `CASSANDRA_BOOTSTRAP_ATTEMPTS`. RED on current main: exit 2 in 6 of 6 fresh three-DC runs. GREEN: 3 of 3 fresh three-DC runs exit 0, each converging on attempt 2 (the last one with the final check); reruns on a configured three-DC cluster exit 0 on attempt 1, 4 of 4 after a pipefail correction to the check (2 of 2 failed before it); one DC converges on attempt 1 and reruns cleanly. The root cause in Cassandra
+is still not isolated. **Severity:** P1 / deployment; pre-existing. **Affected:**
+`cassandra-bootstrap` in `docker-compose.prod.yml`.
 
 The service exits 2 every time. Twice, `ALTER KEYSPACE system_auth` raised replication to
 three DCs and `CREATE ROLE` in the same `cqlsh` session then failed with `User cassandra does
@@ -24,9 +27,15 @@ succeeded whenever needed, without a repair. Cause not isolated. [Evidence](./PR
 
 ### ISSUE-CASSANDRA-TIMEOUTS-WAN-01: Shipped Cassandra timeouts fail uploads under WAN latency
 
-**Status:** OPEN (2026-11-06), measured with simulated latency on one idle host. **Severity:**
+**Status:** CLOSED-FIX for the timeout settings on merge of the bootstrap-convergence change
+(2026-11-07); OPEN until then. The production compose writes both into `cassandra.yaml` on every
+start, default 5000 ms, through `CASSANDRA_CAS_CONTENTION_TIMEOUT` and
+`CASSANDRA_WRITE_REQUEST_TIMEOUT`, and refuses to start on an invalid value; the preflight checks
+them. Verified on all three nodes, with a 4000 ms override and a rejected `5s`. With the compose
+defaults at about 80 ms RTT, the cross-region shape below succeeded 24 and 31 of 36. The
+contention itself stays OPEN as `ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01`. **Severity:**
 P1 / availability on multi-DC; pre-existing. **Affected:** `docker-compose.prod.yml`, which
-leaves `cas_contention_timeout` at 1000 ms and `write_request_timeout` at 2000 ms with no
+left `cas_contention_timeout` at 1000 ms and `write_request_timeout` at 2000 ms with no
 setting.
 
 At about 80 ms RTT, simultaneous uploads from three regions into different libraries of one
