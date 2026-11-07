@@ -11326,6 +11326,8 @@ Decide SoT (IdP wins / admin wins / last-write-wins with audit) in
 **2026-11-06 simulated measurement, not a production number:** a 64 KB web upload took about 2.7 s at
 80 ms RTT and 0.2 s at none, on [one idle host](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal);
 an uncontended `SERIAL` write took 312 ms, so an upload spends roughly eight or nine such round trips.
+Compared with `d016e42b7` on the same harness: 1.38 s with `SERIAL` and 0.17 s with `LOCAL_SERIAL`, which lost
+57 of 135 acknowledged concurrent uploads ([comparison](./PROD-READINESS-VERIFICATION-20261106.md#cost-of-global-serialization-and-of-the-x1-protections)).
 
 **Status**: 🟡 Open — deferred PR-11 pending measurement
 **Severity**: High (perf), not a correctness blocker
