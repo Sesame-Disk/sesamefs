@@ -1,5 +1,95 @@
 # Known Issues - SesameFS
 
+## Internal deployment readiness verification (2026-11-06)
+
+[Dated verification on main@a21f4203d](./PROD-READINESS-VERIFICATION-20261106.md):
+not yet ready to store data that matters. The application path works on the
+production compose with GC off. Missing: backup and restore, a data-disposability
+and topology decision, and a maintainer decision on the two registered go-live
+blockers. Issues below are new registrations of pre-existing conditions; no existing
+severity changes and nothing closes. PRE-GC/A1 OPEN, GC OFF.
+
+### ISSUE-BACKUP-RESTORE-MISSING-01: No backup or restore procedure exists
+
+**Status:** OPEN (2026-11-06). **Severity:** P1 / go-live prerequisite for data that
+matters; pre-existing. **Source of record for scope:**
+[roadmap §10](./V1-PRODUCTION-ROADMAP.md).
+
+The repository has no backup script, restore runbook, RTO/RPO or restore drill. The
+documented layout is RF 1 per DC, so losing a single-DC Cassandra node loses all
+metadata; S3 blocks alone cannot rebuild libraries. Close with a Cassandra and bucket
+backup, plus a restore actually performed on a clean environment.
+
+### ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01: Web login state is held per process
+
+**Status:** OPEN (2026-11-06), code-verified, **not reproduced**. **Severity:** High for
+any multi-instance rollout behind one hostname; no single-backend impact.
+**Affected:** `OIDCClient.storeState`, `consumeState` in `internal/auth/oidc.go`.
+
+`GetAuthorizationURL` stores the state, nonce and PKCE verifier in an in-memory map.
+When the callback reaches another process, `consumeState` returns `state not found`
+and login fails. Third node-local item alongside `ISSUE-UPLOAD-CHUNK-MULTINODE-01`
+and `ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01`. One backend per regional hostname does
+not reach it.
+
+### ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01: Production compose sets no container memory limit
+
+**Status:** OPEN (2026-11-06). **Severity:** P2 / config; pre-existing.
+**Affected:** `docker-compose.prod.yml`.
+
+Neither `sesamefs` nor `cassandra` has a memory limit. Download admission therefore
+starts with `budget_source="no cgroup limit detected, reference fallback"`, measured
+in the rehearsal: a 2 GiB budget unrelated to the machine, which DEPLOY warns about for
+hosts below its 8 GiB baseline. An unbounded allocation such as
+`ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01` can also take Cassandra down on a shared host.
+A limit is a deployment choice; until the compose ships one, set it per host.
+
+### ISSUE-SHARELINK-DIR-TRAILING-SLASH-404-01: Shared-folder links emitted by the UI return JSON 404
+
+**Status:** OPEN (2026-11-06), reproduced through both nginx hops. **Severity:** P2 /
+current runtime; pre-existing. **Affected:** `frontend/nginx.conf`,
+`shared-file-view.js`, `share-link-markdown-url.js`.
+
+`/d/<token>?p=/docs` serves the share page. `/d/<token>/?p=/docs` misses the location
+regex `^/d/[^/]+(?:/files/?)?$`, reaches Go and returns
+`404 {"error":"public share pages are served by the frontend shell"}`. The UI emits
+the second form in the shared-file breadcrumb and in markdown links to folders.
+Canonical links returned by the API have no trailing slash and work. Fix with a
+RED/GREEN through the supported nginx.
+
+### ISSUE-DEPLOY-CENTRAL-NGINX-REFERENCE-01: No reference configuration for the central nginx
+
+**Status:** OPEN (2026-11-06). **Severity:** P2 / documentation.
+
+The supported topology requires an external central nginx, but DEPLOY only describes
+it. An operator must derive the body-size, buffering, timeout and forwarded-header
+settings. Requirements such as the timeout ordering are spread across DEPLOY. The
+stale optional `nginx` service and nginx rate-limit-zone claims were corrected on
+2026-11-06. No nginx rate limiting ships; the application limiters remain.
+
+### ISSUE-FRONTEND-SECURITY-HEADERS-01: SPA responses carry no security headers
+
+**Status:** OPEN (2026-11-06), measured. **Severity:** P3 / hardening.
+
+`GET /` through the frontend nginx has no `X-Frame-Options` or CSP, nor HSTS or
+`nosniff`, which API responses do carry. A central nginx can add them; nothing ships
+them today.
+
+### ISSUE-TEST-ENV-EXAMPLE-ACCOUNTS-AUTHORITY-01: `.env.example` cannot pass the integration suite
+
+**Status:** OPEN (2026-11-06), reproduced. **Severity:** P3 / test hygiene.
+
+`ACCOUNTS_DISABLE_ORG_USER_WRITES` is absent from `.env.example`.
+`TestAdminIdentityProjectionRegression_OrgAdminUpdateUserBatchBlockedByAccountsAuthority`
+then really updates the shared default user, leaving it `admin` and `deactivated`, and
+four later tests fail deterministically. No product regression. Set the variable in
+the template or make the test fail without mutating shared state.
+
+### ISSUE-TRACKED-BINARY-01: A compiled binary is tracked in git
+
+**Status:** OPEN (2026-11-06). **Severity:** P3 / hygiene. `bin/sesamefs`, 49 MB, last
+changed 2026-03-05, is tracked. It is not used by the images, which build from source.
+
 ## Deferred dependency advisories (2026-10-21)
 
 **OPEN — deferred, not closed.** [PR #322](https://github.com/Sesame-Disk/sesamefs/pull/322)
@@ -19,6 +109,12 @@ No Go module or frontend lockfile is changed for them here.
 
 Keep the module updates separate from the CA toolchain change and run the full
 Go suite afterwards.
+
+**2026-11-06 re-run on main@a21f4203d:** `govulncheck` reports 10 reachable: the four
+`x/net` entries above and six for `excelize` (adding GO-2026-6680, GO-2026-6677,
+GO-2026-6676 and GO-2026-6674). `npm audit --omit=dev` reports 40: 2 critical, 16
+high, 18 moderate, 4 low. The `seafile-js` fix is open as #324; #325 covers the
+nested `form-data`.
 
 ### Frontend
 

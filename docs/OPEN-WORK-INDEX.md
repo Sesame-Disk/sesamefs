@@ -1,5 +1,15 @@
 # Open Work Index
 
+## Internal deployment readiness verification (2026-11-06)
+
+[Dated verification on main@a21f4203d](./PROD-READINESS-VERIFICATION-20261106.md):
+application path works on the production compose with GC off; not yet ready for data
+that matters. Open before that point: `ISSUE-BACKUP-RESTORE-MISSING-01`, the
+data-disposability and topology decisions, and a maintainer decision on the two
+single-node go-live blockers below. New pre-existing registrations are in
+[KNOWN_ISSUES](./KNOWN_ISSUES.md#internal-deployment-readiness-verification-2026-11-06).
+No gate closes. PRE-GC/A1 OPEN, GC OFF.
+
 ## Deferred dependency advisories (2026-10-21)
 
 [PR #322](https://github.com/Sesame-Disk/sesamefs/pull/322) fixes the CA/TLS
@@ -407,7 +417,7 @@ Three gates, kept separate on purpose:
   Recently closed). Nothing about GC gates
   these, and closing X1 does not close them. `ISSUE-ZIP-STREAM-LATEFAIL-01` is
   Medium per the registry, not a go-live blocker.
-- **Multi-instance operation** — additionally blocked by the two node-local
+- **Multi-instance operation** — additionally blocked by the node-local
   state issues in the table below.
 
 What genuinely closed: NF-1 2026-07-25; B4 2026-08-04; the object-storage
@@ -424,6 +434,7 @@ provenance boundary).
 |---|---|---|---|
 | `ISSUE-UPLOAD-CHUNK-MULTINODE-01` | HIGH | Chunked-upload state is node-local; non-sticky routing silently loses files | Readiness B1 — **multi-instance only** |
 | `ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01` | HIGH | Desktop-SSO pending token is in-memory per process | Readiness B5 — **multi-instance only** |
+| `ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01` | HIGH | Web login state and PKCE verifier are in-memory per process | [Verification 2026-11-06](./PROD-READINESS-VERIFICATION-20261106.md), code-verified, not reproduced — **multi-instance only** |
 
 The single-node HIGH rows are **not duplicated here**; their canonical rows live
 in the High/Medium table below, per rule 4.
@@ -588,6 +599,10 @@ logical-block PK replacement, and X1 remain open.
 | `ISSUE-GC-DRYRUN-OVERRIDE-STICKY-01` | MEDIUM | The `dry_run` field of `POST /admin/gc/run` is not scoped to the run it accompanies: an accepted trigger replaces the node's runtime mode for the life of the process, so one superadmin call can lower a configured `GC_DRY_RUN=true` — the rung directly below `GC_ENABLED` — and it stays lowered, unaudited. Unreachable while GC is disabled fleet-wide; live from the moment destructive GC is activated | Verified preexisting 2026-08-23 (inherited from `main`, not the 2026-08-22 branch, which only stopped a *refused* trigger from committing the override). See [known issue](./KNOWN_ISSUES.md) |
 | `ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01` | HIGH | `pack-fs` materializes the whole response: ~409k repeats of one valid id, `PermissionR` only. `check-fs` shares the fan-out | Found auditing X9; the fs-id equivalent of the closed X11 |
 | `ISSUE-SYNC-RECVFS-NOT-WRITE-ONCE-01` | HIGH (P1) ✅ Fixed by merged PR #208 | `RecvFS` validates lowercase `fs_id`, compares logical SHA-1 identity across legacy/canonical layouts, completes pre-existing placeholders, rejects semantic conflicts, fails closed on storage errors, and avoids new child upserts/Paxos | [known issue](./KNOWN_ISSUES.md#issue-sync-recvfs-not-write-once-01) · PR #208 merged; #206 is being revalidated on main |
+| `ISSUE-BACKUP-RESTORE-MISSING-01` | P1 go-live | No backup, restore runbook or restore drill exists; required before storing data that matters | [known issue](./KNOWN_ISSUES.md#issue-backup-restore-missing-01-no-backup-or-restore-procedure-exists) |
+| `ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01` | P2 config | No container memory limit: download admission uses the reference fallback and one process can exhaust a shared host | [known issue](./KNOWN_ISSUES.md#issue-prod-compose-no-memory-limit-01-production-compose-sets-no-container-memory-limit) |
+| `ISSUE-SHARELINK-DIR-TRAILING-SLASH-404-01` | P2 | The `/d/<token>/?p=` links the UI emits for shared folders return JSON 404 | [known issue](./KNOWN_ISSUES.md#issue-sharelink-dir-trailing-slash-404-01-shared-folder-links-emitted-by-the-ui-return-json-404) |
+| `ISSUE-DEPLOY-CENTRAL-NGINX-REFERENCE-01` | P2 docs | The required central nginx has no reference configuration | [known issue](./KNOWN_ISSUES.md#issue-deploy-central-nginx-reference-01-no-reference-configuration-for-the-central-nginx) |
 | `ISSUE-ZIP-STREAM-LATEFAIL-01` | MEDIUM | ZIP download can truncate after `200 OK` | Readiness DL-2. Severity corrected 2026-08-22 to match [KNOWN_ISSUES.md](./KNOWN_ISSUES.md), which has rated it Medium since the 2026-05-27 preflight narrowing — truncated/retryable download, not corruption |
 | `ISSUE-BLOCK-CROSS-LIBRARY-READ-01` | MEDIUM | Cross-library block read (BOLA), gated only by knowing the 256-bit hash | Readiness B2/SEC-1 |
 | `ISSUE-SHARELINK-DOWNLOAD-CAP-RACE-01` | MEDIUM | Download cap and `single_use` are race-bypassable | Readiness NF-2 / SH-5 |
@@ -611,6 +626,9 @@ logical-block PK replacement, and X1 remain open.
 | `ISSUE-ORG-SCOPE-CHECK-PER-HANDLER-01` | LOW (latent) | Cross-tenant gate is copy-pasted into ~50 handlers, not middleware. No current gap. |
 | `ISSUE-AUTOLOGIN-COOKIE-INSECURE-01` | LOW–MED | `handleAutoLogin` hardcodes cookie `Secure=false` |
 | `ISSUE-UPLOAD-SIZE-GUARDS-BOTH-ZERO-01` | LOW (config) | Both chunked-upload size guards can be disabled together; staging guard is `0` in **every** shipped config |
+| `ISSUE-FRONTEND-SECURITY-HEADERS-01` | LOW (P3) | SPA responses carry no security headers; a central nginx can add them |
+| `ISSUE-TEST-ENV-EXAMPLE-ACCOUNTS-AUTHORITY-01` | LOW (P3 test) | `.env.example` cannot pass the integration suite: an authority test mutates the shared default user |
+| `ISSUE-TRACKED-BINARY-01` | LOW (P3 hygiene) | A 49 MB compiled `bin/sesamefs` is tracked in git |
 | `ISSUE-ACCOUNTS-PROVISIONING-RUNBOOK-01` | LOW (docs) | Bootstrap/rotation/smoke/revoke runbook for the Accounts platform API key was never written |
 | `ISSUE-ORG-ADMIN-DELETION-BANNER-01` | LOW (UX) | Soft-delete lifecycle exists; org bootstrap omits `deleted_at`/grace + frontend banner TODO |
 | `ISSUE-ACCOUNTS-M2M-REQUEST-SIGNING-01` | LOW (hardening) | Optional HMAC/JWT request signing beyond admin API key — **not required for v1**; channel is API key by design |

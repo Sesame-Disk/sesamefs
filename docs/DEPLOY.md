@@ -46,9 +46,8 @@ Outbound HTTPS:
    sesamefs ──► accounts.sesamedisk.com (OIDC discovery + JWKS + token exchange)
 ```
 
-The central nginx is **external** to `docker-compose.prod.yml` (the bundled
-`nginx` service in the compose file is commented out as optional). In the
-supported topology the central nginx joins `sfs-net` and proxies to the
+The central nginx is **external** to `docker-compose.prod.yml`, which bundles
+no `nginx` service. In the supported topology the central nginx joins `sfs-net` and proxies to the
 per-deploy `sesamefs-frontend-<DEPLOY_ID>` container alias, which in turn proxies API
 paths to `sesamefs` on the private deploy network. OnlyOffice is deployed
 separately from this compose stack and integrates with SesameFS through its
@@ -430,7 +429,7 @@ Before the first deploy on every host:
 docker network inspect sfs-net >/dev/null 2>&1 || docker network create sfs-net
 ```
 
-If you prefer to terminate TLS inside the SesameFS stack, uncomment the optional `nginx` service in `docker-compose.prod.yml` and treat that as the owner of host ports `80/443`. The rest of this guide assumes the default external-proxy model unless stated otherwise.
+`docker-compose.prod.yml` ships no bundled `nginx` service, so TLS and host ports `80/443` belong to that external proxy. The repository has no reference configuration for it yet (`ISSUE-DEPLOY-CENTRAL-NGINX-REFERENCE-01`); apply the timeout and forwarded-header rules in this guide.
 
 ### 0.1 Create an S3 bucket
 
@@ -1812,11 +1811,16 @@ If every line is `[OK]`, proceed to Step M4.
   > all DCs are bootstrapped before SesameFS starts serving traffic, this step
   > can be skipped.
 
-8. **Start SesameFS + frontend** on all nodes:
+8. **Start SesameFS + frontend**, the first node alone, then all others once its
+   migration has logged `Migrations completed successfully`:
 
   ```bash
   docker compose -f docker-compose.prod.yml up -d sesamefs frontend
   ```
+
+  > The migrator takes no cross-process lock. In a [three-DC trial](./PROD-READINESS-VERIFICATION-20261106.md#simultaneous-first-boot)
+  > with all backends started at once, processes could time out and exit, then
+  > converge on restart. Starting one first avoids that.
 
 ### Step M5 — Verify
 
@@ -2019,13 +2023,13 @@ username+password) **always returns 401** when `AUTH_DEV_MODE=false`.
   automatic key-rotation refresh, plus issuer, audience, nonce, expiry, and
   configurable clock-skew validation. See `internal/auth/oidc.go` (`parseIDToken`,
   `fetchJWKS`, `getSigningKey`).
-- **Rate limiting** is implemented via two nginx zones: API calls (100r/s, burst 200) and file transfers
-  (`/seafhttp/`, `/d/`, `/u/d/`) at a separate 20r/s zone (burst 40) to prevent large uploads/downloads
-  from starving API traffic. For stricter application-layer protection add a WAF or API gateway.
+- **Rate limiting** ships only in the application: auth, share-link, ZIP and upload-link limiters plus
+  download admission. The shipped nginx configuration has no `limit_req` zones. For general request
+  limiting, configure your central nginx, a WAF or an API gateway.
 - **Single Cassandra node** (single-region default) — suitable for testing
   and early production. For HA, deploy multi-region (see above).
-- **No Cassandra backup** configured — set up snapshots before storing
-  important data.
+- **No backup or restore procedure exists** (`ISSUE-BACKUP-RESTORE-MISSING-01`) —
+  put one in place and test a restore before storing important data.
 - **Existing-library migration is still manual** — the current feature set stores a
   mutable preference for new materializations and resolves historical reads,
   reuse and repairs from each block's canonical class, but does not yet provide

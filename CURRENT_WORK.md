@@ -1,6 +1,16 @@
 # Current Work
 
-## Active slice: Phase 6 suspended, P6-2 (2026-10-19)
+## Active slice: internal deployment readiness verification (2026-11-06)
+
+[Verification on main@a21f4203d](docs/PROD-READINESS-VERIFICATION-20261106.md),
+documentation only. Application path works on the production compose with GC off;
+not yet ready for data that matters. Needs backup and restore, the data-disposability
+and topology decisions, and a maintainer decision on the two go-live blockers. The
+standard runner exits 1 under this GC-off posture: integration 555/0/89, API 19 of 20
+(`test-gc.sh` expects GC on), OIDC suite not run with OIDC enabled. No gate closes.
+PRE-GC/A1 OPEN, ordinary GC OFF.
+
+## Previous merged slice: Phase 6 suspended, P6-2 (2026-10-19)
 
 [Contract and evidence](docs/GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19):
 maintainer-chosen option A. The Phase 6 selector is a no-op; the worker completes
