@@ -21,6 +21,11 @@ incompatible rolling upgrades with active GC. Both pre-#239 mixed writer/GC
 counterexamples remain [P1 FOLLOW-UP / GENERAL](./KNOWN_ISSUES.md#issue-w2-incompatible-mixed-rollout-01-incompatible-rolling-upgrade-can-publish-head-after-d);
 they are outside first production, not hidden or fixed by this contract.
 
+The current deployment is a
+[disposable internal pilot on three DCs](./PROD-READINESS-VERIFICATION-20261106.md#maintainer-decisions-2026-11-06):
+assume any data can be lost, and rebuild instead of migrating when that is simpler.
+It is not evidence for external users or for data that must survive.
+
 ## Architecture
 
 ```
@@ -46,9 +51,8 @@ Outbound HTTPS:
    sesamefs ──► accounts.sesamedisk.com (OIDC discovery + JWKS + token exchange)
 ```
 
-The central nginx is **external** to `docker-compose.prod.yml` (the bundled
-`nginx` service in the compose file is commented out as optional). In the
-supported topology the central nginx joins `sfs-net` and proxies to the
+The central nginx is **external** to `docker-compose.prod.yml`, which bundles
+no `nginx` service. In the supported topology the central nginx joins `sfs-net` and proxies to the
 per-deploy `sesamefs-frontend-<DEPLOY_ID>` container alias, which in turn proxies API
 paths to `sesamefs` on the private deploy network. OnlyOffice is deployed
 separately from this compose stack and integrates with SesameFS through its
@@ -81,7 +85,7 @@ development/integration stack. Production behavior is defined by
 docker network inspect sfs-net >/dev/null 2>&1 || docker network create sfs-net
 ```
 
-- Public health checks for operators and load balancers are `GET /ping` and the compatibility endpoint `GET /api2/ping`.
+- The public health check for operators and load balancers is `GET /api2/ping`. Do not use `GET /ping` through nginx: it answers 200 with the SPA even when the backend is down (`ISSUE-HEALTH-PING-FALSE-OK-01`).
 - `GET /ready` and metrics are intentionally internal-only. Run them from the node itself, from a private network, or with `docker compose exec sesamefs ...`.
 - For upload finalize monitoring, alerting, and dashboard queries, see [Upload Concurrency Observability](./UPLOAD-CONCURRENCY-OBSERVABILITY.md).
 - Published images are the deployment artifact. Production rollouts should update `SESAMEFS_IMAGE` and `FRONTEND_IMAGE` with full image references, pull the new images, and restart the services. `--build` is not part of the normal prod path.
@@ -430,7 +434,7 @@ Before the first deploy on every host:
 docker network inspect sfs-net >/dev/null 2>&1 || docker network create sfs-net
 ```
 
-If you prefer to terminate TLS inside the SesameFS stack, uncomment the optional `nginx` service in `docker-compose.prod.yml` and treat that as the owner of host ports `80/443`. The rest of this guide assumes the default external-proxy model unless stated otherwise.
+`docker-compose.prod.yml` ships no bundled `nginx` service, so TLS and host ports `80/443` belong to that external proxy. The repository has no reference configuration for it yet (`ISSUE-DEPLOY-CENTRAL-NGINX-REFERENCE-01`); apply the timeout and forwarded-header rules in this guide.
 
 ### 0.1 Create an S3 bucket
 
@@ -743,7 +747,7 @@ instead of attempting `CREATE KEYSPACE` through the restricted app role.
 
 > `ACCOUNTS_DISABLE_ORG_USER_WRITES` should normally stay `true`. That keeps tenant org-admin user lifecycle writes disabled so Accounts remains the operational authority. Platform superadmins still bypass that tenant lock as an operational fallback, but Accounts should prefer the `/admin/...` surface.
 
-> `gc.enabled` defaults to `false` in YAML. Keep `GC_ENABLED=false` on **every replica in every DC** while X1 or PRE-GC/A1 remains open. [X1's criterion disposition](./KNOWN_ISSUES.md#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes) takes effect on maintainer merge of the scoped E1 decision; before then X1 is OPEN. PRE-GC/A1 remain OPEN regardless of that merge. X2 is closed under the stable-topology operational contract; changing the replication DC set or RF with existing reference state requires a separately certified migration before GC can be reconsidered. The LWT lease does not close X1. X1 closure alone does not authorize activation: only after X1 closes **and** the PRE-GC / A1 gate ([X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §6) closes may designated replicas in one DC set `GC_ENABLED=true` and participate under the lease; all replicas in every other DC must remain false.
+> `gc.enabled` defaults to `false` in YAML. Keep `GC_ENABLED=false` on **every replica in every DC** while X1 or PRE-GC/A1 remains open. [X1's criterion disposition](./KNOWN_ISSUES.md#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes) took effect when the maintainer merged the scoped E1 decision (#312, 2026-10-17), so X1 is CLOSED for that scope. PRE-GC/A1 remain OPEN regardless. X2 is closed under the stable-topology operational contract; changing the replication DC set or RF with existing reference state requires a separately certified migration before GC can be reconsidered. The LWT lease does not close X1. X1 closure alone does not authorize activation: only after X1 closes **and** the PRE-GC / A1 gate ([X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §6) closes may designated replicas in one DC set `GC_ENABLED=true` and participate under the lease; all replicas in every other DC must remain false.
 
 > `SERVER_TRUSTED_PROXIES` should never be set to `0.0.0.0/0`, `::/0`, or another blanket range. In the supported two-nginx topology above, trust only the internal SesameFS nginx network that talks directly to Go. If you leave it unset, SesameFS ignores forwarded-IP headers and uses the direct socket peer instead.
 
@@ -960,9 +964,6 @@ FILES_HOST=https://na.files.yourdomain.com
 OFFICE_HOST=https://na.office.yourdomain.com
 
 # Public liveness (should return: pong)
-curl "$FILES_HOST/ping"
-
-# Legacy compatibility liveness for older monitors/clients
 curl "$FILES_HOST/api2/ping"
 
 # Public process liveness
@@ -1789,6 +1790,10 @@ If every line is `[OK]`, proceed to Step M4.
   docker compose -f docker-compose.prod.yml --profile bootstrap up cassandra-bootstrap
   ```
 
+  > **Check the result.** On a fresh three-DC cluster this first run has failed with exit 2
+  > and `sufficient privileges` (`ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01`). Run it again,
+  > from the same node, until it exits 0 and `sesamefs_app` exists.
+  >
   > Do **not** target `cassandra-bootstrap` on more than one node. In a
   > multi-DC cluster that would reapply auth/keyspace/replication changes from
   > multiple places and can leave Cassandra metadata inconsistent.
@@ -1812,11 +1817,18 @@ If every line is `[OK]`, proceed to Step M4.
   > all DCs are bootstrapped before SesameFS starts serving traffic, this step
   > can be skipped.
 
-8. **Start SesameFS + frontend** on all nodes:
+8. **Start SesameFS + frontend**, the first node alone, then all others once its
+   migration has logged `Migrations completed successfully`:
 
   ```bash
   docker compose -f docker-compose.prod.yml up -d sesamefs frontend
   ```
+
+  > The migrator takes no cross-process lock. In a [three-DC trial](./PROD-READINESS-VERIFICATION-20261106.md#simultaneous-first-boot)
+  > with all backends started at once, processes could time out and exit, then
+  > converge on restart. Starting one first limits that, but it still restarted 20 times
+  > on an authenticated three-DC cluster before converging
+  > (`ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01`). Wait for the log line above.
 
 ### Step M5 — Verify
 
@@ -1830,7 +1842,6 @@ for url in https://na.files.yourdomain.com \
            https://eu.files.yourdomain.com \
            https://asia.files.yourdomain.com; do
   echo "── $url"
-  curl -fsS "$url/ping"   && echo
   curl -fsS "$url/api2/ping" && echo
 done
 
@@ -2019,13 +2030,19 @@ username+password) **always returns 401** when `AUTH_DEV_MODE=false`.
   automatic key-rotation refresh, plus issuer, audience, nonce, expiry, and
   configurable clock-skew validation. See `internal/auth/oidc.go` (`parseIDToken`,
   `fetchJWKS`, `getSigningKey`).
-- **Rate limiting** is implemented via two nginx zones: API calls (100r/s, burst 200) and file transfers
-  (`/seafhttp/`, `/d/`, `/u/d/`) at a separate 20r/s zone (burst 40) to prevent large uploads/downloads
-  from starving API traffic. For stricter application-layer protection add a WAF or API gateway.
+- **Rate limiting** ships only in the application: auth, share-link, ZIP and upload-link limiters plus
+  download admission. The shipped nginx configuration has no `limit_req` zones. For general request
+  limiting, configure your central nginx, a WAF or an API gateway.
 - **Single Cassandra node** (single-region default) — suitable for testing
   and early production. For HA, deploy multi-region (see above).
-- **No Cassandra backup** configured — set up snapshots before storing
-  important data.
+- **No backup or restore procedure exists** (`ISSUE-BACKUP-RESTORE-MISSING-01`) —
+  put one in place and test a restore before storing data that must survive.
+- **Shipped Cassandra timeouts fail uploads under WAN latency** (`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`) —
+  in a simulated 80 ms RTT rehearsal, raising `cas_contention_timeout` and `write_request_timeout`
+  to 5 s fixed sequential uploads. The compose has no setting for them yet.
+- **Upload failures log at INFO** (`ISSUE-LOG-PRINTF-LEVEL-01`) — alert on HTTP 5xx, not log level.
+- **No scheduled `nodetool repair` procedure exists** (`ISSUE-CASSANDRA-REPAIR-RUNBOOK-01`) —
+  multi-DC deployments need one; the repair steps above cover only adding a DC.
 - **Existing-library migration is still manual** — the current feature set stores a
   mutable preference for new materializations and resolves historical reads,
   reuse and repairs from each block's canonical class, but does not yet provide

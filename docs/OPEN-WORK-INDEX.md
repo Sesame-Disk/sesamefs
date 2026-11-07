@@ -1,5 +1,16 @@
 # Open Work Index
 
+## Internal deployment readiness verification (2026-11-06)
+
+[Dated verification on main@a21f4203d](./PROD-READINESS-VERIFICATION-20261106.md):
+the application path works on the production compose with GC off. Maintainer decision:
+**disposable internal pilot on three DCs**, backup deferred, the two go-live blockers
+accepted for that pilot and fixed along the way. The three-DC rehearsal found two items to
+fix or work around first: `ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01` and
+`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`. New pre-existing registrations are in
+[KNOWN_ISSUES](./KNOWN_ISSUES.md#internal-deployment-readiness-verification-2026-11-06).
+No gate closes. PRE-GC/A1 OPEN, GC OFF.
+
 ## Deferred dependency advisories (2026-10-21)
 
 [PR #322](https://github.com/Sesame-Disk/sesamefs/pull/322) fixes the CA/TLS
@@ -47,8 +58,7 @@ suite wiring and the pre-existing Trash diagnosis remain [P3 follow-ups](./TECHN
 ## E1/X1 final acceptance; PRE-GC next (2026-10-16)
 
 [The acceptance decision](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16)
-closes scoped physical-life X1 effective on maintainer merge; before merge it is
-OPEN. H1/I1/M1 criteria are supplied; H's measured K1 residue is X3 on acceptance.
+closed scoped physical-life X1 when the maintainer merged it (#312, 2026-10-17). H1/I1/M1 criteria are supplied; H's measured K1 residue is X3 on acceptance.
 Named A-I cuts and qualified three-DC/source evidence are accepted with explicit
 fault/topology limits. Availability/full-suite failures stay FAIL. PRE-GC/A1 stay
 OPEN and ordinary GC OFF. Next bounded implementation: real-stack RED for
@@ -259,8 +269,8 @@ concurrent SeafHTTP finalize; cause unlogged).
 ## PR #258 resource follow-up (2026-10-05)
 
 [ISSUE-FILEFROMBLOCKS-WORKER-FANOUT-01](./KNOWN_ISSUES.md#issue-filefromblocks-worker-fanout-01)
-is P2 GENERAL, pre-existing, CLOSED-FIX on merge of the bounded fan-out
-(2026-10-21): verifyManifestBlocks and ensureCommitBlockOwnLiveness now admit a
+is P2 GENERAL, pre-existing, CLOSED-FIX by the bounded fan-out, #321, merged
+(fix dated 2026-10-21): verifyManifestBlocks and ensureCommitBlockOwnLiveness now admit a
 worker before creating it through runBoundedPublicationChecksWithContext, with
 131,072-block RED/GREEN evidence and request cancellation preserved. Separate
 from the capture/final-validator bounds in #258.
@@ -314,7 +324,7 @@ are pending. Older GC readers must be upgraded; cold-path cost is up to 32
 organization range reads plus a ref probe, proportional to pending rows.
 See [plan, evidence, individual re-audit and limits](./W2-0-PUBLICATION-CONTINUITY.md).
 
-**Last updated:** 2026-10-10 (E1-16 post-D contract alignment; see the top section). Previous: 2026-09-30 (greenfield W2-0 scope reconciliation; #240 was later closed without merge)
+**Last updated:** 2026-11-06 (internal pilot decisions; see the top section). Previous: 2026-10-10 (E1-16 post-D contract alignment), 2026-09-30 (greenfield W2-0 scope reconciliation; #240 was later closed without merge)
 **X1 critical-path reset (2026-09-29):** [X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) is the source of record for the order of work toward X1: W2 exit checklist → G4 → G5 → E1 → X1 CLOSED → PRE-GC list → A1. It supersedes the "PC-D1B.5 → productive consumer → PC-2" ordering in the entries below. PC-D1B.5 is PRE-GC only; the PublicationCoordinator and PC-D1 line are frozen and PC-2 is not an X1 prerequisite. Both library hard-delete lease issues were classified CURRENT-RUNTIME (the SERIAL-domain one config-dependent); PR #234 closes the SERIAL-domain one, the non-fencing one stays open. The A1 gate is every PRE-GC/PRE-ACTIVATION-tagged entry plus the §6 table. Findings are classified by the §3 rule (current runtime / current code under planned GC activation / nonexistent code = not a finding).
 **PC-D1B.4 status (2026-09-24):** **DECISION CLOSED / MERGEABLE.** CW-M33's accepted-Paxos pause/barrier race, post-barrier SERIAL-present issuance race, and G21/G22 mutations are green/red as required on the isolated Cassandra 5.0.9 test image. CW-M31 remains closed for cross-DC visibility, with stable absence now requiring both SERIAL to observe absence and the EACH_QUORUM recheck. CW-M34 freezes the in-flight writer lifetime property and has model plus real 3-DC success-but-hidden characterization; runtime permits/recovery remain PC-D1B.5. CW-M27..CW-M34 decision findings are closed; PC-D1B.5 runtime remains required before GC activation (reclassified PRE-GC only by the 2026-09-29 reset; no longer a productive-consumer prerequisite). §14/§16 now include the SERIAL+EACH_QUORUM proof cost and distinguish normal local writer lifetime accounting from exceptional drain/recovery I/O. No runtime, schema, consumer, mapping-authority or GC change landed here.
 **PR #231 closure status (2026-09-22):** the final Docker full integration profile and the short Go suite pass. Real-Cassandra evidence covers nullable fs_objects replay, placeholder completion, directory retry and delete, SHA1-only delete, zero-block delete, and durable claim retention. The mutation runner confirms the projection-access and dynamic-CQL bypass cases B22-B24 turn RED. The local profile skips tests requiring separate 3-DC host variables; see the PR #231 re-audit closure record in [the archived CURRENT_WORK history](./legacy/CURRENT_WORK-HISTORY-2026-10-12.md). No #228, mapping-authority, or GC work was added to this PR.
@@ -394,8 +404,8 @@ High/Medium table a few lines below. Do not restore that claim.
 Three gates, kept separate on purpose:
 
 - **Enabling destructive GC** — still blocked by the complete PRE-GC/A1 gate
-  ([X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §6). X1's scoped closure takes
-  effect on maintainer merge of the E1 decision; before then X1 is also OPEN.
+  ([X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §6). X1 is CLOSED for its scoped
+  contract (#312 merged 2026-10-17).
   [Its original criteria and dispositions](./KNOWN_ISSUES.md#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes)
   remain traceable. Neither closure alone nor the lease authorizes activation.
   X2 closed 2026-08-14.
@@ -406,8 +416,10 @@ Three gates, kept separate on purpose:
   `ISSUE-RECVFS-DECOMPRESSION-AMPLIFICATION-01` was fixed 2026-10-05 (see
   Recently closed). Nothing about GC gates
   these, and closing X1 does not close them. `ISSUE-ZIP-STREAM-LATEFAIL-01` is
-  Medium per the registry, not a go-live blocker.
-- **Multi-instance operation** — additionally blocked by the two node-local
+  Medium per the registry, not a go-live blocker. The maintainer
+  [accepted both for the disposable internal pilot](./PROD-READINESS-VERIFICATION-20261106.md#accepted-go-live-blockers)
+  (2026-11-06); they stay OPEN and still block external users or data that must survive.
+- **Multi-instance operation** — additionally blocked by the node-local
   state issues in the table below.
 
 What genuinely closed: NF-1 2026-07-25; B4 2026-08-04; the object-storage
@@ -424,6 +436,7 @@ provenance boundary).
 |---|---|---|---|
 | `ISSUE-UPLOAD-CHUNK-MULTINODE-01` | HIGH | Chunked-upload state is node-local; non-sticky routing silently loses files | Readiness B1 — **multi-instance only** |
 | `ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01` | HIGH | Desktop-SSO pending token is in-memory per process | Readiness B5 — **multi-instance only** |
+| `ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01` | HIGH | Web login state and PKCE verifier are in-memory per process | [Verification 2026-11-06](./PROD-READINESS-VERIFICATION-20261106.md), reproduced across two regions — **multi-instance only** |
 
 The single-node HIGH rows are **not duplicated here**; their canonical rows live
 in the High/Medium table below, per rule 4.
@@ -498,7 +511,7 @@ stays in [KNOWN_ISSUES.md](./KNOWN_ISSUES.md).
 ## Blockers that keep destructive GC disabled
 
 [The final E1 decision](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16)
-closes scoped physical-life X1 on maintainer merge; before then it remains OPEN.
+closed scoped physical-life X1 with #312 (merged 2026-10-17).
 The frozen D0 below is historical architecture; G1-G5 and W2 are now implemented
 and evidenced within the accepted scope. X2 closed 2026-08-14, proven on a real
 three-DC cluster. `gc.enabled: false` remains mandatory in every DC because
@@ -531,7 +544,7 @@ logical-block PK replacement, and X1 remain open.
 
 | Issue | Sev | One line | Detail |
 |---|---|---|---|
-| `ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01` | Historical Blocker; **CLOSED-FIX / CLOSED-EVIDENCE in accepted scope on maintainer merge; before merge OPEN** | Exact physical key, per-attempt ownership, P/D continuation and W2 publication criteria are explicitly disposed; PRE-GC/A1 remain OPEN and GC OFF | [Current criterion disposition](./KNOWN_ISSUES.md#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes) · [E1 acceptance](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16) |
+| `ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01` | Historical Blocker; **CLOSED-FIX / CLOSED-EVIDENCE in accepted scope (#312 merged 2026-10-17)** | Exact physical key, per-attempt ownership, P/D continuation and W2 publication criteria are explicitly disposed; PRE-GC/A1 remain OPEN and GC OFF | [Current criterion disposition](./KNOWN_ISSUES.md#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes) · [E1 acceptance](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16) |
 | `ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01` | ✅ Closed 2026-08-14 | Destructive liveness reads at `EACH_QUORUM` behind a topology gate; five-leg three-DC evidence green, both mutations (`LOCAL_QUORUM` and `QUORUM`) confirmed red | [Registry X2](./UPLOAD-FENCE-FINDINGS-REGISTRY.md) · [X2 runbook](./GC-X2-MULTIDC-VALIDATION.md) |
 
 ## High / Medium — open (audit follow-ups)
@@ -566,9 +579,9 @@ logical-block PK replacement, and X1 remain open.
 | `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01` | MEDIUM — follow-up, not an H1 blocker | A group-library creation preserved on an UNKNOWN HEAD publish, a share write error past publication, or a rollback refused because another initializer already published, is durable and cannot be resumed by repeating the POST (which mints another library); its group share is `not_attempted` or `unconfirmed` depending on the failure phase. Worked design — single-owner LWT claim keyed by org/owner/group/name, ownership-checked release, fixed share identity, no TTL — parked on `feat/group-library-creation-claims` with its audit's 10-test evidence list | [known issue](./KNOWN_ISSUES.md#issue-group-library-creation-resumability-01) |
 | `ISSUE-LIBRARY-HEAD-ADOPTED-TREE-VISIBILITY-01` | MEDIUM/HIGH — follow-up, not an H1 blocker | Adopting a blind-DC HEAD only proves its own `commits` row is locally servable, not the root/subtree `fs_objects` behind it; the 3-DC suite doesn't catch this because every initial HEAD is the same deterministic empty root, which the losing initializer already wrote locally itself | [known issue](./KNOWN_ISSUES.md#issue-library-head-adopted-tree-visibility-01) · [PC-0 §3.4](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md) |
 | `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | HIGH (P1) — ✅ closed for X1 (W2-10 CLOSED-FIX, E1-17, 2026-10-12; concurrent Phase 5/6 removal PRE-GC) | **Current (E1-17):** every handler and shape admits a restored entry only if every block it depends on has its file's own settled permanent `fs:` and passes exact P before every HEAD CAS. Directories are read strictly and recursively; files without blocks have no physical dependency. RED→GREEN for all shapes. *Historical E1-10e snapshot, superseded:* W2-10 overall was OPEN. E1-10e reproduced real COMMITTED/TERMINAL unpublished-source RED and fixes measured RevertDirents non-directory file admission: settled historical fs: via LQ→EQ fallback, original exact-P capture and per-HEAD revalidation. CLOSED-FIX only for that subset; no own up:/pub:/repair or continuous liveness proof. Retained-history evidence for the four funnels remains narrow; directories/batches, other handlers, retention/Phase5/6 and R31 remain OPEN. | [known issue](./KNOWN_ISSUES.md#issue-pc0-content-resurrection-publication-01) · [E1-10e evidence](./E1-10E-W210-RESIDUAL-DISPOSITION.md) · [PC-0 §3.5](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md) |
-| `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` | Historical P0 cascade: **CLOSED-FIX on merge**; reclamation disposition remains PRE-GC | Unguarded commit retirement is metadata-only; HEAD/retained trees survive. Guarded library cascades remain. Exclusive fs_objects/refs may remain retained; Phase 6/concurrent deletion are not certified | [Known issue](./KNOWN_ISSUES.md#issue-gc-phase5-cascade-shared-fsobjects-01-phase-5-expired-version-cascade-deletes-fs_objects-shared-with-the-live-head) · [Plan/evidence](./GC-PHASE5-SHARED-FSOBJECTS.md) |
-| `ISSUE-GC-PHASE6-DIRECTORY-CASCADE-SHARED-FSOBJECTS-01` | P0 latent, provisional — **CLOSED-FIX for the destructive path on merge of P6-2** (2026-10-19) | The Phase 6 worker enqueued a selected directory's children without the keep set; a shared HEAD file lost its fs_object and permanent `fs:`, and with the `up:` pin lapsed HEAD's block became a queued GC candidate. Now the worker refuses unguarded rows before any child enqueue; same real-stack schedules GREEN | [Known issue](./KNOWN_ISSUES.md#issue-gc-phase6-directory-cascade-shared-fsobjects-01-phase-6s-worker-cascade-deletes-children-that-head-still-reaches) · [Plan/evidence](./GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19) |
-| `ISSUE-GC-PHASE6-FSOBJECT-EXECUTION-TOCTOU-01` | HIGH (P1) — **CLOSED-FIX for the destructive path on merge of P6-2** (2026-10-19) | A Sync publication inside the Phase 6 selector's gap was selected, then its HEAD root/file fs_objects and permanent `fs:` were deleted by the stale work. Phase 6 is now suspended (no-op selector, worker completes unguarded rows without mutation); same schedules GREEN | [Known issue](./KNOWN_ISSUES.md#issue-gc-phase6-fsobject-execution-toctou-01-phase-6-deletes-fs_objects-that-a-head-published-after-the-scan-depends-on) · [Plan/evidence](./GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19) |
+| `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` | Historical P0 cascade: **CLOSED-FIX (#314 merged)**; reclamation disposition remains PRE-GC | Unguarded commit retirement is metadata-only; HEAD/retained trees survive. Guarded library cascades remain. Exclusive fs_objects/refs may remain retained; Phase 6/concurrent deletion are not certified | [Known issue](./KNOWN_ISSUES.md#issue-gc-phase5-cascade-shared-fsobjects-01-phase-5-expired-version-cascade-deletes-fs_objects-shared-with-the-live-head) · [Plan/evidence](./GC-PHASE5-SHARED-FSOBJECTS.md) |
+| `ISSUE-GC-PHASE6-DIRECTORY-CASCADE-SHARED-FSOBJECTS-01` | P0 latent, provisional — **CLOSED-FIX for the destructive path by P6-2, #319, merged** (2026-10-19) | The Phase 6 worker enqueued a selected directory's children without the keep set; a shared HEAD file lost its fs_object and permanent `fs:`, and with the `up:` pin lapsed HEAD's block became a queued GC candidate. Now the worker refuses unguarded rows before any child enqueue; same real-stack schedules GREEN | [Known issue](./KNOWN_ISSUES.md#issue-gc-phase6-directory-cascade-shared-fsobjects-01-phase-6s-worker-cascade-deletes-children-that-head-still-reaches) · [Plan/evidence](./GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19) |
+| `ISSUE-GC-PHASE6-FSOBJECT-EXECUTION-TOCTOU-01` | HIGH (P1) — **CLOSED-FIX for the destructive path by P6-2, #319, merged** (2026-10-19) | A Sync publication inside the Phase 6 selector's gap was selected, then its HEAD root/file fs_objects and permanent `fs:` were deleted by the stale work. Phase 6 is now suspended (no-op selector, worker completes unguarded rows without mutation); same schedules GREEN | [Known issue](./KNOWN_ISSUES.md#issue-gc-phase6-fsobject-execution-toctou-01-phase-6-deletes-fs_objects-that-a-head-published-after-the-scan-depends-on) · [Plan/evidence](./GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19) |
 | `ISSUE-GC-LIVE-LIBRARY-METADATA-RECLAMATION-01` | MEDIUM (P2) — PRE-GC / A1 OPEN (2026-10-19) | Nothing reclaims unreachable fs_objects (and the refs/blocks they hold) in live libraries: Phase 6 is suspended and Phase 5 retirement is metadata-only. A1 needs a disposition: a safe reclamation meeting both Phase 6 defects and the authority cases, or a measured, explicit acceptance of the retention | [Known issue](./KNOWN_ISSUES.md#issue-gc-live-library-metadata-reclamation-01-no-safe-reclamation-of-unreachable-metadata-in-live-libraries) |
 | `ISSUE-AUTO-DELETE-EXPIRY-CONTRACT-01` | MEDIUM (P2) — follow-up; source of record is [TECHNICAL-DEBT §18](./TECHNICAL-DEBT.md#18-library-history-retention-and-auto-delete-semantics-2026-05-15) (since 2026-05-15) | `expires_at = mtime + auto_delete_days` is reported for HEAD files; Phase 6 never deleted them and, since P6-2, reclaims nothing | [Known issue](./KNOWN_ISSUES.md#issue-auto-delete-expiry-contract-01-expires_at-promises-deletion-that-phase-6-never-performs-for-head-files) |
 | `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` | HIGH (P1) ✅ **Resolved 2026-09-12** — PRE-X1 / R31 convergence | Resumable SERIAL-anchored walk with durable next-unread cursor; later HEAD movement does not restart in-flight work; clean genesis is persisted as exhausted before re-observing HEAD and may re-anchor (second 1024-node chunk in the same 30s context); a re-anchor CAS loser does not replay an exhausted snapshot; missing repair row is a no-op; UNKNOWN still retains; per-row `pub:<repo:commit:fsID>` is renewed after classify while unresolved; Sync success does not pay per-block repair-owned DELETE | [known issue](./KNOWN_ISSUES.md#issue-publish-repair-reachability-convergence-01) |
@@ -588,6 +601,17 @@ logical-block PK replacement, and X1 remain open.
 | `ISSUE-GC-DRYRUN-OVERRIDE-STICKY-01` | MEDIUM | The `dry_run` field of `POST /admin/gc/run` is not scoped to the run it accompanies: an accepted trigger replaces the node's runtime mode for the life of the process, so one superadmin call can lower a configured `GC_DRY_RUN=true` — the rung directly below `GC_ENABLED` — and it stays lowered, unaudited. Unreachable while GC is disabled fleet-wide; live from the moment destructive GC is activated | Verified preexisting 2026-08-23 (inherited from `main`, not the 2026-08-22 branch, which only stopped a *refused* trigger from committing the override). See [known issue](./KNOWN_ISSUES.md) |
 | `ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01` | HIGH | `pack-fs` materializes the whole response: ~409k repeats of one valid id, `PermissionR` only. `check-fs` shares the fan-out | Found auditing X9; the fs-id equivalent of the closed X11 |
 | `ISSUE-SYNC-RECVFS-NOT-WRITE-ONCE-01` | HIGH (P1) ✅ Fixed by merged PR #208 | `RecvFS` validates lowercase `fs_id`, compares logical SHA-1 identity across legacy/canonical layouts, completes pre-existing placeholders, rejects semantic conflicts, fails closed on storage errors, and avoids new child upserts/Paxos | [known issue](./KNOWN_ISSUES.md#issue-sync-recvfs-not-write-once-01) · PR #208 merged; #206 is being revalidated on main |
+| `ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01` | P1 deploy | First three-DC bootstrap fails before creating the application role; running it again works | [known issue](./KNOWN_ISSUES.md#issue-cassandra-bootstrap-3dc-role-01-first-three-dc-bootstrap-fails-before-creating-the-application-role) |
+| `ISSUE-CASSANDRA-TIMEOUTS-WAN-01` | P1 availability | Shipped Cassandra timeouts fail most sequential uploads at simulated 80 ms RTT; 5 s fixes that shape | [known issue](./KNOWN_ISSUES.md#issue-cassandra-timeouts-wan-01-shipped-cassandra-timeouts-fail-uploads-under-wan-latency) |
+| `ISSUE-HEALTH-PING-FALSE-OK-01` | P2 ops | `/ping` answers 200 through nginx with the backend down; use `/api2/ping` | [known issue](./KNOWN_ISSUES.md#issue-health-ping-false-ok-01-ping-answers-200-through-nginx-with-the-backend-down) |
+| `ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01` | P2 ops | First boot on three DCs restarts repeatedly, then converges | [known issue](./KNOWN_ISSUES.md#issue-migrator-first-boot-3dc-restarts-01-first-boot-on-three-dcs-restarts-repeatedly-before-converging) |
+| `ISSUE-TAG-CLEANUP-COUNTER-BATCH-01` | P2 | Permanent delete always fails its tag cleanup | [known issue](./KNOWN_ISSUES.md#issue-tag-cleanup-counter-batch-01-permanent-delete-always-fails-its-tag-cleanup) |
+| `ISSUE-LOG-PRINTF-LEVEL-01` | P2 ops | Upload failures log at INFO, so level-based alerts miss the cause | [known issue](./KNOWN_ISSUES.md#issue-log-printf-level-01-upload-failures-log-at-info) |
+| `ISSUE-BACKUP-RESTORE-MISSING-01` | P1, deferred while pilot data is disposable | No backup, restore runbook or restore drill exists; required as soon as data must survive | [known issue](./KNOWN_ISSUES.md#issue-backup-restore-missing-01-no-backup-or-restore-procedure-exists) |
+| `ISSUE-CASSANDRA-REPAIR-RUNBOOK-01` | P2 ops | No scheduled `nodetool repair` procedure; applies from the first three-DC deployment | [known issue](./KNOWN_ISSUES.md#issue-cassandra-repair-runbook-01-no-scheduled-repair-procedure-for-multi-dc) |
+| `ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01` | P2 config | No container memory limit: download admission uses the reference fallback and one process can exhaust a shared host | [known issue](./KNOWN_ISSUES.md#issue-prod-compose-no-memory-limit-01-production-compose-sets-no-container-memory-limit) |
+| `ISSUE-SHARELINK-DIR-TRAILING-SLASH-404-01` | P2 | The `/d/<token>/?p=` links the UI emits for shared folders return JSON 404 | [known issue](./KNOWN_ISSUES.md#issue-sharelink-dir-trailing-slash-404-01-shared-folder-links-emitted-by-the-ui-return-json-404) |
+| `ISSUE-DEPLOY-CENTRAL-NGINX-REFERENCE-01` | P2 docs | The required central nginx has no reference configuration | [known issue](./KNOWN_ISSUES.md#issue-deploy-central-nginx-reference-01-no-reference-configuration-for-the-central-nginx) |
 | `ISSUE-ZIP-STREAM-LATEFAIL-01` | MEDIUM | ZIP download can truncate after `200 OK` | Readiness DL-2. Severity corrected 2026-08-22 to match [KNOWN_ISSUES.md](./KNOWN_ISSUES.md), which has rated it Medium since the 2026-05-27 preflight narrowing — truncated/retryable download, not corruption |
 | `ISSUE-BLOCK-CROSS-LIBRARY-READ-01` | MEDIUM | Cross-library block read (BOLA), gated only by knowing the 256-bit hash | Readiness B2/SEC-1 |
 | `ISSUE-SHARELINK-DOWNLOAD-CAP-RACE-01` | MEDIUM | Download cap and `single_use` are race-bypassable | Readiness NF-2 / SH-5 |
@@ -611,6 +635,9 @@ logical-block PK replacement, and X1 remain open.
 | `ISSUE-ORG-SCOPE-CHECK-PER-HANDLER-01` | LOW (latent) | Cross-tenant gate is copy-pasted into ~50 handlers, not middleware. No current gap. |
 | `ISSUE-AUTOLOGIN-COOKIE-INSECURE-01` | LOW–MED | `handleAutoLogin` hardcodes cookie `Secure=false` |
 | `ISSUE-UPLOAD-SIZE-GUARDS-BOTH-ZERO-01` | LOW (config) | Both chunked-upload size guards can be disabled together; staging guard is `0` in **every** shipped config |
+| `ISSUE-FRONTEND-SECURITY-HEADERS-01` | LOW (P3) | SPA responses carry no security headers; a central nginx can add them |
+| `ISSUE-TEST-ENV-EXAMPLE-ACCOUNTS-AUTHORITY-01` | LOW (P3 test) | `.env.example` cannot pass the integration suite: an authority test mutates the shared default user |
+| `ISSUE-TRACKED-BINARY-01` | LOW (P3 hygiene) | A 49 MB compiled `bin/sesamefs` is tracked in git |
 | `ISSUE-ACCOUNTS-PROVISIONING-RUNBOOK-01` | LOW (docs) | Bootstrap/rotation/smoke/revoke runbook for the Accounts platform API key was never written |
 | `ISSUE-ORG-ADMIN-DELETION-BANNER-01` | LOW (UX) | Soft-delete lifecycle exists; org bootstrap omits `deleted_at`/grace + frontend banner TODO |
 | `ISSUE-ACCOUNTS-M2M-REQUEST-SIGNING-01` | LOW (hardening) | Optional HMAC/JWT request signing beyond admin API key — **not required for v1**; channel is API key by design |

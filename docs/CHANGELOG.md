@@ -8,6 +8,20 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-11-06 — Internal deployment readiness verification
+
+[Dated verification](./PROD-READINESS-VERIFICATION-20261106.md) of main@a21f4203d:
+full suites with GC off, a rehearsal of the production compose, and simultaneous
+migrators on three DCs. Records the maintainer's decision for a disposable internal
+pilot on three DCs, with backup deferred and the two go-live blockers accepted for it. A
+three-DC rehearsal of the production compose on one host found a failing first bootstrap,
+uploads failing under simulated WAN latency, a false-positive `/ping` and a failing tag
+cleanup; data integrity held in every run.
+Registers pre-existing findings. Corrects stale DEPLOY statements about a bundled nginx
+and nginx rate limiting, and live summaries that still described merged X1, Phase 5,
+Phase 6 and #321 closures as pending. Documentation only; no gate closes. PRE-GC/A1
+OPEN, GC OFF.
+
 ## 2026-10-21 — Go 1.26.10 for CA certificate and TLS advisories
 
 Pin `go.mod` and both build images to Go 1.26.10. This fixes the reachable
