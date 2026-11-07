@@ -322,6 +322,30 @@ can lose acknowledged uploads.
 Each touches the HEAD and publication path that the X1 evidence depends on, so each needs
 a maintainer decision and its own evidence.
 
+### Bootstrap and timeout fix verification (2026-11-07)
+
+The bootstrap-convergence change was verified on the same three-DC harness, with the
+branch's own `docker-compose.prod.yml`:
+
+| Check | Before (main) | After |
+|---|---|---|
+| Fresh three-DC bootstrap | exit 2 in 6 of 6 runs | exit 0 in 3 of 3, converging on attempt 2 |
+| Rerun on a configured three-DC cluster | — | exit 0 on attempt 1 in 4 of 4, after a correction below |
+| One DC, fresh and rerun | exit 0 | exit 0 on attempt 1, both |
+| `cas_contention_timeout` / `write_request_timeout` on every node | 1000 / 2000 ms | 5000 / 5000 ms |
+| Override `CASSANDRA_CAS_CONTENTION_TIMEOUT=4000ms` | — | applied |
+| Invalid `5s` | — | Cassandra exits 1 with the reason and keeps restarting until fixed |
+| Preflight | — | passes with defaults; fails on `2s` and on `CASSANDRA_BOOTSTRAP_ATTEMPTS=0` |
+| Three regions at once, different libraries, about 80 ms RTT | 12, 10 of 36 | 24, 31 of 36 |
+| Cross-region functional matrix | — | 34 of 35 |
+
+- The first version of the convergence check ran `cqlsh | grep -q` under `pipefail`;
+  `grep -q` stops at the first match and `cqlsh` then fails on SIGPIPE, so a rerun on a
+  configured three-DC cluster failed 2 of 2. Reading the whole listing fixed it.
+- The one functional failure is the harness asking `upload-link` to replace a file.
+  An upload link never overwrites by design (`ISSUE-UPLOAD-REPLACE-01`); replacing takes
+  `update-link`. It also appeared in earlier matrix runs.
+
 ## Dependencies
 
 - **Go, 10 reachable (`govulncheck`):** `golang.org/x/net` v0.56.0 (4, fixed in
