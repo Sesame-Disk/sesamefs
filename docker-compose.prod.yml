@@ -302,7 +302,9 @@ services:
         }
 
         app_role_has_grants() {
-          cqlsh cassandra -u cassandra -p "$${admin_pass}" -e "LIST ALL PERMISSIONS OF $${app_user};" 2>/dev/null | grep -q "<keyspace $${keyspace}>"
+          # grep reads the whole listing on purpose: grep -q exits at the first match,
+          # which sends SIGPIPE to cqlsh and fails the pipeline under pipefail.
+          cqlsh cassandra -u cassandra -p "$${admin_pass}" -e "LIST ALL PERMISSIONS OF $${app_user};" 2>/dev/null | grep "<keyspace $${keyspace}>" >/dev/null
         }
 
         # On a fresh multi-DC cluster the first run can fail right after the system_auth
