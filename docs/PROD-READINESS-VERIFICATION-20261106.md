@@ -306,6 +306,19 @@ with shipped Cassandra timeouts:
 - **Concurrency failures come from global serialization, not from X1:** August with
   `SERIAL` fails the same shapes at the same rates.
 
+**Ways to recover speed, none started.** `LOCAL_SERIAL` is excluded: it is fast because it
+can lose acknowledged uploads.
+
+- Fewer global rounds per upload: review whether the six LWTs can be combined or done
+  once per session without weakening X1 (`ISSUE-UPLOAD-PER-BLOCK-PAXOS-01`).
+- A HEAD partition per library, so that different libraries stop contending
+  (`ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01`).
+- Avoid cross-DC coordination in the common case, for example a home region per library
+  that performs its writes. This is a larger design decision.
+
+Each touches the HEAD and publication path that the X1 evidence depends on, so each needs
+a maintainer decision and its own evidence.
+
 ## Dependencies
 
 - **Go, 10 reachable (`govulncheck`):** `golang.org/x/net` v0.56.0 (4, fixed in
