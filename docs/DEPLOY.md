@@ -1826,9 +1826,9 @@ If every line is `[OK]`, proceed to Step M4.
 
   > The migrator takes no cross-process lock. In a [three-DC trial](./PROD-READINESS-VERIFICATION-20261106.md#simultaneous-first-boot)
   > with all backends started at once, processes could time out and exit, then
-  > converge on restart. Starting one first limits that, but it still restarted 20 times
-  > on an authenticated three-DC cluster before converging
-  > (`ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01`). Wait for the log line above.
+  > converge on restart. Starting one first limits that; on a loaded host it still
+  > restarted 20 times before converging (`ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01`).
+  > Wait for the log line above.
 
 ### Step M5 — Verify
 
@@ -2038,8 +2038,10 @@ username+password) **always returns 401** when `AUTH_DEV_MODE=false`.
 - **No backup or restore procedure exists** (`ISSUE-BACKUP-RESTORE-MISSING-01`) —
   put one in place and test a restore before storing data that must survive.
 - **Shipped Cassandra timeouts fail uploads under WAN latency** (`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`) —
-  in a simulated 80 ms RTT rehearsal, raising `cas_contention_timeout` and `write_request_timeout`
-  to 5 s fixed sequential uploads. The compose has no setting for them yet.
+  in a simulated 80 ms RTT rehearsal, concurrent uploads from different regions succeeded 22 of 72
+  times; raising `cas_contention_timeout` and `write_request_timeout` to 5 s gave 62 of 72. The
+  compose has no setting for them yet. The underlying contention is
+  `ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01`.
 - **Upload failures log at INFO** (`ISSUE-LOG-PRINTF-LEVEL-01`) — alert on HTTP 5xx, not log level.
 - **No scheduled `nodetool repair` procedure exists** (`ISSUE-CASSANDRA-REPAIR-RUNBOOK-01`) —
   multi-DC deployments need one; the repair steps above cover only adding a DC.

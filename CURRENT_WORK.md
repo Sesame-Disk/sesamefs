@@ -9,9 +9,10 @@ go-live blockers accepted for the pilot and fixed along the way. The standard ru
 exits 1 under this GC-off posture: integration 555/0/89, API 19 of 20 (`test-gc.sh`
 expects GC on), OIDC suite not run with OIDC enabled.
 [Three-DC rehearsal](docs/PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal) on one
-host: first bootstrap fails, shipped Cassandra timeouts fail uploads under simulated WAN
-latency, heavy same-library contention returns 500s; integrity held in every run, one DC down
-works and real `seaf-cli` syncs. Next: decide the bootstrap and timeout fixes. Open PRs: #320,
+host: first bootstrap fails 3 of 3; under simulated WAN latency, concurrent uploads fail
+across an organization's libraries because they share one HEAD Paxos partition, and one
+user's upload takes about 2.7 s; integrity held in every run, one DC down works and real
+`seaf-cli` syncs. Next: decide the bootstrap and timeout fixes and the partition design. Open PRs: #320,
 #324, #325. No gate closes. PRE-GC/A1 OPEN, ordinary GC OFF.
 
 ## Previous merged slice: Phase 6 suspended, P6-2 (2026-10-19)

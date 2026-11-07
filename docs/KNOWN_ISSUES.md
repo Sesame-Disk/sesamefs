@@ -4,34 +4,55 @@
 
 [Dated verification on main@a21f4203d](./PROD-READINESS-VERIFICATION-20261106.md):
 the application path works on the production compose with GC off; the three-DC rehearsal
-found a failing first bootstrap and uploads failing under simulated WAN latency, and data
-integrity held. By maintainer decision the next step is a **disposable internal pilot on three DCs**, with backup
+found a failing first bootstrap and, under simulated WAN latency, concurrent uploads failing
+across an organization's libraries; data integrity held. By maintainer decision the next step is a **disposable internal pilot on three DCs**, with backup
 deferred and the two go-live blockers accepted for that pilot and fixed along the way.
 Issues below are new registrations of pre-existing conditions. No existing severity
 changes and nothing closes. PRE-GC/A1 OPEN, GC OFF.
 
 ### ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01: First three-DC bootstrap fails before creating the application role
 
-**Status:** OPEN (2026-11-06), reproduced 2 of 2 fresh runs. **Severity:** P1 / deployment;
+**Status:** OPEN (2026-11-06), reproduced 3 of 3 fresh runs. **Severity:** P1 / deployment;
 pre-existing. **Affected:** `cassandra-bootstrap` in `docker-compose.prod.yml`.
 
-`ALTER KEYSPACE system_auth` raises replication to three DCs, and `CREATE ROLE` in the same
-`cqlsh` session then fails with `User cassandra does not have sufficient privileges`, so
-`GRANT` fails too and the service exits 2. Every backend then crash-loops on bad
-credentials. **Workaround:** run the bootstrap again until `sesamefs_app` exists; a retry
-succeeded both times, after 30 seconds and after about 17 minutes, without a repair. Cause not
-isolated. [Evidence](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal).
+The service exits 2 every time. Twice, `ALTER KEYSPACE system_auth` raised replication to
+three DCs and `CREATE ROLE` in the same `cqlsh` session then failed with `User cassandra does
+not have sufficient privileges`, so `GRANT` failed too and every backend crash-looped on bad
+credentials. The third time a statement failed with `Unavailable` and the role was created.
+**Workaround:** run the bootstrap again until it exits 0 and `sesamefs_app` exists; a retry
+succeeded whenever needed, without a repair. Cause not isolated. [Evidence](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal).
 
 ### ISSUE-CASSANDRA-TIMEOUTS-WAN-01: Shipped Cassandra timeouts fail uploads under WAN latency
 
-**Status:** OPEN (2026-11-06), measured with simulated latency on one host. **Severity:** P1 /
-availability on multi-DC; pre-existing. **Affected:** `docker-compose.prod.yml`, which leaves
-`cas_contention_timeout` at 1000 ms and `write_request_timeout` at 2000 ms with no setting.
+**Status:** OPEN (2026-11-06), measured with simulated latency on one idle host. **Severity:**
+P1 / availability on multi-DC; pre-existing. **Affected:** `docker-compose.prod.yml`, which
+leaves `cas_contention_timeout` at 1000 ms and `write_request_timeout` at 2000 ms with no
+setting.
 
-At about 80 ms RTT, one user's sequential 64 KB uploads succeeded 5 of 12 times with shipped
-timeouts and 12 of 12 with 5 s for both. Single-run numbers. This does not fix contention on
-one library, which stays with `ISSUE-SEAFHTTP-UPLOAD-FINALIZE-LEASE-ERROR-500-01`.
-`paxos_variant: v2` made contention worse on 5.0.9.
+At about 80 ms RTT, simultaneous uploads from three regions into different libraries of one
+organization succeeded 22 of 72 times with shipped timeouts and 62 of 72 with 5 s for both.
+Sequential uploads succeeded either way. This mitigates
+`ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01`; it does not fix contention on one library,
+which stays with `ISSUE-SEAFHTTP-UPLOAD-FINALIZE-LEASE-ERROR-500-01`. `paxos_variant: v2`
+made contention worse on 5.0.9 in one run. An earlier run on a shared host reported much worse
+sequential results; it is superseded.
+[Evidence](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal).
+
+### ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01: Every library of an organization shares one HEAD Paxos partition
+
+**Status:** OPEN (2026-11-06), measured with simulated latency; mechanism from the schema.
+**Severity:** P1 / availability on multi-DC; pre-existing design. **Affected:** the HEAD CAS in
+`FSHelper` (`UPDATE libraries ... WHERE org_id = ? AND library_id = ? IF head_commit_id = ?`)
+and the other library-head LWTs; `libraries` is keyed `((org_id), library_id)`.
+
+Cassandra runs Paxos per partition, so HEAD publications for all libraries of an
+organization contend with each other under global `SERIAL`. At about 80 ms RTT, uploads from
+three regions into three different libraries of one organization succeeded 22 of 72 times
+with shipped timeouts, 34 of 72 with only one backend running, and 62 of 72 with 5 s timeouts;
+the HEAD CAS timeout dominated the logs. At no added latency the same shape succeeded 72 of 72.
+An internal pilot with one organization puts every write in the company on one partition.
+The fix is a data-model change on the HEAD authority path, which X1 evidence depends on: it
+needs a maintainer decision and its own evidence.
 [Evidence](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal).
 
 ### ISSUE-HEALTH-PING-FALSE-OK-01: `/ping` answers 200 through nginx with the backend down
@@ -45,14 +66,14 @@ every backend crash-loops. A load balancer or monitor using it never sees an out
 
 ### ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01: First boot on three DCs restarts repeatedly before converging
 
-**Status:** OPEN (2026-11-06), measured. **Severity:** P2 / operations; pre-existing.
+**Status:** OPEN (2026-11-06), seen once. **Severity:** P3 / operations; pre-existing.
 **Affected:** `Migrator.apply`.
 
-With authentication on three DCs, applying `001` from one backend needed 20 process restarts
-over about 3.5 minutes: statements time out, the process exits, and `restart: unless-stopped`
-resumes through idempotent statements. It converged with identical table ids. Not observed on
-one DC; rare on the three-DC fixture without authentication, in one of two trials. Cause not
-isolated. Start one backend first and expect the restarts.
+On a host shared with other load, applying `001` from one backend on three authenticated DCs
+needed 20 process restarts over about 3.5 minutes: statements time out, the process exits, and
+`restart: unless-stopped` resumes through idempotent statements. It converged with identical
+table ids. On an idle host the same step finished in 152 s with no restart. A slow real WAN
+may do the same. Start one backend first.
 
 ### ISSUE-TAG-CLEANUP-COUNTER-BATCH-01: Permanent delete always fails its tag cleanup
 
@@ -11302,8 +11323,9 @@ Decide SoT (IdP wins / admin wins / last-write-wins with audit) in
 
 ### ISSUE-UPLOAD-PER-BLOCK-PAXOS-01: One `SERIAL` LWT/Paxos transaction per block on upload
 
-**2026-11-06 simulated measurement, not a production number:** a 64 KB web upload took about 2.8 s at
-80 ms RTT and 276 ms at none, on [one host](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal).
+**2026-11-06 simulated measurement, not a production number:** a 64 KB web upload took about 2.7 s at
+80 ms RTT and 0.2 s at none, on [one idle host](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal);
+an uncontended `SERIAL` write took 312 ms, so an upload spends roughly eight or nine such round trips.
 
 **Status**: 🟡 Open — deferred PR-11 pending measurement
 **Severity**: High (perf), not a correctness blocker
@@ -12275,7 +12297,7 @@ Do not weaken the per-file admission or turn a missing object into an empty dire
 ## ISSUE-SEAFHTTP-UPLOAD-FINALIZE-LEASE-ERROR-500-01
 
 **2026-11-06:** reproduced on the [production compose](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal);
-45 uploads into one library from three regions succeeded 15–22 times with shipped timeouts.
+45 uploads into one library from three regions succeeded 30–36 times on an idle host, either timeout setting.
 
 **Status:** OPEN. **Severity:** P2 / CURRENT-RUNTIME availability follow-up, multi-DC; pre-existing. The measured lease-acquisition failures precede HEAD publication. No X1 safety closure or violation follows from these availability results.
 

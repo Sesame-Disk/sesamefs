@@ -13,8 +13,10 @@ no issue. The decisions below are the maintainer's.
 
 **Go for a disposable internal pilot on three DCs, by maintainer decision, after two
 fixes.** The [three-DC rehearsal](#three-dc-rehearsal) found that the first bootstrap
-fails, and that with Cassandra's shipped timeouts and simulated WAN latency, even one
-user's sequential uploads mostly fail. Data integrity held in every run. This is not a
+fails, and that with simulated WAN latency, simultaneous uploads from different regions
+mostly fail even on different libraries, because one organization shares one Paxos
+partition. One user's uploads work but take about 2.7 s at 80 ms RTT. Data integrity
+held in every run. This is not a
 production certification, and it supplies no evidence for external users or for data
 that must survive. The purpose of the pilot is real testing: much has changed since X1
 and X2 closed, and none of it has run on a real deployment.
@@ -35,13 +37,13 @@ OPEN and GC stays OFF on every replica in every DC.
 
 | Item | Why |
 |---|---|
-| **Fix or work around the first bootstrap** | [`ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01`](./KNOWN_ISSUES.md#issue-cassandra-bootstrap-3dc-role-01-first-three-dc-bootstrap-fails-before-creating-the-application-role): failed 2 of 2 fresh runs. Run it again until the role exists |
-| **Raise Cassandra's write and CAS timeouts on every node** | [`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`](./KNOWN_ISSUES.md#issue-cassandra-timeouts-wan-01-shipped-cassandra-timeouts-fail-uploads-under-wan-latency): the production compose has no setting for them yet |
+| **Fix or work around the first bootstrap** | [`ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01`](./KNOWN_ISSUES.md#issue-cassandra-bootstrap-3dc-role-01-first-three-dc-bootstrap-fails-before-creating-the-application-role): failed 3 of 3 fresh runs. Run it again until it exits 0 and the role exists |
+| **Raise Cassandra's write and CAS timeouts on every node** | [`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`](./KNOWN_ISSUES.md#issue-cassandra-timeouts-wan-01-shipped-cassandra-timeouts-fail-uploads-under-wan-latency): mitigates the per-organization contention until it is fixed; the production compose has no setting for them yet |
 | Build the release from an exact commit | No CI exists, so images are built and pushed by hand. Merge #324 first; see [Dependencies](#dependencies) |
 | Set memory limits per host | [`ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01`](./KNOWN_ISSUES.md#issue-prod-compose-no-memory-limit-01-production-compose-sets-no-container-memory-limit). `pack-fs` amplification can otherwise take Cassandra down on the same host |
 | One backend per regional hostname | Three pieces of state are per process; see [Topology](#topology) |
 | Central nginx and user provisioning per region | See [Operational notes](#operational-notes) |
-| Run DEPLOY Step M4 and M5 | Expect many backend restarts on first boot (`ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01`). Health-check with `/api2/ping`, because `/ping` answers 200 even with the backend down (`ISSUE-HEALTH-PING-FALSE-OK-01`) |
+| Run DEPLOY Step M4 and M5 | Health-check with `/api2/ping`, because `/ping` answers 200 even with the backend down (`ISSUE-HEALTH-PING-FALSE-OK-01`). A slow first boot can restart the backend several times (`ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01`) |
 
 ### Accepted go-live blockers
 
@@ -117,7 +119,7 @@ Runs used a private Docker project with fresh volumes on one host: 7 CPUs, 14 GB
 | Real `seaf-cli` sync | **PASS** 11/11 | Plain and encrypted. Desktop GUI, SeaDrive and mobile not run |
 | Frontend unit | **PASS** 34 suites, 471 tests | |
 | Deploy rehearsal, one DC | **37 pass, 2 harness fails, both re-tested as pass** | [Below](#deploy-rehearsal) |
-| Three-DC rehearsal | **Failures found; integrity held** | [Below](#three-dc-rehearsal) |
+| Three-DC rehearsal, two runs | **Failures found; integrity held** | [Below](#three-dc-rehearsal) |
 | Simultaneous migrators on 3 DCs | **Converged in 2 of 2 completed trials** | [Below](#simultaneous-first-boot) |
 | `govulncheck` | **FAIL: 10 reachable** | [Dependencies](#dependencies) |
 | `npm audit --omit=dev` | **FAIL: 2 critical, 16 high** | [Dependencies](#dependencies) |
@@ -184,93 +186,92 @@ fixed IPs replaced the private network and host port publishing, so
 `CASSANDRA_LISTEN_ADDRESS` was set and the backend attached to that network; named
 volumes; 1 GB heap; stand-ins for S3, IdP and central nginx. Latency was added with
 `netem` between Cassandra nodes only, equal between all DCs, so client and S3 paths had
-none added. **It is a simulation on one host; most configurations ran once.**
+none added. **It is a simulation on one host.**
+
+**Two runs, and only the second one counts for rates.** The first ran while other work
+shared Docker on the host; one Cassandra node logged a 118 s local pause. The second ran
+with Docker to itself, from zero, with every container's CPU sampled every 15 s: median
+35% of 700%, and the peaks were the rehearsal's own probe builds. Numbers below are from
+the second run unless stated. The first run's failure rates were much higher and are not
+used.
 
 ### What failed
 
-**The first bootstrap, 2 of 2 fresh runs.** Step M4.5 exits 2:
-`ALTER KEYSPACE system_auth` raises replication, then in the same session `CREATE ROLE`
-answers `User cassandra does not have sufficient privileges`, so the application role
-does not exist and every backend crash-loops with bad credentials. Running the bootstrap
-again succeeded both times, 30 seconds and about 17 minutes later, without a repair. The
-cause was not isolated. The one-DC rehearsal does not show this, and the existing three-DC
-fixture runs without authentication.
+**The first bootstrap, 3 of 3 fresh runs.** Step M4.5 exits 2. Twice, `ALTER KEYSPACE
+system_auth` raised replication and `CREATE ROLE` in the same session then answered
+`User cassandra does not have sufficient privileges`, so the application role did not
+exist and every backend crash-looped with bad credentials. The third time a statement
+failed with `Unavailable` and the role was created. Running the bootstrap again
+succeeded every time it was needed, without a repair. The cause was not isolated. The
+one-DC rehearsal does not show this, and the existing three-DC fixture runs without
+authentication.
 
-**Uploads under simulated WAN latency, with shipped timeouts.** Each cell is successes
-of attempts for the upload shape, then the median time of successful uploads:
+**Concurrent uploads across an organization, under latency.** Each cell is successes of
+attempts, then the median time of successful uploads. Two repetitions per column:
 
-| Shape | Shipped 1 s / 2 s, no latency | Shipped, about 80 ms RTT | Shipped, about 200 ms RTT | 5 s / 5 s, about 80 ms RTT |
+| Shape | Shipped 1 s / 2 s, no latency | Shipped, about 80 ms RTT | Shipped, 80 ms, only NA's backend running | 5 s / 5 s, about 80 ms RTT |
 |---|---:|---:|---:|---:|
-| Sequential, one user, 64 KB | 12/12, 276 ms | **5/12**, 2.8 s | **5/12**, 9.5 s | 12/12, 2.7 s |
-| Sequential, other region, 64 KB | 12/12, 296 ms | 12/12, 2.9 s | 11/12, 6.9 s | 12/12, 2.7 s |
-| Sequential, 8 MB | 4/4, 306 ms | **2/4**, 5.7 s | 3/4, 6.7 s | 4/4, 3.4 s |
-| One region, 3 parallel, same library | 15/15, 411 ms | **7/15**, 5.7 s | 11/15, 15.2 s | 14/15, 5.2 s |
-| Three regions, different libraries | 30/36, 356 ms | 23/36, 3.9 s | **11/36**, 9.4 s | 25/36, 4.9 s |
+| Sequential, one user, 64 KB | 12/12, 12/12; 0.2 s | 12/12, 12/12; 2.7 s | 12/12, 12/12; 2.7 s | 12/12, 12/12; 2.7 s |
+| Sequential, 8 MB | 4/4, 4/4; 0.3 s | 4/4, 4/4; 2.8 s | 4/4, 4/4; 3.0–3.4 s | 4/4, 4/4; 2.8 s |
+| One region, 3 parallel, same library | 15/15, 15/15 | 15/15, 15/15; 5.0 s | 15/15, 14/15; 6.1 s | 14/15, 15/15; 5.1 s |
+| **Three regions at once, different libraries, same org** | 36/36, 36/36 | **12/36, 10/36** | **14/36, 20/36** | 29/36, 33/36; 4.8–5.2 s |
 
-Raising `cas_contention_timeout` and `write_request_timeout` clearly helps sequential
-use at 80 ms. Upload time follows the number of Paxos round trips, not file size.
-Directory listings stayed at about 25–30 ms at every latency.
+- **One user's uploads work at 80 ms, but each takes about 2.7 s instead of 0.2 s.**
+  Uncontended `SERIAL` writes measured directly took 312 ms at that latency, about four
+  round trips, so an upload spends roughly eight or nine of them. Listing stayed at
+  about 25 ms and an 8 MB download at about 70 ms.
+- **Writers in different regions fail even on different libraries.** The HEAD CAS is
+  `UPDATE libraries ... WHERE org_id = ? AND library_id = ? IF head_commit_id = ?`, and
+  the partition key is `org_id`, so every library of an organization shares one Paxos
+  partition across DCs (`ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01`). Its timeouts
+  dominate the logs. Stopping the other two backends barely changed the result, so their
+  background work is not the cause.
+- **Raising `cas_contention_timeout` and `write_request_timeout` to 5 s** took that shape
+  from 22 of 72 to 62 of 72 successes, and changed nothing else measurably.
 
-**Heavy contention on one library.** 45 uploads from three regions into the same
-library, with concurrent `mkdir` from every region:
-
-| Configuration | Successes of 45, parallel 6 with `mkdir` | Successes of 45, parallel 3 without |
-|---|---:|---:|
-| Shipped timeouts, no latency | 22, 15, 17 | 44 |
-| 5 s timeouts, no latency | 39, 20, 42 | 45, 42 |
-| `paxos_variant: v2`, shipped timeouts, no latency | 6 | 30 |
-| Shipped timeouts, about 80 ms RTT | not valid | 11 |
-| 5 s timeouts, about 80 ms RTT | 3 | 9 |
-
-Timeouts do not solve this shape, and `paxos_variant: v2` made it worse. The errors
-arrive from Cassandra: a direct same-partition CAS probe with no SesameFS gets 1–5%
-`CAS operation result is unknown` or timeouts at no added latency, while uncontended
-`SERIAL` LWTs took about 5 ms. SesameFS returns these as HTTP 500 from the per-library
-finalize lease, the HEAD CAS and the block install.
+**Heavy contention on one library, no added latency.** 45 uploads from three regions
+into the same library, parallel 6, with concurrent `mkdir` from every region: 30, 36
+and 34 successes with shipped timeouts; 33, 33 and 27 with 5 s. Timeouts make no
+difference here. A direct same-partition CAS probe with no SesameFS gets 1–5%
+`CAS operation result is unknown` or timeouts, which SesameFS returns as HTTP 500 from
+the finalize lease, the HEAD CAS or the block install. `paxos_variant: v2` was worse in
+the first run and was not repeated.
 
 **Smaller findings.**
 
-- First boot: `001` needed 20 backend restarts over about 3.5 minutes with one backend
-  starting alone, because individual statements timed out and the process exits. It
-  converged: identical table ids on all DCs, one schema version. The other two backends
-  then started with no restarts. In an earlier run on a slow bind mount, all three
-  backends crash-looping together also reported `INCOMPATIBLE_SCHEMA` and a transient
-  table difference.
 - `/ping` through the frontend nginx returns the SPA with HTTP 200, even with every
   backend down. `/api2/ping` is correct.
-- First LWT on a table: 2 of 24 sequential uploads failed with an ambiguous block install
-  right after setup, then the same shape succeeded. A raw probe saw the same on its first
-  statements.
-- Immediately after a library is created in another region, uploads there returned 503
-  or 500 (`failed to get root fs_id`, `invalid UUID ""`). A library soft-deleted at NA
-  still read as not deleted at EU two seconds later. One acked upload was not listed at
-  one region for over 3 seconds, then was.
 - Permanent delete always fails its tag cleanup
   (`ISSUE-TAG-CLEANUP-COUNTER-BATCH-01`), and all 170 upload-failure lines in one
   backend log were `level=INFO` (`ISSUE-LOG-PRINTF-LEVEL-01`).
 - Login started on one region and finished on another fails with
   `invalid state: state not found`, which reproduces
   `ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01`.
+- First run only: the first backend needed 20 restarts to apply `001`, and right after a
+  library was created in another region, uploads there returned 503 or 500
+  (`failed to get root fs_id`, `invalid UUID ""`). In the second run the first backend
+  applied `001` in 152 s with no restart, and the cross-region matrix passed. A soft
+  delete at NA still read as not deleted at EU 2 s later, in the first run.
 
 ### What held
 
-- **Integrity, in every comparable run.** Across 14 concurrency runs, all 345 uploads
-  acknowledged with 200 were listed, none lost; none of the 285 failed uploads was
-  listed, checked seconds after each run. Region views matched, apart from the lag above.
+- **Integrity, in every run.** Across 20 concurrency runs, all 538 uploads acknowledged
+  with 200 were listed, none lost; none of the 362 failed uploads was listed, checked
+  seconds after each run. One acknowledged upload took over 3 s to appear in one region.
   This checks listings, not a formal consistency proof.
-- **One DC down.** With Asia's Cassandra stopped, account, listing, download, upload,
-  library creation and share links all succeeded in all three regions. Asia's backend can
-  only have used another DC's coordinator, which needs CQL reachable across the private
-  network as in this setup. After restart, files converged everywhere.
-- **Two DCs down.** Reads and downloads succeeded. Uploads and library creation failed
-  fast with 500 and published nothing. After restart, everything recovered with no
-  backend restarts.
+- **First boot, second run.** One backend alone applied `001` with no restart; the
+  other two started in about 5 s.
 - **Cross-region use.** Login in each region, a session valid everywhere, read and write
-  across regions, encrypted libraries needing unlock per region and share links. A library
-  created at EU stored its bytes in the EU bucket; Asia's placement was not confirmed,
-  because its test content was deduplicated.
-- **Real `seaf-cli` across regions, at no added latency and at about 80 ms RTT.** Two
-  clients on different regions with an OIDC-issued token: 200 KB in 11–44 s, 20 MB in
+  across regions, encrypted libraries needing unlock per region and share links. A
+  library created at EU stored its bytes in the EU bucket.
+- **One DC down, first run.** With Asia's Cassandra stopped, account, listing, download,
+  upload, library creation and share links all succeeded in all three regions. Asia's
+  backend can only have used another DC's coordinator, which needs CQL reachable across
+  the private network as in this setup. After restart, files converged everywhere.
+- **Two DCs down, first run.** Reads and downloads succeeded. Uploads and library
+  creation failed fast with 500 and published nothing. Everything recovered.
+- **Real `seaf-cli` across regions, first run, at no added latency and at about 80 ms.**
+  Two clients on different regions with an OIDC-issued token: 200 KB in 11–44 s, 20 MB in
   about 20 s, 40 small files in about 45 s. **Not settled:** after both clients edited
   one file, neither showed a conflict copy within 45 s and one reported a network error,
   with a 503 on `PUT commit/HEAD`.
@@ -296,11 +297,12 @@ All are pre-existing. No severity of an existing issue changes here.
 |---|---|---|---|
 | `ISSUE-BACKUP-RESTORE-MISSING-01` | P1, deferred for the pilot | No backup or restore exists | Repo search |
 | `ISSUE-CASSANDRA-REPAIR-RUNBOOK-01` | P2 ops, multi-DC | No scheduled repair procedure | Repo search |
-| `ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01` | P1 deploy | First three-DC bootstrap fails before creating the application role | Reproduced 2 of 2 |
-| `ISSUE-CASSANDRA-TIMEOUTS-WAN-01` | P1 availability | Shipped timeouts fail uploads under simulated WAN latency | Measured |
+| `ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01` | P1 deploy | First three-DC bootstrap fails, usually before creating the application role | Reproduced 3 of 3 |
+| `ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01` | P1 availability, multi-DC | Every library of an org shares one HEAD Paxos partition | Measured, schema read |
+| `ISSUE-CASSANDRA-TIMEOUTS-WAN-01` | P1 availability | Shipped timeouts fail concurrent uploads under simulated WAN latency | Measured |
 | `ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01` | HIGH, multi-instance | Login state is an in-process map | Reproduced across two regions |
 | `ISSUE-HEALTH-PING-FALSE-OK-01` | P2 | `/ping` answers 200 through nginx with the backend down | Reproduced |
-| `ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01` | P2 | First boot on three DCs restarts repeatedly, then converges | Measured |
+| `ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01` | P3 | First boot restarted 20 times under host load, then converged | Seen once, not on an idle host |
 | `ISSUE-TAG-CLEANUP-COUNTER-BATCH-01` | P2 | Permanent delete always fails its tag cleanup | Reproduced, code read |
 | `ISSUE-LOG-PRINTF-LEVEL-01` | P2 ops | Upload failures log at INFO, so level-based alerts miss them | Measured |
 | `ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01` | P2 config | The admission budget falls back to the reference value | Measured in startup log |

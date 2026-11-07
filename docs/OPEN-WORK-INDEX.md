@@ -7,7 +7,8 @@ the application path works on the production compose with GC off. Maintainer dec
 **disposable internal pilot on three DCs**, backup deferred, the two go-live blockers
 accepted for that pilot and fixed along the way. The three-DC rehearsal found two items to
 fix or work around first: `ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01` and
-`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`. New pre-existing registrations are in
+`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`, the latter as mitigation for
+`ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01`. New pre-existing registrations are in
 [KNOWN_ISSUES](./KNOWN_ISSUES.md#internal-deployment-readiness-verification-2026-11-06).
 No gate closes. PRE-GC/A1 OPEN, GC OFF.
 
@@ -602,9 +603,10 @@ logical-block PK replacement, and X1 remain open.
 | `ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01` | HIGH | `pack-fs` materializes the whole response: ~409k repeats of one valid id, `PermissionR` only. `check-fs` shares the fan-out | Found auditing X9; the fs-id equivalent of the closed X11 |
 | `ISSUE-SYNC-RECVFS-NOT-WRITE-ONCE-01` | HIGH (P1) ✅ Fixed by merged PR #208 | `RecvFS` validates lowercase `fs_id`, compares logical SHA-1 identity across legacy/canonical layouts, completes pre-existing placeholders, rejects semantic conflicts, fails closed on storage errors, and avoids new child upserts/Paxos | [known issue](./KNOWN_ISSUES.md#issue-sync-recvfs-not-write-once-01) · PR #208 merged; #206 is being revalidated on main |
 | `ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01` | P1 deploy | First three-DC bootstrap fails before creating the application role; running it again works | [known issue](./KNOWN_ISSUES.md#issue-cassandra-bootstrap-3dc-role-01-first-three-dc-bootstrap-fails-before-creating-the-application-role) |
-| `ISSUE-CASSANDRA-TIMEOUTS-WAN-01` | P1 availability | Shipped Cassandra timeouts fail most sequential uploads at simulated 80 ms RTT; 5 s fixes that shape | [known issue](./KNOWN_ISSUES.md#issue-cassandra-timeouts-wan-01-shipped-cassandra-timeouts-fail-uploads-under-wan-latency) |
+| `ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01` | P1 availability, multi-DC | Every library of an org shares one HEAD Paxos partition; concurrent uploads from different regions failed 50 of 72 at simulated 80 ms RTT | [known issue](./KNOWN_ISSUES.md#issue-library-head-org-partition-contention-01-every-library-of-an-organization-shares-one-head-paxos-partition) |
+| `ISSUE-CASSANDRA-TIMEOUTS-WAN-01` | P1 availability | Shipped Cassandra timeouts; 5 s raised concurrent cross-region uploads from 22 to 62 of 72 at simulated 80 ms RTT | [known issue](./KNOWN_ISSUES.md#issue-cassandra-timeouts-wan-01-shipped-cassandra-timeouts-fail-uploads-under-wan-latency) |
 | `ISSUE-HEALTH-PING-FALSE-OK-01` | P2 ops | `/ping` answers 200 through nginx with the backend down; use `/api2/ping` | [known issue](./KNOWN_ISSUES.md#issue-health-ping-false-ok-01-ping-answers-200-through-nginx-with-the-backend-down) |
-| `ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01` | P2 ops | First boot on three DCs restarts repeatedly, then converges | [known issue](./KNOWN_ISSUES.md#issue-migrator-first-boot-3dc-restarts-01-first-boot-on-three-dcs-restarts-repeatedly-before-converging) |
+| `ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01` | P3 ops | First boot restarted 20 times under host load, then converged; not seen on an idle host | [known issue](./KNOWN_ISSUES.md#issue-migrator-first-boot-3dc-restarts-01-first-boot-on-three-dcs-restarts-repeatedly-before-converging) |
 | `ISSUE-TAG-CLEANUP-COUNTER-BATCH-01` | P2 | Permanent delete always fails its tag cleanup | [known issue](./KNOWN_ISSUES.md#issue-tag-cleanup-counter-batch-01-permanent-delete-always-fails-its-tag-cleanup) |
 | `ISSUE-LOG-PRINTF-LEVEL-01` | P2 ops | Upload failures log at INFO, so level-based alerts miss the cause | [known issue](./KNOWN_ISSUES.md#issue-log-printf-level-01-upload-failures-log-at-info) |
 | `ISSUE-BACKUP-RESTORE-MISSING-01` | P1, deferred while pilot data is disposable | No backup, restore runbook or restore drill exists; required as soon as data must survive | [known issue](./KNOWN_ISSUES.md#issue-backup-restore-missing-01-no-backup-or-restore-procedure-exists) |
