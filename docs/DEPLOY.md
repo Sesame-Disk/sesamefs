@@ -21,6 +21,11 @@ incompatible rolling upgrades with active GC. Both pre-#239 mixed writer/GC
 counterexamples remain [P1 FOLLOW-UP / GENERAL](./KNOWN_ISSUES.md#issue-w2-incompatible-mixed-rollout-01-incompatible-rolling-upgrade-can-publish-head-after-d);
 they are outside first production, not hidden or fixed by this contract.
 
+The current deployment is a
+[disposable internal pilot on three DCs](./PROD-READINESS-VERIFICATION-20261106.md#maintainer-decisions-2026-11-06):
+assume any data can be lost, and rebuild instead of migrating when that is simpler.
+It is not evidence for external users or for data that must survive.
+
 ## Architecture
 
 ```
@@ -742,7 +747,7 @@ instead of attempting `CREATE KEYSPACE` through the restricted app role.
 
 > `ACCOUNTS_DISABLE_ORG_USER_WRITES` should normally stay `true`. That keeps tenant org-admin user lifecycle writes disabled so Accounts remains the operational authority. Platform superadmins still bypass that tenant lock as an operational fallback, but Accounts should prefer the `/admin/...` surface.
 
-> `gc.enabled` defaults to `false` in YAML. Keep `GC_ENABLED=false` on **every replica in every DC** while X1 or PRE-GC/A1 remains open. [X1's criterion disposition](./KNOWN_ISSUES.md#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes) takes effect on maintainer merge of the scoped E1 decision; before then X1 is OPEN. PRE-GC/A1 remain OPEN regardless of that merge. X2 is closed under the stable-topology operational contract; changing the replication DC set or RF with existing reference state requires a separately certified migration before GC can be reconsidered. The LWT lease does not close X1. X1 closure alone does not authorize activation: only after X1 closes **and** the PRE-GC / A1 gate ([X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §6) closes may designated replicas in one DC set `GC_ENABLED=true` and participate under the lease; all replicas in every other DC must remain false.
+> `gc.enabled` defaults to `false` in YAML. Keep `GC_ENABLED=false` on **every replica in every DC** while X1 or PRE-GC/A1 remains open. [X1's criterion disposition](./KNOWN_ISSUES.md#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes) took effect when the maintainer merged the scoped E1 decision (#312, 2026-10-17), so X1 is CLOSED for that scope. PRE-GC/A1 remain OPEN regardless. X2 is closed under the stable-topology operational contract; changing the replication DC set or RF with existing reference state requires a separately certified migration before GC can be reconsidered. The LWT lease does not close X1. X1 closure alone does not authorize activation: only after X1 closes **and** the PRE-GC / A1 gate ([X1-CRITICAL-PATH.md](./X1-CRITICAL-PATH.md) §6) closes may designated replicas in one DC set `GC_ENABLED=true` and participate under the lease; all replicas in every other DC must remain false.
 
 > `SERVER_TRUSTED_PROXIES` should never be set to `0.0.0.0/0`, `::/0`, or another blanket range. In the supported two-nginx topology above, trust only the internal SesameFS nginx network that talks directly to Go. If you leave it unset, SesameFS ignores forwarded-IP headers and uses the direct socket peer instead.
 
@@ -2029,7 +2034,9 @@ username+password) **always returns 401** when `AUTH_DEV_MODE=false`.
 - **Single Cassandra node** (single-region default) — suitable for testing
   and early production. For HA, deploy multi-region (see above).
 - **No backup or restore procedure exists** (`ISSUE-BACKUP-RESTORE-MISSING-01`) —
-  put one in place and test a restore before storing important data.
+  put one in place and test a restore before storing data that must survive.
+- **No scheduled `nodetool repair` procedure exists** (`ISSUE-CASSANDRA-REPAIR-RUNBOOK-01`) —
+  multi-DC deployments need one; the repair steps above cover only adding a DC.
 - **Existing-library migration is still manual** — the current feature set stores a
   mutable preference for new materializations and resolves historical reads,
   reuse and repairs from each block's canonical class, but does not yet provide

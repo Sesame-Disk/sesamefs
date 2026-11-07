@@ -2,58 +2,80 @@
 
 **Date:** 2026-11-06
 **Source:** `main@a21f4203d`, exported with LF endings; no local changes
-**Question:** is SesameFS ready for a first production deployment for internal
-use, with destructive GC off, where issues are closed progressively from real use?
+**Question:** is SesameFS ready for a first deployment for internal use, with
+destructive GC off, where issues are closed progressively from real use?
 
 This is a dated snapshot. Status of record stays in
 [KNOWN_ISSUES.md](./KNOWN_ISSUES.md); this document supersedes no gate. It closes
-no issue, and the go-live decision belongs to the maintainer.
+no issue. The decisions below are the maintainer's.
 
 ## Verdict
 
-**Not yet, but the remaining work is short and mostly operational.** The tested
-application path works on the production compose. A pilot with trusted internal
-users is reasonable once items 1–5 below are done. This is not a general production
-certification, and it supplies no evidence for external users.
+**Go for a disposable internal pilot on three DCs, by maintainer decision.** The tested
+application path works on the production compose. This is not a production
+certification, and it supplies no evidence for external users or for data that must
+survive. The purpose of the pilot is real testing: much has changed since X1 and X2
+closed, and none of it has run on a real deployment.
 
-### Required before storing data that matters
+### Maintainer decisions (2026-11-06)
 
-| # | Item | Why | Evidence |
-|---|---|---|---|
-| 1 | **Backup and a tested restore** ([`ISSUE-BACKUP-RESTORE-MISSING-01`](./KNOWN_ISSUES.md#issue-backup-restore-missing-01-no-backup-or-restore-procedure-exists)) | Nothing exists. The documented layout is RF 1 per DC, so losing a single-DC Cassandra node loses all metadata; the S3 blocks alone cannot rebuild libraries | No script or runbook in the repo; [roadmap §10](./V1-PRODUCTION-ROADMAP.md) still open |
-| 2 | **Decide whether pilot data is disposable** | The first deploy freezes `001`; schema changes then go in `002+`. If the data must survive, "recreate the keyspace" stops being available and later fixes need an upgrade path. It also decides whether GC can ever activate on this environment, see [below](#gc-off-what-it-means) | [Schema contract](./DATABASE-GUIDE.md#v1-baseline-fold-2026-10-19), [first-production contract](./X1-CRITICAL-PATH.md#first-production-deployment-contract) |
-| 3 | **Choose the topology** | See [Topology](#topology). The guide's default is multi-region, the path with the weakest current evidence | Dated three-API failures; no WAN measurement |
-| 4 | **Decide on the two registered go-live blockers** | Both still reproduce in code. Trusted users reduce exposure; they do not remove it | [Below](#registered-go-live-blockers) |
-| 5 | **Build the release from an exact commit, and set memory limits** | No CI exists, so images are built and pushed by hand. Merge #324 first. The production compose sets no memory limit | [Dependencies](#dependencies), [`ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01`](./KNOWN_ISSUES.md#issue-prod-compose-no-memory-limit-01-production-compose-sets-no-container-memory-limit) |
+| Decision | Consequence |
+|---|---|
+| **Pilot data is disposable** | No upgrade or legacy-data obligation yet. The environment may be rebuilt at any time. The pilot does not trigger the `001` freeze ([schema contract](./DATABASE-GUIDE.md#v1-baseline-fold-2026-10-19)) |
+| **Three DCs from the first day** | The goal is real multi-DC evidence. The known failures below are expected to be exercised, not avoided |
+| **The two registered go-live blockers are accepted for the pilot** | They stay OPEN with their severity and are fixed along the way. External users stay out until both close |
+| **Backup and restore may wait** | [`ISSUE-BACKUP-RESTORE-MISSING-01`](./KNOWN_ISSUES.md#issue-backup-restore-missing-01-no-backup-or-restore-procedure-exists) stays OPEN and listed. It becomes a prerequisite the moment data must survive. Until then, assume any data can be lost |
 
-Also needed on the day, not defects: a user provisioning path, and a central nginx
-configuration. See [Operational notes](#operational-notes).
+These decisions scope this pilot. They close no issue and no gate. PRE-GC/A1 remain
+OPEN and GC stays OFF on every replica in every DC.
 
-### Registered go-live blockers
+### Before first traffic
 
-Both are pre-existing and were re-verified by reading `main`.
+| Item | Why |
+|---|---|
+| Build the release from an exact commit | No CI exists, so images are built and pushed by hand. Merge #324 first; see [Dependencies](#dependencies) |
+| Set memory limits per host | [`ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01`](./KNOWN_ISSUES.md#issue-prod-compose-no-memory-limit-01-production-compose-sets-no-container-memory-limit). `pack-fs` amplification can otherwise take Cassandra down on the same host |
+| One backend per regional hostname | Three pieces of state are per process; see [Topology](#topology) |
+| Central nginx and user provisioning per region | See [Operational notes](#operational-notes) |
+| Run DEPLOY Step M4 and M5 | **The three-DC production compose was not rehearsed here;** the rehearsal below used one DC. Bring-up is the first real test of that path |
 
-| Issue | Confirmed in code | Exposure in a trusted pilot |
+### Accepted go-live blockers
+
+Both are pre-existing, re-verified by reading `main`, and remain OPEN.
+
+| Issue | Confirmed in code | Accepted exposure |
 |---|---|---|
-| `ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01` | `PackFS` does not deduplicate, reads one row per id and buffers the whole response; `parseBoundedIDList` accepts about 409k ids | Any user or leaked token with read access can exhaust node memory. Without a memory limit the blast radius includes Cassandra on the same host |
+| `ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01` | `PackFS` does not deduplicate, reads one row per id and buffers the whole response; `parseBoundedIDList` accepts about 409k ids | Any user or leaked token with read access can exhaust node memory |
 | `ISSUE-APIKEY-READ-SCOPE-UPLOADLINK-FILESHARE-01` | Upload-link creation and all three file-share mutations use bare `HasLibraryAccess`; upload-link update/delete compare only the creator | A read-scoped key can create or change links and shares up to the owner's authority |
-
-Recommendation: accept both explicitly and in writing for a trusted pilot, fix them
-next as separate small PRs, and do not admit external users until both are closed.
-The trade-off is a known availability and least-privilege risk during the pilot.
 
 ### Topology
 
-| Option | Benefit | Cost |
-|---|---|---|
-| **One region, one backend** (recommended for a pilot, if data is disposable) | Avoids the node-local and cross-DC failures below | No HA: a node loss is an outage until restored. Adding a DC to populated reference state needs a separately certified migration before GC can be considered (X2 stable-topology contract) |
-| Three DCs from the first day | Final topology; no later DC-set change | Dated three-API runs of upload plus concurrent activity failed: SeafHTTP 3/3 and V2 2/3 with HTTP 500 on a single Docker host ([ledger](./E1-THREE-API-RESIDUALS.md), 2026-10-16, **not re-run here**). Per-block and HEAD LWTs use global `SERIAL`; WAN latency has never been measured. Needs scheduled `nodetool repair`, for which no runbook exists |
+Three DCs, RF 1 per DC, matching `.env.prod.example`.
 
-Do not place two backends behind one hostname. Three pieces of state are per process:
-chunked uploads (`ISSUE-UPLOAD-CHUNK-MULTINODE-01`), desktop SSO
-(`ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01`), and web login PKCE state
-(`ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01`, new). One backend per regional hostname does
-not hit them.
+- **Availability failures are known and open.** Dated three-API runs of upload plus
+  concurrent activity failed: SeafHTTP 3/3 and V2 2/3 with HTTP 500 on a single Docker
+  host ([ledger](./E1-THREE-API-RESIDUALS.md), 2026-10-16, **not re-run here**).
+  A failed upload can still have published, so do not assume a 500 means nothing
+  happened (`ISSUE-V2-UPLOAD-HEAD-CAS-TIMEOUT-500-01`).
+- **WAN latency has never been measured.** Per-block and HEAD LWTs use global `SERIAL`
+  (`ISSUE-UPLOAD-PER-BLOCK-PAXOS-01`).
+- **Repair is now required.** No scheduled `nodetool repair` runbook exists
+  ([`ISSUE-CASSANDRA-REPAIR-RUNBOOK-01`](./KNOWN_ISSUES.md#issue-cassandra-repair-runbook-01-no-scheduled-repair-procedure-for-multi-dc)).
+- **Do not place two backends behind one hostname.** Chunked uploads
+  (`ISSUE-UPLOAD-CHUNK-MULTINODE-01`), desktop SSO
+  (`ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01`) and web login PKCE state
+  (`ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01`, new) are per process.
+- **The DC set should stay stable.** Changing it with populated reference state needs a
+  separately certified migration before GC can be considered (X2 contract). A rebuild
+  is the simple alternative while data is disposable.
+
+### What the pilot should measure
+
+These are open verification debts that a real deployment can answer: upload and
+finalize 500 rates; per-block LWT latency over WAN; read-after-write across DCs
+(`ISSUE-READ-AFTER-WRITE-CROSS-DC-01`); behaviour with one DC down; real desktop and
+mobile clients; OnlyOffice; metadata retention with GC off, using the report in open
+PR #320.
 
 ### GC off: what it means
 
@@ -63,7 +85,7 @@ status reports `enabled:false`, and `POST /admin/gc/run` answers 503.
 - **Space is never reclaimed.** Measured: objects of a permanently deleted library
   remain in the bucket. Storage and metadata only grow, so monitor bucket size.
 - **Delete does not erase bytes.** Permanent delete removes metadata rows, not
-  objects. State this to users if any compliance expectation applies.
+  objects. Do not put data in the pilot that must be erasable.
 - **Quota still works.** Measured: deleting a 3 MB file took usage from 3,000,000 to 0.
 - **Timed lifecycles do not run:** library trash purge, user and org hard delete,
   audit retention and `auto_delete_days`. Their UI text can overpromise
@@ -72,15 +94,11 @@ status reports `enabled:false`, and `POST /admin/gc/run` answers 503.
   the suites on a GC-off stack.
 - **`GC_ENABLED=false` does not stop every destructive path.** `PermanentDeleteRepo`
   still runs, so the P1 restore race remains live
-  (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`). A backup is the mitigation.
-- **Activation later is an open question.** The first-production contract assumes
-  no inherited candidates, repairs or attempts, and PRE-GC/A1 remain OPEN. Whether GC
-  may activate on data accumulated by this pilot, across later releases, has not been
-  assessed. If it must, that assessment joins the A1 gate; if data is disposable, the
-  environment can be rebuilt instead.
-
-The pilot is useful for that gate: the retention report in open PR #320 needs a
-representative GC-off deployment to measure.
+  (`ISSUE-GC-HARD-DELETE-LEASE-NONFENCING-01`).
+- **GC activation does not inherit this environment.** The
+  [first-production contract](./X1-CRITICAL-PATH.md#first-production-deployment-contract)
+  assumes no inherited candidates, repairs or attempts. A1 needs a rebuilt environment,
+  or a separate carry-forward assessment if that is ever preferred.
 
 ## What was run
 
@@ -171,7 +189,8 @@ All are pre-existing. No severity of an existing issue changes here.
 
 | Issue | Sev | Summary | Evidence |
 |---|---|---|---|
-| `ISSUE-BACKUP-RESTORE-MISSING-01` | P1 go-live | No backup or restore exists | Repo search |
+| `ISSUE-BACKUP-RESTORE-MISSING-01` | P1, deferred for the pilot | No backup or restore exists | Repo search |
+| `ISSUE-CASSANDRA-REPAIR-RUNBOOK-01` | P2 ops, multi-DC | No scheduled repair procedure | Repo search |
 | `ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01` | HIGH, multi-instance | Login state is an in-process map | Code read, **not reproduced** |
 | `ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01` | P2 config | The admission budget falls back to the reference value | Measured in startup log |
 | `ISSUE-SHARELINK-DIR-TRAILING-SLASH-404-01` | P2 | Links the UI emits for a shared folder return JSON 404 | Reproduced through both nginx hops |

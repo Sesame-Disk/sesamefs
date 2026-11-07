@@ -3,22 +3,32 @@
 ## Internal deployment readiness verification (2026-11-06)
 
 [Dated verification on main@a21f4203d](./PROD-READINESS-VERIFICATION-20261106.md):
-not yet ready to store data that matters. The application path works on the
-production compose with GC off. Missing: backup and restore, a data-disposability
-and topology decision, and a maintainer decision on the two registered go-live
-blockers. Issues below are new registrations of pre-existing conditions; no existing
-severity changes and nothing closes. PRE-GC/A1 OPEN, GC OFF.
+the application path works on the production compose with GC off. By maintainer
+decision the next step is a **disposable internal pilot on three DCs**, with backup
+deferred and the two go-live blockers accepted for that pilot and fixed along the way.
+Issues below are new registrations of pre-existing conditions. No existing severity
+changes and nothing closes. PRE-GC/A1 OPEN, GC OFF.
 
 ### ISSUE-BACKUP-RESTORE-MISSING-01: No backup or restore procedure exists
 
-**Status:** OPEN (2026-11-06). **Severity:** P1 / go-live prerequisite for data that
-matters; pre-existing. **Source of record for scope:**
-[roadmap §10](./V1-PRODUCTION-ROADMAP.md).
+**Status:** OPEN (2026-11-06); deferred by maintainer decision while pilot data is
+disposable. **Severity:** P1; pre-existing. Prerequisite as soon as data must survive.
+**Source of record for scope:** [roadmap §10](./V1-PRODUCTION-ROADMAP.md).
 
 The repository has no backup script, restore runbook, RTO/RPO or restore drill. The
 documented layout is RF 1 per DC, so losing a single-DC Cassandra node loses all
 metadata; S3 blocks alone cannot rebuild libraries. Close with a Cassandra and bucket
 backup, plus a restore actually performed on a clean environment.
+
+### ISSUE-CASSANDRA-REPAIR-RUNBOOK-01: No scheduled repair procedure for multi-DC
+
+**Status:** OPEN (2026-11-06). **Severity:** P2 / operations; applies from the first
+three-DC deployment. **Affected:** [DEPLOY](./DEPLOY.md), which covers `nodetool repair`
+only when adding a DC.
+
+With RF 1 per DC and `LOCAL_QUORUM`, a DC that misses writes beyond the hint window
+stays stale until repaired, and a delete can resurrect if repair does not complete
+within `gc_grace_seconds`. Define and schedule repair, then record how it was verified.
 
 ### ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01: Web login state is held per process
 
@@ -137,7 +147,7 @@ the frontend before changing it.
 
 ### Next
 
-1. Merge #322 as the CA-only change.
+1. Done: #322 merged as the CA-only change.
 2. Open a focused Go dependency PR (`x/net`, `excelize`) with the full suite.
 3. Open a focused frontend lockfile PR (`seafile-js` first, then the remaining
    direct findings); major upgrades need their own verification.
@@ -324,7 +334,7 @@ certify. Neither closes `ISSUE-LIB-DELETED-FENCE-01`, a productive consumer, PC-
 | **API-key read scope bypasses upload-link and file-share mutations** | 🔴 Open — verified preexisting 2026-08-22 | Six authenticated mutation handlers resolve the user's underlying library authority or link ownership without applying the current credential's API-key scope. A `read` API key can create, update or delete upload links and, for an owner/admin user, create, update or delete user/group shares. Both direct API-key auth and derived sessions are affected. See ISSUE-APIKEY-READ-SCOPE-UPLOADLINK-FILESHARE-01. |
 | **Desktop SSO pending-token store** | 🔴 Open — multi-instance only | In-memory per process; poll and callback on different instances never deliver the token. See ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01. |
 | OIDC Authentication | ✅ Complete (Phase 1) | `docs/OIDC.md` |
-| Garbage Collection | 🔴 **Destructive GC disabled; PRE-GC/A1 OPEN** | X1 (`ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01`) closes for the stated physical-life scope on maintainer merge of [the E1 decision](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16); before merge OPEN. Its [criterion disposition](#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes) separates exact identity, ownership, recovery and publication from remaining convergence. X2 is closed under its stable-topology contract. GC stays OFF fleet-wide until the complete [PRE-GC/A1 gate](./X1-CRITICAL-PATH.md#6-pre-gc-list-a1-prerequisites) also closes; this is not production readiness. |
+| Garbage Collection | 🔴 **Destructive GC disabled; PRE-GC/A1 OPEN** | X1 (`ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01`) is CLOSED for the stated physical-life scope: the maintainer merged [the E1 decision](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16) in #312 on 2026-10-17. Its [criterion disposition](#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes) separates exact identity, ownership, recovery and publication from remaining convergence. X2 is closed under its stable-topology contract. GC stays OFF fleet-wide until the complete [PRE-GC/A1 gate](./X1-CRITICAL-PATH.md#6-pre-gc-list-a1-prerequisites) also closes; this is not production readiness. |
 | Monitoring/Health Checks | ✅ Complete | `/health`, `/ready`, `/metrics` + slog logging |
 | **Sync Protocol Permissions** | ✅ Fixed (2026-08-07) | `syncAuthMiddleware` accepted public share-link download tokens as repository credentials. Reproduced live as an unauthorized cross-library block write by an anonymous visitor, plus an escalation through `/download-info` into a full repository sync token. `isRepositorySyncToken` now validates the whole scope — `Source == ""`, `Path == "/"`, `RepoID` bound to the route — before the bearer becomes an identity; all three clauses are mutation-verified. A follow-up split `TokenTypeSync` out of `TokenTypeDownload`, so a download bearer is now refused at the store rather than by shape. See ISSUE-SYNC-LINK-TOKEN-AUTH-01. |
 | Sync Race Condition | ✅ Fixed (2026-02-18) | 7 bugs fixed: CAS HEAD updates, parent-chain validation, empty root handling |
@@ -3104,8 +3114,8 @@ path or enable destructive GC as part of this issue. See B.3 in
 ### ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01: Physical-delete ABA can remove re-uploaded bytes
 
 **Status**: **CLOSED-FIX / CLOSED-EVIDENCE for the accepted physical-life scope,
-effective on maintainer merge of [#312](https://github.com/Sesame-Disk/sesamefs/pull/312)**.
-Before that merge: OPEN. The merge accepts the [final E1 decision](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16),
+effective with the maintainer's merge of [#312](https://github.com/Sesame-Disk/sesamefs/pull/312) on 2026-10-17**.
+The merge accepts the [final E1 decision](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16),
 including its greenfield/same-release premises and evidence limits; it closes this
 issue's X1 criteria, not PRE-GC/A1 or destructive-GC activation.
 **Discovered**: 2026-07-21
@@ -3614,8 +3624,8 @@ environment cannot report a false pass.
 **Closing X2 does not enable destructive GC.** `GC_ENABLED=false` remains mandatory on
 every replica in every DC. X1's original criteria are disposed in
 [its current issue entry](#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes):
-scoped closure is effective on maintainer merge of the E1 decision; before then
-OPEN. PRE-GC/A1 remain OPEN and independently prohibit activation. Design evidence:
+scoped closure took effect when the maintainer merged the E1 decision (#312,
+2026-10-17). PRE-GC/A1 remain OPEN and independently prohibit activation. Design evidence:
 `UPLOAD-FENCE-FINDINGS-REGISTRY.md` X2; the historical independence analysis is in
 [GC-X1-CLOSURE-OPTIONS.md](./GC-X1-CLOSURE-OPTIONS.md).
 The accepted architecture is frozen in
@@ -7286,7 +7296,7 @@ characterization PR.
 
 ### ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01: Phase 5 expired-version cascade deletes fs_objects shared with the live HEAD
 
-**Status**: **CLOSED-FIX for the unsafe commit-to-tree cascade on merge of this change** (2026-10-17).
+**Status**: **CLOSED-FIX for the unsafe commit-to-tree cascade by #314, merged** (2026-10-17).
 [Phase 5 plan and evidence](./GC-PHASE5-SHARED-FSOBJECTS.md): unguarded commit retirement
 is metadata-only. Shared trees/refs are preserved; guarded library destruction
 keeps its cascade. **PRE-GC reclamation disposition remains OPEN**: exclusive
@@ -7379,7 +7389,7 @@ shared fs_objects. This change does not certify the Trash HTTP path separately.
 
 ### ISSUE-GC-PHASE6-FSOBJECT-EXECUTION-TOCTOU-01: Phase 6 deletes fs_objects that a HEAD published after the scan depends on
 
-**Status**: **CLOSED-FIX for the destructive path on merge of P6-2** (2026-10-19). Phase 6 is suspended: the selector enqueues nothing and the worker completes every unguarded `ItemFSObject` without mutation, including rows queued before the change; the same real-stack schedules are GREEN ([P6-2](./GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19)). Before merge it remains OPEN. RED reproduced on main@bb89d7b12 with real Cassandra/S3 (2026-10-19). **Live-library reclamation is not restored**; it stays OPEN as `ISSUE-GC-LIVE-LIBRARY-METADATA-RECLAMATION-01`, and any redesign must meet this race. [Plan and evidence](./GC-PHASE6-FSOBJECT-TOCTOU.md)
+**Status**: **CLOSED-FIX for the destructive path by P6-2, #319, merged** (2026-10-19). Phase 6 is suspended: the selector enqueues nothing and the worker completes every unguarded `ItemFSObject` without mutation, including rows queued before the change; the same real-stack schedules are GREEN ([P6-2](./GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19)). Before merge it remains OPEN. RED reproduced on main@bb89d7b12 with real Cassandra/S3 (2026-10-19). **Live-library reclamation is not restored**; it stays OPEN as `ISSUE-GC-LIVE-LIBRARY-METADATA-RECLAMATION-01`, and any redesign must meet this race. [Plan and evidence](./GC-PHASE6-FSOBJECT-TOCTOU.md)
 **Severity**: High (P1) — HEAD metadata loss and permanent-reference removal; physical byte loss not observed (see below). Preserved, not downgraded
 **Scope**: PRE-GC / A1. Ordinary deployments run `GC_ENABLED=false`; no current-runtime claim
 **Affected**: `Scanner.scanAutoDeleteExpiredObjects` (Phase 6), `Worker.processFSObject`, `removeFSObjectBlockReferences` in `internal/gc`
@@ -7419,7 +7429,7 @@ are recorded in the plan.
 
 ### ISSUE-GC-PHASE6-DIRECTORY-CASCADE-SHARED-FSOBJECTS-01: Phase 6's worker cascade deletes children that HEAD still reaches
 
-**Status**: **CLOSED-FIX for the destructive path on merge of P6-2** (2026-10-19). The worker refuses every unguarded `ItemFSObject` before it enqueues children or touches references, so the cascade cannot start from Phase 6 work; the same real-stack schedules, including the lapsed-pin variant, are GREEN ([P6-2](./GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19)). Before merge it remains OPEN. Found in the P6-1 audit and reproduced on main@bb89d7b12 with real Cassandra/S3 (2026-10-19). Guarded library cascades still enqueue children by design, because the whole library is being destroyed. A future reclamation must respect sharing for every object it reaches (`ISSUE-GC-LIVE-LIBRARY-METADATA-RECLAMATION-01`). [Plan and evidence](./GC-PHASE6-FSOBJECT-TOCTOU.md#1b-directory-cascade-without-the-keep-set-found-in-this-prs-audit)
+**Status**: **CLOSED-FIX for the destructive path by P6-2, #319, merged** (2026-10-19). The worker refuses every unguarded `ItemFSObject` before it enqueues children or touches references, so the cascade cannot start from Phase 6 work; the same real-stack schedules, including the lapsed-pin variant, are GREEN ([P6-2](./GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19)). Before merge it remains OPEN. Found in the P6-1 audit and reproduced on main@bb89d7b12 with real Cassandra/S3 (2026-10-19). Guarded library cascades still enqueue children by design, because the whole library is being destroyed. A future reclamation must respect sharing for every object it reaches (`ISSUE-GC-LIVE-LIBRARY-METADATA-RECLAMATION-01`). [Plan and evidence](./GC-PHASE6-FSOBJECT-TOCTOU.md#1b-directory-cascade-without-the-keep-set-found-in-this-prs-audit)
 **Severity**: P0 latent, provisional: the same pattern and the same classification as `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`; deterministic, no race. The maintainer confirms. Preserved, not downgraded
 **Scope**: PRE-GC / A1. Ordinary deployments run `GC_ENABLED=false`; no current-runtime claim
 **Affected**: `Worker.processFSObject` (directory child enqueue), `removeFSObjectBlockReferences`, `enqueueZeroRefBlocks` in `internal/gc`; selection by `Scanner.scanAutoDeleteExpiredObjects`
@@ -10613,7 +10623,7 @@ tracked rather than left implicit:
 
 ### ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01: `pack-fs`/`check-fs` bound the parse, not the work it triggers
 
-**Status**: 🟡 Open — found 2026-08-12 auditing the X9 caps
+**Status**: 🟡 Open — found 2026-08-12 auditing the X9 caps; accepted by the maintainer for the [disposable internal pilot](./PROD-READINESS-VERIFICATION-20261106.md#accepted-go-live-blockers) on 2026-11-06, not closed
 **Severity**: High for `pack-fs` (one request can materialize a multi-GiB response), Medium for `check-fs`
 **Affected**: `PackFS`, `CheckFS` in `internal/api/sync.go`
 **Source of record**: opened 2026-08-12; the fs-id equivalent of `ISSUE-CHECKBLOCKS-WORK-AMPLIFICATION-01` (X11)
@@ -11967,7 +11977,7 @@ this fix is not progress against any of X1's four closure criteria.
 
 ### ISSUE-APIKEY-READ-SCOPE-UPLOADLINK-FILESHARE-01: Read-scoped API keys can perform upload-link and file-share mutations
 
-**Status**: 🔴 Open — verified preexisting 2026-08-22
+**Status**: 🔴 Open — verified preexisting 2026-08-22; accepted by the maintainer for the [disposable internal pilot](./PROD-READINESS-VERIFICATION-20261106.md#accepted-go-live-blockers) on 2026-11-06, not closed
 **Severity**: High (authorization / least-privilege bypass)
 **Affected**: `UploadLinkHandler.CreateUploadLink`, `UpdateUploadLink`,
 `DeleteUploadLink`; `FileShareHandler.CreateShare`, `UpdateSharePermission`,
@@ -12159,7 +12169,7 @@ A separate fix should retain the successfully copied source identity and require
 
 ## ISSUE-FILEFROMBLOCKS-WORKER-FANOUT-01
 
-**Status:** **CLOSED-FIX on merge of the bounded fan-out (2026-10-21).** Before merge it remains OPEN. **Severity:** P2 / GENERAL follow-up, pre-existing; not introduced by #258 and not a blocker of E1-09.
+**Status:** **CLOSED-FIX by the bounded fan-out, #321, merged** (fix dated 2026-10-21). **Severity:** P2 / GENERAL follow-up, pre-existing; not introduced by #258 and not a blocker of E1-09.
 
 `verifyManifestBlocks` and `ensureCommitBlockOwnLiveness` in `internal/api/v2/file_from_blocks.go` created a goroutine per distinct block before their semaphore admission. A supported manifest can contain 131,072 blocks. Query concurrency was bounded but worker creation was not. Both now run through `runBoundedPublicationChecksWithContext`: `errgroup.SetLimit` admits a worker before it is created, so the same 20-slot bound covers goroutine creation and I/O. The caller's context is preserved — a canceled request creates no further workers and queued work does not perform its read, and a pre-canceled set returns `context.Canceled`. Classification/write errors still fail closed through `g.Wait`. Two 131,072-block regressions hold the first worker wave and assert the goroutine delta stays bounded: pre-fix main observed 16,791 and 22,484 extra goroutines; after the fix they pass at `-count=50` and under `-race`. `go test ./internal/api/v2 -short`, `go vet ./internal/api/v2` and the full `go test ./... -short` suite pass. A multi-region e2e (`internal/e2e`, build tag `e2e`) commits 32 distinct 1 MiB blocks through USA and reads the file back byte-for-byte from EU; it passed on both the pre-fix and fixed 2-DC stacks. Scope is the two commit phases named above; the separate `/blocks/check` fan-out was not changed.
 

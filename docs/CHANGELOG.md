@@ -12,9 +12,12 @@ Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mecha
 
 [Dated verification](./PROD-READINESS-VERIFICATION-20261106.md) of main@a21f4203d:
 full suites with GC off, a rehearsal of the production compose, and simultaneous
-migrators on three DCs. Registers pre-existing findings, led by the missing backup and
-restore. Corrects stale DEPLOY statements about a bundled nginx and nginx rate limiting.
-Documentation only; no gate closes. PRE-GC/A1 OPEN, GC OFF.
+migrators on three DCs. Records the maintainer's decision for a disposable internal
+pilot on three DCs, with backup deferred and the two go-live blockers accepted for it.
+Registers pre-existing findings. Corrects stale DEPLOY statements about a bundled nginx
+and nginx rate limiting, and live summaries that still described merged X1, Phase 5,
+Phase 6 and #321 closures as pending. Documentation only; no gate closes. PRE-GC/A1
+OPEN, GC OFF.
 
 ## 2026-10-21 — Go 1.26.10 for CA certificate and TLS advisories
 
