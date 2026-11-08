@@ -1,0 +1,27 @@
+# Rehearsal-only override for docker-compose.prod.yml. One Docker host stands in for three
+# servers. Deviations from a real deployment, all deliberate:
+#  - No host port publishing. A Docker network with fixed IPs ("vrack") replaces the private
+#    network, so CASSANDRA_LISTEN_ADDRESS must equal the broadcast IP.
+#  - The backend joins vrack, as a real host reaches its private IP through the port bind,
+#    and joins the stand-in IdP and S3 networks.
+#  - Cassandra data in a named volume: bind mounts on Docker Desktop add seconds of latency.
+# Never use this file for a real deployment.
+services:
+  cassandra:
+    ports: !reset []
+    environment:
+      - CASSANDRA_LISTEN_ADDRESS=${CASSANDRA_BROADCAST_ADDRESS}
+    networks:
+      internal: {}
+      vrack:
+        ipv4_address: ${CASSANDRA_BROADCAST_ADDRESS}
+  sesamefs:
+    networks: [internal, vrack, idpnet, s3net]
+networks:
+  internal:
+    ipam: {config: [{subnet: "${INTERNAL_SUBNET}"}]}
+  vrack: {external: true, name: r3-vrack}
+  idpnet: {external: true, name: r3-idpnet}
+  s3net: {external: true, name: r3-s3net}
+volumes:
+  cassdata: {}
