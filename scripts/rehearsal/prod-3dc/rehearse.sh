@@ -16,9 +16,11 @@ declare -A SUBNET=([na]=172.30.51.0/24 [eu]=172.30.52.0/24 [asia]=172.30.53.0/24
 cd "$REPO"
 say(){ echo "##### $(date -u +%H:%M:%S) $*"; }
 hostpath(){ if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
-pc(){ local r=$1; shift; ENV_FILE="$WORK_REL/.env.$r" docker compose --env-file "$WORK/.env.$r" \
-        -f docker-compose.prod.yml -f "$HERE/compose/override.yml" -p "sfs-$r" "$@"; }
-ext(){ KMS_B64="${KMS_B64:-unused}" docker compose -f "$HERE/compose/ext.yml" -p r3-ext "$@"; }
+# docker receives repo-relative paths: MSYS absolute paths (/c/...) break under Docker Desktop.
+HERE_REL="scripts/rehearsal/prod-3dc"
+pc(){ local r=$1; shift; ENV_FILE="$WORK_REL/.env.$r" docker compose --env-file "$WORK_REL/.env.$r" \
+        -f docker-compose.prod.yml -f "$HERE_REL/compose/override.yml" -p "sfs-$r" "$@"; }
+ext(){ KMS_B64="${KMS_B64:-unused}" docker compose -f "$HERE_REL/compose/ext.yml" -p r3-ext "$@"; }
 set_kv(){ local f=$1 k=$2 v=$3; if grep -qE "^#? ?$k=" "$f"; then sed -i -E "s|^#? ?$k=.*|$k=$v|" "$f"; else echo "$k=$v" >> "$f"; fi; }
 ready(){ docker exec "sfs-$1-sesamefs-1" wget -qO- http://127.0.0.1:8080/ready 2>/dev/null; }
 wait_ready(){ local r=$1 s=""; for _ in $(seq 1 120); do s=$(ready "$r") && break; sleep 3; done
@@ -32,7 +34,7 @@ cmd_up(){
   docker network create --subnet 203.0.113.0/24 r3-idpnet >/dev/null
   docker network create r3-s3net >/dev/null
   KMS_B64=$(head -c 32 /dev/urandom | base64 | tr -d '\n'); export KMS_B64
-  ext up -d --wait minio && ext up minio-init >/dev/null && ext up -d idp central-nginx
+  ext up -d --wait minio && ext up minio-init >/dev/null && ext up -d idp central-nginx || { echo "stand-ins failed to start" >&2; exit 1; }
   if [ "${REHEARSAL_SKIP_BUILD:-0}" != 1 ]; then
     docker build -q -t "$IMAGE" -f Dockerfile . >/dev/null && docker build -q -t "$FRONTEND_IMAGE" frontend >/dev/null || { echo "image build failed" >&2; exit 1; }
   fi
@@ -73,13 +75,17 @@ cmd_up(){
   done
 
   say "DEPLOY Step M4.2-4: Cassandra, one node at a time"
-  for r in $REGIONS; do pc "$r" up -d --wait cassandra >/dev/null 2>&1; echo "[$r] cassandra exit=$?"; done
+  for r in $REGIONS; do
+    pc "$r" up -d --wait cassandra >/dev/null 2>&1 || { echo "[$r] cassandra did not become healthy; see: docker logs sfs-$r-cassandra-1" >&2; exit 1; }
+    echo "[$r] cassandra healthy"
+  done
   docker exec sfs-na-cassandra-1 nodetool status | grep -E '^(UN|DN|UJ)' | cut -c1-30
 
   say "DEPLOY Step M4.5: bootstrap once, from NA"
   pc na --profile bootstrap up --exit-code-from cassandra-bootstrap cassandra-bootstrap >/dev/null 2>&1
-  echo "bootstrap exit=$?"
+  local rc=$?; echo "bootstrap exit=$rc"
   docker logs sfs-na-cassandra-bootstrap-1 2>&1 | grep -E 'attempt|converged' | tail -3
+  [ "$rc" = 0 ] || { echo "bootstrap failed; not starting backends" >&2; exit 1; }
 
   say "DEPLOY Step M4.8: first backend alone, then the others"
   for r in $REGIONS; do pc "$r" up -d sesamefs frontend >/dev/null 2>&1; wait_ready "$r"; done
