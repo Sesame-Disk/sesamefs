@@ -181,6 +181,8 @@ DEPLOY now says so.
 
 ## Three-DC rehearsal
 
+Reproduce it with [`scripts/rehearsal/prod-3dc/`](../scripts/rehearsal/prod-3dc/README.md).
+
 **Setup.** One host (7 CPUs, 14 GB) stood in for three servers: `docker-compose.prod.yml`
 and `configs/config.prod.yaml` unmodified, three compose projects, Cassandra 5.0.9 with
 authentication, RF 1 per DC, `LOCAL_QUORUM` and `SERIAL`, one backend per regional
