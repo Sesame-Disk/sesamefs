@@ -8,6 +8,18 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-11-09 — Production on Docker Swarm
+
+`docker-compose.swarm.yml` is the production stack: one region per host, each a
+single-node Swarm, Cassandra on the host network listening only on the private IP,
+required memory limits, one replica per service, and a backend image that carries
+`configs/config.prod.yaml`. The Cassandra bootstrap moves to `scripts/cassandra-bootstrap.sh`,
+shared by both stacks. `prod-preflight.sh --swarm` validates the stack's variables and
+`scripts/test-swarm-stack.sh` checks that both stacks start Cassandra the same way and
+force the same production values. DEPLOY leads with the Swarm path; the compose steps stay
+for rehearsals. Verified on three simulated Swarm hosts. Registers
+`ISSUE-GEO-DNS-PER-PROCESS-STATE-01`. PRE-GC/A1 OPEN, GC OFF.
+
 ## 2026-11-09 — Readiness verification review corrections
 
 Review follow-up to the 2026-11-06 verification. Corrects the impact of

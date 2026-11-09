@@ -438,6 +438,7 @@ provenance boundary).
 | `ISSUE-UPLOAD-CHUNK-MULTINODE-01` | HIGH | Chunked-upload state is node-local; non-sticky routing silently loses files | Readiness B1 — **multi-instance only** |
 | `ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01` | HIGH | Desktop-SSO pending token is in-memory per process | Readiness B5 — **multi-instance only** |
 | `ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01` | HIGH | Web login state and PKCE verifier are in-memory per process | [Verification 2026-11-06](./PROD-READINESS-VERIFICATION-20261106.md), reproduced across two regions — **multi-instance only** |
+| `ISSUE-GEO-DNS-PER-PROCESS-STATE-01` | P2 | One geographic hostname over three regions: a client whose DNS answer changes region mid-login or mid-upload fails it | [known issue](./KNOWN_ISSUES.md#issue-geo-dns-per-process-state-01-one-geographic-hostname-sends-a-client-to-another-regions-process) |
 
 The single-node HIGH rows are **not duplicated here**; their canonical rows live
 in the High/Medium table below, per rule 4.

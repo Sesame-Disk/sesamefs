@@ -1,7 +1,14 @@
 # Deploying SesameFS to Production
 
-This guide is organized around the repository's default production path: multi-region SesameFS nodes deployed from published images, with the same `docker-compose.prod.yml` on every server and node-local differences carried only in `.env`.
-Single-region is still supported, but it is the legacy compatibility path and should be treated as a simplified fallback rather than the primary operating model.
+Production runs on **Docker Swarm, one region per host**: each host is a single-node Swarm
+running `docker-compose.swarm.yml` from published images, and the three Cassandra nodes
+form one multi-DC cluster over the private network. Node-local differences live only in
+each host's env file. Start at [Production on Docker Swarm](#production-on-docker-swarm).
+
+`docker-compose.prod.yml` remains for single-host rehearsals and simple setups; the
+compose-based steps further down (Steps 0–8 and M1–M5) describe that path. Single-region
+is a legacy compatibility mode of either path.
+
 ---
 
 ## First-production greenfield contract
@@ -33,7 +40,7 @@ Internet
    │
    ├── 443 (HTTPS) ──► Central nginx (TLS termination)
    │                        │
-   │                        └─► sfs-net (Docker network)
+   │                        └─► sfs-net (attachable overlay)
    │                              │
   │                              └─► sesamefs-frontend-<DEPLOY_ID>:80   (nginx:alpine — SPA + API proxy)
   │
@@ -43,52 +50,188 @@ Internet
    │
    └── 80 (HTTP) ──► Central nginx ──► 301 redirect to HTTPS
 
-internal (Docker network, not routed):
-   sesamefs ──► cassandra:9042
+internal (overlay network of the stack):
+   frontend ──► sesamefs:8080
+   sesamefs ──► <private IP>:9042   (Cassandra on the host network, private IP only)
+
+Private network between regions:
+   Cassandra gossip (7000/7001) and CQL (9042)
 
 Outbound HTTPS:
    sesamefs ──► S3 (per-region bucket)
    sesamefs ──► accounts.sesamedisk.com (OIDC discovery + JWKS + token exchange)
 ```
 
-The central nginx is **external** to `docker-compose.prod.yml`, which bundles
-no `nginx` service. In the supported topology the central nginx joins `sfs-net` and proxies to the
+The central nginx is **external** to the stack, which bundles no `nginx` service. In the supported topology the central nginx joins `sfs-net` and proxies to the
 per-deploy `sesamefs-frontend-<DEPLOY_ID>` container alias, which in turn proxies API
 paths to `sesamefs` on the private deploy network. OnlyOffice is deployed
 separately from this compose stack and integrates with SesameFS through its
-public HTTPS endpoints plus the shared JWT secret. None of the application containers expose ports to the host
-— only `expose:` on the Docker networks. See [Config Resolution](#config-resolution)
+public HTTPS endpoints plus the shared JWT secret. No application container publishes a
+port; Cassandra listens on the host's private IP only. See [Config Resolution](#config-resolution)
 for how `SERVER_TRUSTED_PROXIES` interacts with this two-nginx chain.
 
 **Files involved:**
 
 | File | Purpose |
 |---|---|
-| `docker-compose.prod.yml` | Production stack (published images, no MinIO, no dev tools). Expects an external reverse proxy on `sfs-net`. |
-| `configs/config.prod.yaml` | Structural config — mounted over the baked image config |
+| `docker-compose.swarm.yml` | Production stack for Docker Swarm, one region per host. Expects an external reverse proxy on `sfs-net`. |
+| `docker-compose.prod.yml` | The same services for `docker compose` on one host: rehearsals and simple setups. |
+| `configs/config.prod.yaml` | Structural config. Baked into the production backend image (`CONFIG_FILE=configs/config.prod.yaml`); the compose path mounts it instead |
+| `scripts/cassandra-bootstrap.sh` | One-shot Cassandra bootstrap (superuser password, keyspace, `system_auth` replication, application role), used by both paths |
+| `scripts/prod-preflight.sh` | Env validation; `--swarm` adds the stack's variables |
 | `frontend/nginx.conf` | nginx:alpine config baked into the frontend image (SPA routing + API proxy_pass) |
-| `.env.prod.example` | Template for the single `.env` file you create on the server |
+| `.env.prod.example` | Template for each region's env file |
 
 `docker-compose.yaml` is not a production fallback; it is the local
 development/integration stack. Production behavior is defined by
-`docker-compose.prod.yml` and `configs/config.prod.yaml`, with `.env` overrides.
+`docker-compose.swarm.yml` and `configs/config.prod.yaml`, with env-file overrides.
 
 ---
 
 ## Read This First
 
-- Multi-region is the default production path for this repo. Read [Default Production Path (Multi-Region)](#default-production-path-multi-region) first, then come back to the shared preparation steps below.
-- `docker-compose.prod.yml` does **not** publish the app directly to the host. By default it expects an external reverse proxy that can reach the per-deploy `sesamefs-frontend-$DEPLOY_ID` container alias on the external Docker network `sfs-net`.
-- You must create `sfs-net` before the first `docker compose up`:
-
-```bash
-docker network inspect sfs-net >/dev/null 2>&1 || docker network create sfs-net
-```
+- Production is multi-region on Docker Swarm: read [Production on Docker Swarm](#production-on-docker-swarm). It reuses the shared preparation in [Step 0](#step-0--before-you-touch-the-server) (S3, OIDC client, secrets, DNS) and [Step 7](#step-7--first-superadmin).
+- Neither stack publishes the app on the host. Both expect an external reverse proxy that reaches the per-deploy `sesamefs-frontend-$DEPLOY_ID` alias on the external network `sfs-net`, an attachable overlay on Swarm.
+- One public hostname with geographic DNS can front all regions, but a client whose DNS answer changes region in the middle of a login or a chunked upload fails it: that state lives in each backend process ([`ISSUE-GEO-DNS-PER-PROCESS-STATE-01`](./KNOWN_ISSUES.md#issue-geo-dns-per-process-state-01-one-geographic-hostname-sends-a-client-to-another-regions-process)).
 
 - The public health check for operators and load balancers is `GET /api2/ping`: backend liveness only, it does not check Cassandra or S3. Readiness, which does, is `GET /ready` and internal-only. Do not use `GET /health` through nginx, which answers a static `OK`, or `GET /ping` through nginx: it answers 200 with the SPA even when the backend is down (`ISSUE-HEALTH-PING-FALSE-OK-01`).
-- `GET /ready` and metrics are intentionally internal-only. Run them from the node itself, from a private network, or with `docker compose exec sesamefs ...`.
+- `GET /ready` and metrics are intentionally internal-only. Run them from the node itself, inside the container (`docker exec`), or from a private network.
 - For upload finalize monitoring, alerting, and dashboard queries, see [Upload Concurrency Observability](./UPLOAD-CONCURRENCY-OBSERVABILITY.md).
-- Published images are the deployment artifact. Production rollouts should update `SESAMEFS_IMAGE` and `FRONTEND_IMAGE` with full image references, pull the new images, and restart the services. `--build` is not part of the normal prod path.
+- Published images are the deployment artifact, always referenced by an exact tag. The production backend image must be built with `CONFIG_FILE=configs/config.prod.yaml`. `--build` is not part of the normal prod path.
+
+---
+
+## Production on Docker Swarm
+
+One host per region, each a single-node Swarm manager running the stack `sesamefs` from
+`docker-compose.swarm.yml`. The three Cassandra nodes form one cluster across the private
+network. A private deploy repository runs the steps below as pipelines; the commands here
+are the manual equivalent and the source of record.
+
+What the stack does differently from `docker-compose.prod.yml`, and why, is in the header
+of `docker-compose.swarm.yml`. In short: Cassandra uses the host network and listens only
+on the private IP (Swarm cannot publish a port on one IP, and a Docker-published port
+bypasses the host firewall); the backend reaches Cassandra at that IP; the image carries
+the production config; memory limits are required; every service runs one replica.
+
+### S1 — Prepare each host
+
+```bash
+docker swarm init --advertise-addr <private IP>
+# Shared with the central nginx stack on the same host; must be an attachable overlay.
+docker network inspect sfs-net >/dev/null 2>&1 || docker network create -d overlay --attachable sfs-net
+mkdir -p /srv/sesamefs/cassandra          # CASSANDRA_DATA_DIR, an absolute host path
+```
+
+Firewall: allow 7000, 7001 and 9042 only between the private IPs of the three hosts.
+Cassandra listens only on the private IP. If the host firewall filters inbound traffic,
+also allow 9042 from the `docker_gwbridge` network (by default `172.18.0.0/16`) to the
+private IP: the backend reaches Cassandra that way.
+
+### S2 — Build the images
+
+Build from an exact commit; the backend with the production config baked in:
+
+```bash
+docker build --build-arg CONFIG_FILE=configs/config.prod.yaml \
+  --label org.opencontainers.image.revision="$(git rev-parse HEAD)" -t <registry>/sesamefs:backend-<tag> .
+docker build --label org.opencontainers.image.revision="$(git rev-parse HEAD)" \
+  -t <registry>/sesamefs:frontend-<tag> frontend
+docker push <registry>/sesamefs:backend-<tag>     # after logging in to the registry
+docker push <registry>/sesamefs:frontend-<tag>
+```
+
+Each host pulls the images from the registry, so push both and check that every host can
+log in to it: `docker stack deploy --with-registry-auth` passes the deploying host's
+credentials to Swarm. The revision label lets a deploy fetch the `docker-compose.swarm.yml`
+and scripts of the same commit. Deploy only exact tags, never a moving `latest`.
+
+### S3 — The env file of each region
+
+Start from `.env.prod.example` (`scripts/prod-preflight.sh --init-env` generates the
+secrets once) and complete its "Swarm stack" section. Keep the file on the host, readable
+by root only, for example `/mnt/secrets/sesamefs/.env`.
+
+Per region: `SERVER_REGION`, `DEPLOY_ID` (the alias the central nginx targets),
+`CASSANDRA_DC`, `CASSANDRA_LOCAL_DC`, `CASSANDRA_BIND_IP` (this host's private IP),
+`CASSANDRA_DATA_DIR` and the memory limits. Identical in every region:
+`CASSANDRA_SUPERUSER_PASSWORD`, `CASSANDRA_PASSWORD`, `CASSANDRA_CLUSTER_NAME`,
+`CASSANDRA_REPLICATION_DCS`, `CASSANDRA_SEEDS`, `OIDC_JWT_SIGNING_KEY`,
+`SHARE_LINK_HMAC_KEY`, `ONLYOFFICE_JWT_SECRET`, the OIDC client, the S3 credentials and
+the bucket names. Image references do not belong in this file: they are chosen at deploy
+time, and an exported value overrides one left in the file. The preflight checks them too,
+so export the ones you will deploy:
+
+```bash
+set -a; . /mnt/secrets/sesamefs/.env; set +a
+export SESAMEFS_IMAGE=<registry>/sesamefs:backend-<tag> FRONTEND_IMAGE=<registry>/sesamefs:frontend-<tag>
+./scripts/prod-preflight.sh --swarm
+```
+
+### S4 — First deploy
+
+Order matters: Cassandra in every region, then the bootstrap once, then the backends one
+at a time, so that the first schema migration runs once.
+
+```bash
+# 1. On every host: Cassandra and the frontend, no backend yet
+set -a; . /mnt/secrets/sesamefs/.env; set +a
+export ENV_FILE=/mnt/secrets/sesamefs/.env \
+  SESAMEFS_IMAGE=<registry>/sesamefs:backend-<tag> FRONTEND_IMAGE=<registry>/sesamefs:frontend-<tag> \
+  SESAMEFS_BACKEND_REPLICAS=0
+docker stack deploy --with-registry-auth -c docker-compose.swarm.yml sesamefs
+
+# 2. On one host, once every DC shows a UN node in nodetool status:
+docker exec $(docker ps -q -f label=com.docker.swarm.service.name=sesamefs_cassandra) nodetool status
+docker run --rm --network host --env-file "$ENV_FILE" -e CASSANDRA_BOOTSTRAP_HOST="$CASSANDRA_BIND_IP" \
+  -v "$PWD/scripts/cassandra-bootstrap.sh:/usr/local/bin/sesamefs-cassandra-bootstrap.sh:ro" \
+  --entrypoint /bin/bash cassandra:5.0.9 /usr/local/bin/sesamefs-cassandra-bootstrap.sh
+
+# 3. On each host in turn, waiting for /ready before the next:
+export SESAMEFS_BACKEND_REPLICAS=1
+docker stack deploy --with-registry-auth -c docker-compose.swarm.yml sesamefs
+```
+
+The bootstrap retries until the application role holds its grants
+(`ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01`); it usually converges on its second attempt.
+
+### S5 — Verify
+
+```bash
+c() { docker ps -q -f label=com.docker.swarm.service.name=sesamefs_$1 -f status=running; }
+docker exec $(c sesamefs) wget -qO- http://127.0.0.1:8080/ready    # "status":"ready"
+docker exec $(c frontend) wget -qO- http://127.0.0.1/api2/ping     # pong
+docker exec $(c cassandra) nodetool status                          # three UN, one per DC
+ss -ltn | grep -E ':(7000|7001|9042) '                               # private IP only
+docker logs $(c sesamefs) 2>&1 | grep -m1 budget_source              # "...detected cgroup limit..."
+```
+
+Then, from the central nginx's network: `sesamefs-frontend-<DEPLOY_ID>/api2/ping` answers
+`pong`, and through the public hostname `/api2/ping` does too. Monitor `/api2/ping` per
+region from outside, and `/ready` from inside. [Step 8](#step-8--verify) lists the
+remaining functional checks.
+
+### S6 — Update and roll back
+
+Deploy the new exact tag to one region, verify it, then the others, one at a time. The
+first backend of a release applies its schema migrations; the other regions find them
+applied. The backend updates stop-first, so a region has a short gap: two backends must
+never run together. To roll back, deploy the previous tag, which works while the applied
+migrations stay backward compatible (the project's rule). Swarm pauses an update whose
+new task keeps failing; deploy a working tag to recover.
+
+### S7 — Operations
+
+```bash
+docker stack services sesamefs                       # state and image per service
+docker service logs -f --tail 200 sesamefs_sesamefs  # logs
+docker service update --force sesamefs_sesamefs      # restart a service
+docker stack rm sesamefs                             # stop; data stays in CASSANDRA_DATA_DIR
+```
+
+Never scale `sesamefs_sesamefs` above 1, and never run two Cassandra tasks on one data
+directory (`stop-first` updates prevent it). GC stays off: the stack forces
+`GC_ENABLED=false`.
 
 ---
 
@@ -98,7 +241,7 @@ SesameFS resolves configuration in this order:
 
 1. `internal/config.DefaultConfig()` provides built-in defaults.
 2. The YAML file pointed to by `CONFIG_PATH` is loaded on top of those defaults.
-  In production compose, that is `configs/config.prod.yaml` mounted as `/app/config.yaml`.
+  In production that is `configs/config.prod.yaml`, baked into the backend image as `/app/config.yaml` (the compose path mounts it there instead).
 3. Environment variables are applied last via `applyEnvOverrides()`, so env always wins.
 
 ### Storage namespace contract
@@ -417,6 +560,11 @@ GC is a good example:
 ---
 
 ## Step 0 — Before you touch the server
+
+> **Steps 0–8 describe the `docker-compose.prod.yml` path** (single-host rehearsals and
+> simple setups). On Docker Swarm, Step 0's S3, OIDC, secrets and DNS preparation, Step 5.5's
+> preflight (with `--swarm`) and Steps 7–8 still apply; the rest is replaced by
+> [Production on Docker Swarm](#production-on-docker-swarm).
 
 ### 0.0 Choose ingress mode and create `sfs-net`
 
@@ -1021,6 +1169,9 @@ with the `FIRST_SUPERADMIN_EMAIL` account. After redirect:
 
 ## Operations
 
+> These commands are for the compose path. On Docker Swarm see
+> [S7 — Operations](#s7--operations).
+
 ### View logs
 
 ```bash
@@ -1374,12 +1525,14 @@ ls /etc/letsencrypt/live/<cert-name>/
 
 ---
 
-## Default Production Path (Multi-Region)
+## Multi-Region with docker-compose.prod.yml (rehearsal)
+
+> Production runs on Docker Swarm: see [Production on Docker Swarm](#production-on-docker-swarm).
+> These M-steps describe the same three-region topology with `docker-compose.prod.yml`. The
+> [three-DC rehearsal harness](../scripts/rehearsal/prod-3dc/README.md) follows them.
 
 The same `docker-compose.prod.yml` supports multi-region. Each VPS runs the
 identical stack; the only difference is the `.env` file on each server.
-
-This is the default production model for the repo. Use single-region only when you intentionally want the legacy single-bucket path.
 
 ### Architecture
 

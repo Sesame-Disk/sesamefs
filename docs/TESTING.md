@@ -920,6 +920,15 @@ Manual test flow to verify the full GC pipeline:
 
 ---
 
+## Swarm stack checks
+
+`bash scripts/test-swarm-stack.sh` renders `docker-compose.swarm.yml` with `docker compose`
+and with `docker stack config` (the stricter loader `docker stack deploy` uses), checks that
+Cassandra's start-up script and the forced production values (`GC_ENABLED=false`,
+`AUTH_DEV_MODE=false`, the sync failpoint off) match `docker-compose.prod.yml` even when the
+env file says otherwise, and that the stack refuses to render without each variable it
+requires. It starts nothing. Run it after changing either stack.
+
 ## Production-compose three-DC rehearsal
 
 [`scripts/rehearsal/prod-3dc/`](../scripts/rehearsal/prod-3dc/README.md) runs

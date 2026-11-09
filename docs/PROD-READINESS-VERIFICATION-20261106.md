@@ -42,7 +42,7 @@ OPEN and GC stays OFF on every replica in every DC.
 |---|---|
 | **Fix or work around the first bootstrap** | [`ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01`](./KNOWN_ISSUES.md#issue-cassandra-bootstrap-3dc-role-01-the-first-three-dc-bootstrap-attempt-fails): failed 3 of 3 fresh runs. Run it again until it exits 0 and the role exists |
 | **Raise Cassandra's write and CAS timeouts on every node** | [`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`](./KNOWN_ISSUES.md#issue-cassandra-timeouts-wan-01-shipped-cassandra-timeouts-fail-uploads-under-wan-latency): mitigates the per-organization contention until it is fixed; the production compose has no setting for them yet |
-| Build the release from an exact commit | No CI exists, so images are built and pushed by hand. Do not merge #324 or #325 yet; see [Dependencies](#dependencies) |
+| Build the release from an exact commit | **Corrected 2026-11-09:** a manually triggered pipeline in a private deploy repository builds and publishes the images; it runs no tests. Production deploys on Docker Swarm ([DEPLOY](./DEPLOY.md#production-on-docker-swarm)). Do not merge #324 or #325 yet; see [Dependencies](#dependencies) |
 | Set memory limits per host | [`ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01`](./KNOWN_ISSUES.md#issue-prod-compose-no-memory-limit-01-production-compose-sets-no-container-memory-limit). `pack-fs` amplification can otherwise take Cassandra down on the same host |
 | One backend per regional hostname | Three pieces of state are per process; see [Topology](#topology) |
 | Central nginx and user provisioning per region | See [Operational notes](#operational-notes) |
