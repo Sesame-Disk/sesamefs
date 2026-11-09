@@ -27,8 +27,9 @@ heap is 1 GB.
 Docker with Compose v2, bash, about 8 GB free memory and 7 CPUs for the rates in the
 evidence. **Run it with Docker to yourself:** a first run on a shared host produced much
 worse failure rates than the clean rerun. Windows works from Git Bash. Networks named
-`sfs-net`, `r3-vrack`, `r3-idpnet` and `r3-s3net` and the subnets `10.77.0.0/24`,
-`203.0.113.0/24` and `172.30.51-53.0/24` must be free.
+`r3-vrack`, `r3-idpnet` and `r3-s3net` and the subnets `10.77.0.0/24`, `203.0.113.0/24`
+and `172.30.51-53.0/24` must be free. An existing `sfs-net` is reused and left in place by
+`down`; one that `up` creates is removed by `down`.
 
 ## Commands
 
@@ -40,7 +41,8 @@ rehearse.sh contention [label] [n] [p]
                                     n uploads per region into one library, p parallel, with mkdir contention;
                                     reports acknowledged-but-missing uploads (LISTWAIT=30 waits longer)
 rehearse.sh latency add <ms> | del  netem delay between Cassandra nodes, one way (40 = about 80 ms RTT)
-rehearse.sh timeouts <cas> <write>  rolling Cassandra timeout change, rehearsal only
+rehearse.sh timeouts <cas> <write>  rolling timeout change through the compose variables; recreates
+                                    each Cassandra node and checks cassandra.yaml (drops netem)
 rehearse.sh dc down|up <region>     stop or start one region's Cassandra
 rehearse.sh ops prepare | check <region>... | list
                                     one probe of each main operation per region, for outage checks
@@ -54,6 +56,26 @@ Environment: `REHEARSAL_IMAGE` and `REHEARSAL_FRONTEND_IMAGE` choose image tags;
 repo root, which git ignores, and `down` deletes them. Credentials are test values or are
 generated per run.
 
+## Exit status
+
+`up`, `smoke`, `contention`, `ops prepare`, `ops check`, `latency`, `timeouts`, `dc` and
+`down` exit non-zero when their check fails, after printing the details:
+
+- `up` stops at the first step that fails: a stand-in, an unexpected preflight `[FAIL]`
+  (the plain-http IdP and the data volume are expected), a Cassandra node, the bootstrap,
+  a backend that never reports ready, or the smoke matrix.
+- `smoke` fails on any failed check of the matrix.
+- `contention` fails when `LOST` or `PUBLISHED DESPITE ERROR` is not 0; HTTP 500s alone do
+  not fail it.
+- `ops check` fails when any step returns a non-2xx code or a download does not match.
+  During a DC outage that is the expected result for the stopped region.
+- `latency` and `timeouts` fail unless the change is verified on all three nodes.
+- `down` fails and keeps the env files when something could not be removed, so it can be
+  run again.
+
+`usage`, `probe`, `contention-probe`, `ops list` and `status` are measurements to read;
+their exit status does not judge the numbers.
+
 ## Results to expect
 
 - `up`: the bootstrap converges on attempt 2 on a fresh cluster; every backend reaches
@@ -63,7 +85,8 @@ generated per run.
   each upload takes about 2.7 s and the three-regions-at-once shape fails part of the time
   (`ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01`).
 - `contention`: a share of HTTP 500s is expected; `LOST` and `PUBLISHED DESPITE ERROR` must
-  stay 0.
+  stay 0. A file reported `LOST` may only be late at NA: rerun with `LISTWAIT=30` before
+  treating it as lost.
 
 ## Typical session
 

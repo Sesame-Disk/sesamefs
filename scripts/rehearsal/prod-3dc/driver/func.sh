@@ -2,6 +2,8 @@
 # Cross-region functional matrix through central nginx -> frontend nginx -> Go.
 NA=http://na.files.rehearsal.test; EU=http://eu.files.rehearsal.test; AS=http://asia.files.rehearsal.test
 PASS=0; FAIL=0
+# Library names are unique per run, so the matrix can be run again on the same stack.
+RUN=$(date +%s)
 ok(){ PASS=$((PASS+1)); echo "PASS  $1"; }
 ko(){ FAIL=$((FAIL+1)); echo "FAIL  $1 :: $2"; }
 code(){ curl -s -m 60 -o /tmp/body -w '%{http_code}' "$@"; }
@@ -44,7 +46,7 @@ echo "INFO  callback at EU for a login started at NA: $c $(head -c 140 /tmp/body
 echo "== plaintext library across regions"
 head -c 3000000 /dev/urandom > /tmp/f.bin; S1=$(sha256sum /tmp/f.bin | cut -d' ' -f1)
 head -c 500000 /dev/urandom > /tmp/g.bin; S2=$(sha256sum /tmp/g.bin | cut -d' ' -f1)
-c=$(code -X POST -H "$A" -H 'Content-Type: application/json' -d '{"repo_name":"xregion"}' $NA/api/v2.1/repos/); ID=$(jq -r '.repo_id // .id // empty' /tmp/body)
+c=$(code -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"xregion-$RUN\"}" $NA/api/v2.1/repos/); ID=$(jq -r '.repo_id // .id // empty' /tmp/body)
 if [ -n "$ID" ]; then ok "create library at NA"; else ko "create library at NA" "$c $(head -c 200 /tmp/body)"; fi
 echo "INFO  id=$ID"
 c=$(upload $NA $ID /tmp/f.bin a.bin); if [ "$c" = 200 ]; then ok "upload at NA"; else ko "upload at NA" "$c $(head -c 200 /tmp/body)"; fi
@@ -57,12 +59,12 @@ wait_read $NA $ID /b.bin $S2 "EU upload read at NA"
 c=$(upload $AS $ID /tmp/g.bin a.bin); if [ "$c" = 200 ]; then ok "same name again at Asia"; else ko "same name again at Asia" "$c $(head -c 200 /tmp/body)"; fi
 wait_read $NA $ID "/a%20(1).bin" $S2 "upload link autorenamed it, read at NA"
 wait_read $NA $ID /a.bin $S1 "original unchanged at NA"
-c=$(code -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"eu-placed\"}" $EU/api/v2.1/repos/); ID2=$(jq -r '.repo_id // .id // empty' /tmp/body); c=$(upload $EU $ID2 /tmp/f.bin p.bin); [ "$c" = 200 ] && ok "library created at EU" || ko "library created at EU" "$c"
-c=$(code -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"asia-placed\"}" $AS/api/v2.1/repos/); ID3=$(jq -r '.repo_id // .id // empty' /tmp/body); c=$(upload $AS $ID3 /tmp/g.bin p.bin); [ "$c" = 200 ] && ok "library created at Asia" || ko "library created at Asia" "$c"
+c=$(code -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"eu-placed-$RUN\"}" $EU/api/v2.1/repos/); ID2=$(jq -r '.repo_id // .id // empty' /tmp/body); c=$(upload $EU $ID2 /tmp/f.bin p.bin); [ "$c" = 200 ] && ok "library created at EU" || ko "library created at EU" "$c"
+c=$(code -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"asia-placed-$RUN\"}" $AS/api/v2.1/repos/); ID3=$(jq -r '.repo_id // .id // empty' /tmp/body); c=$(upload $AS $ID3 /tmp/g.bin p.bin); [ "$c" = 200 ] && ok "library created at Asia" || ko "library created at Asia" "$c"
 wait_read $NA $ID3 /p.bin $S2 "Asia-placed library read at NA"
 
 echo "== encrypted library across regions"
-c=$(code -X POST -H "$A" -H 'Content-Type: application/json' -d '{"repo_name":"xregion-enc","passwd":"s3cret-pass","encrypted":true}' $EU/api/v2.1/repos/); E=$(jq -r '.repo_id // .id // empty' /tmp/body)
+c=$(code -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"xregion-enc-$RUN\",\"passwd\":\"s3cret-pass\",\"encrypted\":true}" $EU/api/v2.1/repos/); E=$(jq -r '.repo_id // .id // empty' /tmp/body)
 if [ -n "$E" ]; then ok "create encrypted at EU"; else ko "create encrypted" "$c $(head -c 200 /tmp/body)"; fi
 expect "unlock at EU" 200 -X POST -H "$A" -d 'password=s3cret-pass' "$EU/api/v2.1/repos/$E/set-password/"
 c=$(upload $EU $E /tmp/f.bin e.bin); if [ "$c" = 200 ]; then ok "encrypted upload at EU"; else ko "encrypted upload" "$c $(head -c 200 /tmp/body)"; fi
@@ -94,3 +96,4 @@ sleep 2
 expect "permanent delete at NA" "200 204" -X DELETE -H "$A" "$NA/api/v2.1/repos/deleted/$ID3/"
 echo "$ID" > /tmp/keep-id
 echo "RESULT pass=$PASS fail=$FAIL"
+[ "$FAIL" -eq 0 ]

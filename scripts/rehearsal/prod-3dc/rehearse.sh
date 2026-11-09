@@ -15,6 +15,7 @@ declare -A SUBNET=([na]=172.30.51.0/24 [eu]=172.30.52.0/24 [asia]=172.30.53.0/24
 
 cd "$REPO"
 say(){ echo "##### $(date -u +%H:%M:%S) $*"; }
+die(){ echo "FAILED: $*" >&2; exit 1; }
 hostpath(){ if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 # docker receives repo-relative paths: MSYS absolute paths (/c/...) break under Docker Desktop.
 HERE_REL="scripts/rehearsal/prod-3dc"
@@ -23,16 +24,45 @@ pc(){ local r=$1; shift; ENV_FILE="$WORK_REL/.env.$r" docker compose --env-file 
 ext(){ KMS_B64="${KMS_B64:-unused}" docker compose -f "$HERE_REL/compose/ext.yml" -p r3-ext "$@"; }
 set_kv(){ local f=$1 k=$2 v=$3; if grep -qE "^#? ?$k=" "$f"; then sed -i -E "s|^#? ?$k=.*|$k=$v|" "$f"; else echo "$k=$v" >> "$f"; fi; }
 ready(){ docker exec "sfs-$1-sesamefs-1" wget -qO- http://127.0.0.1:8080/ready 2>/dev/null; }
-wait_ready(){ local r=$1 s=""; for _ in $(seq 1 120); do s=$(ready "$r") && break; sleep 3; done
-  echo "[$r] ready=$(echo "$s" | grep -o '"status":"[a-z]*"') backend restarts=$(docker inspect --format '{{.RestartCount}}' "sfs-$r-sesamefs-1" 2>/dev/null)"; }
+# Returns non-zero if the backend never reports ready.
+wait_ready(){
+  local r=$1 s="" ok=1
+  for _ in $(seq 1 "${READY_TRIES:-120}"); do if s=$(ready "$r"); then ok=0; break; fi; sleep "${READY_SLEEP:-3}"; done
+  echo "[$r] ready=$(echo "$s" | grep -o '"status":"[a-z]*"') backend restarts=$(docker inspect --format '{{.RestartCount}}' "sfs-$r-sesamefs-1" 2>/dev/null)"
+  return $ok
+}
+# Waits until all three Cassandra nodes are UN; non-zero if they never are.
+wait_three_up(){
+  local _
+  for _ in $(seq 1 60); do
+    [ "$(docker exec sfs-na-cassandra-1 nodetool status 2>/dev/null | grep -c '^UN')" = 3 ] && return 0
+    sleep 5
+  done
+  return 1
+}
+# Prints the preflight [FAIL] lines other than the two this rehearsal expects
+# (plain-http stand-in IdP, data dir on a volume); non-zero if there are any.
+preflight_unexpected(){
+  local out
+  out=$(bash scripts/prod-preflight.sh 2>&1 | grep -E '\[FAIL\]' | grep -vE 'OIDC_ISSUER|CASSANDRA_DATA_DIR')
+  [ -z "$out" ] && return 0
+  echo "$out"
+  return 1
+}
 driver(){ docker exec r3-driver sh "/tmp/$1.sh" "${@:2}"; }
 
 cmd_up(){
   say "networks, stand-ins, images"
-  docker network inspect sfs-net >/dev/null 2>&1 || docker network create sfs-net >/dev/null
-  docker network create --subnet 10.77.0.0/24 r3-vrack >/dev/null
-  docker network create --subnet 203.0.113.0/24 r3-idpnet >/dev/null
-  docker network create r3-s3net >/dev/null
+  mkdir -p "$WORK"
+  # sfs-net is the production compose's external network: reuse one that exists, and
+  # remember whether this run created it so that down removes only its own.
+  if ! docker network inspect sfs-net >/dev/null 2>&1; then
+    docker network create sfs-net >/dev/null || die "cannot create sfs-net"
+    : > "$WORK/created-sfs-net"
+  fi
+  docker network create --subnet 10.77.0.0/24 r3-vrack >/dev/null || die "cannot create r3-vrack; run down first"
+  docker network create --subnet 203.0.113.0/24 r3-idpnet >/dev/null || die "cannot create r3-idpnet; run down first"
+  docker network create r3-s3net >/dev/null || die "cannot create r3-s3net; run down first"
   KMS_B64=$(head -c 32 /dev/urandom | base64 | tr -d '\n'); export KMS_B64
   ext up -d --wait minio && ext up minio-init >/dev/null && ext up -d idp central-nginx || { echo "stand-ins failed to start" >&2; exit 1; }
   if [ "${REHEARSAL_SKIP_BUILD:-0}" != 1 ]; then
@@ -40,7 +70,6 @@ cmd_up(){
   fi
 
   say "DEPLOY Step M1: one env per region from the shipped template, secrets generated once"
-  mkdir -p "$WORK"
   local tmp; tmp=$(mktemp -d); cp .env.prod.example "$tmp/"
   ( cd "$tmp" && bash "$REPO/scripts/prod-preflight.sh" --init-env >/dev/null )
   cp "$tmp/.env" "$WORK/.env.base"; rm -rf "$tmp"
@@ -70,8 +99,8 @@ cmd_up(){
     set_kv "$f" ACCOUNTS_ORG_USER_MANAGEMENT_URL "https://accounts.rehearsal.test/orgs/{org_id}/members/"
     set_kv "$f" ONLYOFFICE_API_JS_URL https://office.rehearsal.test/web-apps/apps/api/documents/api.js
     set_kv "$f" SERVER_TRUSTED_PROXIES "${SUBNET[$r]}"; set_kv "$f" INTERNAL_SUBNET "${SUBNET[$r]}"
-    # Expected preflight refusals here: the stand-in IdP is plain http and the data dir is a volume.
-    ( set -a; . "$f"; set +a; bash scripts/prod-preflight.sh 2>&1 | grep -E '\[FAIL\]' | grep -vE 'OIDC_ISSUER|CASSANDRA_DATA_DIR' | sed "s/^/[$r] /" )
+    ( set -a; . "$f"; set +a; preflight_unexpected ) | sed "s/^/[$r] /"
+    [ "${PIPESTATUS[0]}" = 0 ] || die "[$r] preflight failed beyond the two expected refusals"
   done
 
   say "DEPLOY Step M4.2-4: Cassandra, one node at a time"
@@ -88,7 +117,10 @@ cmd_up(){
   [ "$rc" = 0 ] || { echo "bootstrap failed; not starting backends" >&2; exit 1; }
 
   say "DEPLOY Step M4.8: first backend alone, then the others"
-  for r in $REGIONS; do pc "$r" up -d sesamefs frontend >/dev/null 2>&1; wait_ready "$r"; done
+  for r in $REGIONS; do
+    pc "$r" up -d sesamefs frontend >/dev/null 2>&1 || die "[$r] compose up of sesamefs/frontend failed"
+    wait_ready "$r" || die "[$r] backend never reported ready; see: docker logs sfs-$r-sesamefs-1"
+  done
   for r in $REGIONS; do
     echo "[$r] $(docker exec "sfs-$r-cassandra-1" sh -c "grep -E '^(cas_contention_timeout|write_request_timeout):' /etc/cassandra/cassandra.yaml | tr '\n' ' '")"
   done
@@ -98,7 +130,7 @@ cmd_up(){
   docker run --name r3-driver --network sfs-net -v "$(hostpath "$HERE/driver"):/h:ro" -d alpine:3.21 sleep infinity >/dev/null
   docker network connect r3-idpnet r3-driver
   docker exec r3-driver sh -c 'apk add --no-cache curl jq coreutils findutils >/dev/null 2>&1; for f in /h/*.sh; do sed "s/\r$//" "$f" > /tmp/$(basename "$f"); done'
-  cmd_smoke
+  cmd_smoke || die "cross-region matrix failed"
 }
 
 cmd_smoke(){ say "cross-region matrix"; driver func; }
@@ -107,36 +139,52 @@ cmd_contention(){ say "same-library contention"; docker exec -e LISTWAIT="${LIST
 cmd_ops(){ driver ops "$@"; }
 
 cmd_latency(){ # latency add <one-way ms> | latency del
-  local action=${1:?add|del} ms=${2:-40}
+  local action=${1:?add|del} ms=${2:-40} npeers=2
+  case "$action" in add|del) ;; *) die "latency: add or del";; esac
+  [[ "$ms" =~ ^[0-9]+$ ]] || die "latency: one-way delay must be whole milliseconds, got '$ms'"
   for r in $REGIONS; do
-    local ip=${IP[$r]} peers=""
+    local peers=""
     for p in $REGIONS; do [ "$p" = "$r" ] || peers="$peers ${IP[$p]}"; done
-    docker run --rm --net "container:sfs-$r-cassandra-1" --cap-add NET_ADMIN nicolaka/netshoot sh -c "
-      dev=\$(ip -o -4 addr | awk '/10\.77\./{print \$2}'); tc qdisc del dev \$dev root 2>/dev/null
+    # Applies the change, then checks that the netem qdisc and one filter per peer are,
+    # or are no longer, installed. Any failing step fails the command.
+    docker run --rm --net "container:sfs-$r-cassandra-1" --cap-add NET_ADMIN nicolaka/netshoot sh -ec "
+      dev=\$(ip -o -4 addr | awk '/10\.77\./{print \$2}'); test -n \"\$dev\"
+      tc qdisc del dev \$dev root 2>/dev/null || true
       if [ '$action' = add ]; then
         tc qdisc add dev \$dev root handle 1: prio
         tc qdisc add dev \$dev parent 1:3 handle 30: netem delay ${ms}ms 5ms
         for p in $peers; do tc filter add dev \$dev protocol ip parent 1: prio 1 u32 match ip dst \$p/32 flowid 1:3; done
-      fi" >/dev/null 2>&1 || echo "[$r] netem failed" >&2
+        tc qdisc show dev \$dev | grep -q 'netem.*delay ${ms}'
+        test \"\$(tc filter show dev \$dev | grep -c 'flowid 1:3')\" = $npeers
+      else
+        ! tc qdisc show dev \$dev | grep -q netem
+      fi" >/dev/null 2>&1 || die "[$r] netem $action failed or did not verify; regions may now differ, run: latency del"
+    echo "[$r] latency $action verified"
   done
   echo "latency $action ${ms}ms one way between Cassandra nodes only"
 }
 
-cmd_timeouts(){ # rehearsal-only rolling change; production uses the compose variables
-  local cas=${1:?cas_contention_timeout, e.g. 5000ms} write=${2:?write_request_timeout, e.g. 5000ms}
+cmd_timeouts(){ # rolling change through the variables production uses
+  local cas=${1:?cas_contention_timeout, e.g. 5000ms} write=${2:?write_request_timeout, e.g. 5000ms} v
+  # The compose writes both values into cassandra.yaml on every start, so editing the file
+  # would be undone by a restart: change the variables and recreate the container instead.
+  for v in "$cas" "$write"; do [[ "$v" =~ ^[1-9][0-9]{1,6}ms$ ]] || die "timeouts: '$v' is not 10ms to 9999999ms"; done
   for r in $REGIONS; do
-    docker exec "sfs-$r-cassandra-1" sh -c "sed -ri 's/^cas_contention_timeout:.*/cas_contention_timeout: $cas/; s/^write_request_timeout:.*/write_request_timeout: $write/' /etc/cassandra/cassandra.yaml"
-    docker restart "sfs-$r-cassandra-1" >/dev/null
-    for _ in $(seq 1 60); do docker exec sfs-na-cassandra-1 nodetool status 2>/dev/null | grep -c '^UN' | grep -q 3 && break; sleep 5; done
-    echo "[$r] restarted with cas=$cas write=$write"
+    set_kv "$WORK/.env.$r" CASSANDRA_CAS_CONTENTION_TIMEOUT "$cas"
+    set_kv "$WORK/.env.$r" CASSANDRA_WRITE_REQUEST_TIMEOUT "$write"
+    pc "$r" up -d --no-deps --force-recreate --wait cassandra >/dev/null 2>&1 || die "[$r] cassandra did not come back healthy"
+    wait_three_up || die "[$r] cluster did not return to three UN nodes"
+    docker exec "sfs-$r-cassandra-1" sh -c "grep -qx 'cas_contention_timeout: $cas' /etc/cassandra/cassandra.yaml && grep -qx 'write_request_timeout: $write' /etc/cassandra/cassandra.yaml" \
+      || die "[$r] cassandra.yaml reads: $(docker exec "sfs-$r-cassandra-1" sh -c "grep -E '^(cas_contention_timeout|write_request_timeout):' /etc/cassandra/cassandra.yaml | tr '\n' ' '")"
+    echo "[$r] recreated; cassandra.yaml has cas_contention_timeout: $cas, write_request_timeout: $write"
   done
-  echo "note: recreating the containers reapplies the compose values"
+  echo "note: recreating Cassandra drops netem latency; run latency add again if needed"
 }
 
 cmd_dc(){ # dc down|up <region>
   local action=${1:?down|up} r=${2:?region}
   if [ "$action" = down ]; then docker stop "sfs-$r-cassandra-1" >/dev/null
-  else docker start "sfs-$r-cassandra-1" >/dev/null; for _ in $(seq 1 60); do docker exec sfs-na-cassandra-1 nodetool status 2>/dev/null | grep -c '^UN' | grep -q 3 && break; sleep 5; done; fi
+  else docker start "sfs-$r-cassandra-1" >/dev/null || die "[$r] cannot start cassandra"; wait_three_up || die "cluster did not return to three UN nodes"; fi
   docker exec sfs-na-cassandra-1 nodetool status 2>/dev/null | grep -E '^(UN|DN)' | cut -c1-30
 }
 
@@ -156,12 +204,30 @@ cmd_status(){
 
 cmd_down(){
   say "teardown"
+  local rc=0 r n
   docker rm -f r3-driver >/dev/null 2>&1
-  for r in $REGIONS; do [ -f "$WORK/.env.$r" ] && pc "$r" --profile bootstrap down -v --remove-orphans >/dev/null 2>&1; done
-  ext down -v --remove-orphans >/dev/null 2>&1
-  docker network rm r3-vrack r3-idpnet r3-s3net >/dev/null 2>&1
-  docker network rm sfs-net >/dev/null 2>&1
-  docker volume rm r3-gomod >/dev/null 2>&1
+  for r in $REGIONS; do
+    [ -f "$WORK/.env.$r" ] || continue
+    pc "$r" --profile bootstrap down -v --remove-orphans >/dev/null 2>&1 || { echo "[$r] compose down failed" >&2; rc=1; }
+  done
+  ext down -v --remove-orphans >/dev/null 2>&1 || { echo "stand-ins down failed" >&2; rc=1; }
+  for n in r3-vrack r3-idpnet r3-s3net; do
+    docker network inspect "$n" >/dev/null 2>&1 || continue
+    docker network rm "$n" >/dev/null 2>&1 || { echo "cannot remove network $n" >&2; rc=1; }
+  done
+  # Only a sfs-net this rehearsal created; one that already existed stays.
+  if [ -f "$WORK/created-sfs-net" ]; then
+    if docker network inspect sfs-net >/dev/null 2>&1 && ! docker network rm sfs-net >/dev/null 2>&1; then
+      echo "cannot remove sfs-net" >&2; rc=1
+    else
+      rm -f "$WORK/created-sfs-net"
+    fi
+  fi
+  if docker volume inspect r3-gomod >/dev/null 2>&1; then
+    docker volume rm r3-gomod >/dev/null 2>&1 || { echo "cannot remove volume r3-gomod" >&2; rc=1; }
+  fi
+  # Keep the env files when anything remains, so down can be run again.
+  [ "$rc" = 0 ] || die "teardown incomplete; env files kept in $WORK_REL for another down"
   rm -f "$WORK"/.env.na "$WORK"/.env.eu "$WORK"/.env.asia "$WORK"/.env.base
   rmdir "$WORK" 2>/dev/null
   echo "done; images kept: $IMAGE $FRONTEND_IMAGE"

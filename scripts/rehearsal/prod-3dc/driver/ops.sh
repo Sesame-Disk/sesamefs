@@ -7,13 +7,20 @@ PHASE=$1; shift
 T=$(cat /tmp/token); A="Authorization: Token $T"
 u(){ echo "http://$1.files.rehearsal.test"; }
 t(){ curl -s -m 40 -o /tmp/b -w '%{http_code} %{time_total}s' "$@"; }
+BAD=0
+# step <region> <label> <curl args...>: prints code and time, counts anything but 2xx.
+step(){ r=$1; l=$2; shift 2; o=$(t "$@"); printf "  [%s] %s %s %s\n" "$r" "$l" "$o" "$(grep -o '"error":"[^"]*"' /tmp/b 2>/dev/null)"
+  case "$o" in 2??\ *) ;; *) BAD=$((BAD+1));; esac; }
 
 if [ "$PHASE" = prepare ]; then
-  ID=$(curl -s -m 60 -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"ops-$$\"}" "$(u na)/api/v2.1/repos/" | jq -r '.repo_id // .id')
+  ID=$(curl -s -m 60 -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"ops-$$\"}" "$(u na)/api/v2.1/repos/" | jq -r '.repo_id // .id // empty')
+  [ -n "$ID" ] || { echo "prepare: library creation failed" >&2; exit 1; }
   sleep 6
   head -c 500000 /dev/urandom > /tmp/seed.bin
   ul=$(curl -s -m 40 -H "$A" "$(u na)/api2/repos/$ID/upload-link/?p=/" | tr -d '"')
-  curl -s -m 60 -o /dev/null -w 'seed upload %{http_code}\n' -F parent_dir=/ -F "file=@/tmp/seed.bin;filename=seed.bin" "$ul?ret-json=1"
+  c=$(curl -s -m 60 -o /dev/null -w '%{http_code}' -F parent_dir=/ -F "file=@/tmp/seed.bin;filename=seed.bin" "$ul?ret-json=1")
+  echo "seed upload $c"
+  [ "$c" = 200 ] || { echo "prepare: seed upload failed" >&2; exit 1; }
   sha256sum /tmp/seed.bin | cut -d' ' -f1 > /tmp/seed.sha; echo "$ID" > /tmp/ops-id
   exit 0
 fi
@@ -27,22 +34,24 @@ case "$PHASE" in
   check)
     for r in "$@"; do
       h=$(u $r); n="ops-$(date +%s)-$r"
-      printf "  [%s] account %s\n" "$r" "$(t -H "$A" "$h/api2/account/info/")"
-      printf "  [%s] list dir %s\n" "$r" "$(t -H "$A" "$h/api2/repos/$ID/dir/?p=/")"
+      step "$r" account -H "$A" "$h/api2/account/info/"
+      step "$r" "list dir" -H "$A" "$h/api2/repos/$ID/dir/?p=/"
       du=$(curl -s -m 40 -H "$A" "$h/api2/repos/$ID/file/?p=/seed.bin" | tr -d '"')
       case "$du" in
         http*) curl -s -m 40 -o /tmp/d.bin "$du"
-               if [ "$(sha256sum /tmp/d.bin | cut -d' ' -f1)" = "$SHA" ]; then echo "  [$r] download OK"; else echo "  [$r] download BAD"; fi ;;
-        *) echo "  [$r] download link FAILED: $(echo "$du" | head -c 90)" ;;
+               if [ "$(sha256sum /tmp/d.bin | cut -d' ' -f1)" = "$SHA" ]; then echo "  [$r] download OK"; else echo "  [$r] download BAD"; BAD=$((BAD+1)); fi ;;
+        *) echo "  [$r] download link FAILED: $(echo "$du" | head -c 90)"; BAD=$((BAD+1)) ;;
       esac
       head -c 64000 /dev/urandom > /tmp/x.bin
       ul=$(curl -s -m 40 -H "$A" "$h/api2/repos/$ID/upload-link/?p=/" | tr -d '"')
       case "$ul" in
-        http*) printf "  [%s] upload %s %s\n" "$r" "$(t -F parent_dir=/ -F "file=@/tmp/x.bin;filename=$n.bin" "$ul?ret-json=1")" "$(grep -o '"error":"[^"]*"' /tmp/b)" ;;
-        *) echo "  [$r] upload link FAILED: $(echo "$ul" | head -c 90)" ;;
+        http*) step "$r" upload -F parent_dir=/ -F "file=@/tmp/x.bin;filename=$n.bin" "$ul?ret-json=1" ;;
+        *) echo "  [$r] upload link FAILED: $(echo "$ul" | head -c 90)"; BAD=$((BAD+1)) ;;
       esac
-      printf "  [%s] create library %s %s\n" "$r" "$(t -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"$n\"}" "$h/api/v2.1/repos/")" "$(grep -o '"error":"[^"]*"' /tmp/b)"
-      printf "  [%s] share link %s\n" "$r" "$(t -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_id\":\"$ID\",\"path\":\"/seed.bin\"}" "$h/api/v2.1/share-links/")"
-    done ;;
+      step "$r" "create library" -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"$n\"}" "$h/api/v2.1/repos/"
+      step "$r" "share link" -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_id\":\"$ID\",\"path\":\"/seed.bin\"}" "$h/api/v2.1/share-links/"
+    done
+    echo "RESULT failed_steps=$BAD"
+    [ "$BAD" -eq 0 ] ;;
   *) echo "usage: ops.sh prepare | check <region>... | list" >&2; exit 2 ;;
 esac

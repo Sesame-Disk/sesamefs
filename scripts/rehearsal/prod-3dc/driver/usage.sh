@@ -2,7 +2,8 @@
 # Realistic usage shapes, each on fresh libraries, allowing them to settle first.
 T=$(cat /tmp/token); A="Authorization: Token $T"
 u(){ echo "http://$1.files.rehearsal.test"; }
-mklib(){ curl -s -m 60 -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"$1\"}" "$(u na)/api/v2.1/repos/" | jq -r '.repo_id // .id // empty'; }
+# Library names carry the run time, so a label can be reused on the same stack.
+mklib(){ curl -s -m 60 -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"$1-$(date +%s)\"}" "$(u na)/api/v2.1/repos/" | jq -r '.repo_id // .id // empty'; }
 up(){ # region lib name size -> "code ms"
   h=$(u $1); head -c $4 /dev/urandom > /tmp/up-$3.bin
   s=$(date +%s%N); l=$(curl -s -m 60 -H "$A" "$h/api2/repos/$2/upload-link/?p=/" | tr -d '"')

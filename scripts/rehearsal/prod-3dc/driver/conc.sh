@@ -5,7 +5,9 @@
 LABEL=$1; N=${2:-15}; PAR=${3:-6}
 NA=http://na.files.rehearsal.test; EU=http://eu.files.rehearsal.test; AS=http://asia.files.rehearsal.test
 T=$(cat /tmp/token); A="Authorization: Token $T"
-ID=$(curl -s -m 60 -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"conc-$LABEL\"}" $NA/api/v2.1/repos/ | jq -r '.repo_id // .id')
+ID=$(curl -s -m 60 -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_name\":\"conc-$LABEL-$(date +%s)\"}" $NA/api/v2.1/repos/ | jq -r '.repo_id // .id // empty')
+# Without a library every upload fails and nothing can be LOST, which would read as a pass.
+[ -n "$ID" ] || { echo "RESULT FAIL library creation failed"; exit 1; }
 sleep ${SETTLE:-8}
 echo "library=$ID label=$LABEL files_per_region=$N parallelism=$PAR"
 [ -f /tmp/c.bin ] || head -c 64000 /dev/urandom > /tmp/c.bin
@@ -33,6 +35,11 @@ sleep ${LISTWAIT:-3}
 for h in $NA $EU $AS; do curl -s -m 60 -H "$A" "$h/api2/repos/$ID/dir/?p=/" | jq -r '.[] | select(.type=="file") | .name' | sort > /tmp/l-$(basename $h | cut -d. -f1); echo "listed at $(basename $h | cut -d. -f1): $(wc -l < /tmp/l-$(basename $h | cut -d. -f1))"; done
 grep '^200 ' /tmp/res-$LABEL | awk '{print $4".bin"}' | sort > /tmp/acked; grep -v '^200 ' /tmp/res-$LABEL | awk '{print $4".bin"}' | sort > /tmp/nack
 echo "acked=$(wc -l < /tmp/acked) failed=$(wc -l < /tmp/nack)"
-echo "LOST (acked, not listed at NA): $(comm -23 /tmp/acked /tmp/l-na | wc -l) $(comm -23 /tmp/acked /tmp/l-na | head -5 | tr '\n' ' ')"
-echo "PUBLISHED DESPITE ERROR (failed, listed at NA): $(comm -12 /tmp/nack /tmp/l-na | wc -l)"
+LOST=$(comm -23 /tmp/acked /tmp/l-na | wc -l); PDE=$(comm -12 /tmp/nack /tmp/l-na | wc -l)
+echo "LOST (acked, not listed at NA): $LOST $(comm -23 /tmp/acked /tmp/l-na | head -5 | tr '\n' ' ')"
+echo "PUBLISHED DESPITE ERROR (failed, listed at NA): $PDE"
 echo "Region views differ: na-eu=$(comm -3 /tmp/l-na /tmp/l-eu | wc -l) na-asia=$(comm -3 /tmp/l-na /tmp/l-asia | wc -l)"
+# HTTP 500s are expected under contention; these two must stay 0. A LOST file may also be
+# one not yet visible at NA: rerun with LISTWAIT=30 before calling it lost.
+if [ "$LOST" -ne 0 ] || [ "$PDE" -ne 0 ]; then echo "RESULT FAIL lost=$LOST published_despite_error=$PDE"; exit 1; fi
+echo "RESULT PASS"
