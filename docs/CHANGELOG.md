@@ -20,6 +20,16 @@ report, lists `ISSUE-GC-TAG-COUNTS-DELETE-ERRORS-IGNORED-01` in its findings tab
 updates four live statements that still described X1 closure as pending. Documentation only;
 no gate closes. PRE-GC/A1 OPEN, GC OFF.
 
+## 2026-11-07 — Three-DC bootstrap convergence and Cassandra timeouts
+
+`cassandra-bootstrap` retries every 15 s until the application role holds its grants, up to
+`CASSANDRA_BOOTSTRAP_ATTEMPTS` (default 12); it used to exit 2 on every fresh three-DC run.
+The production compose writes `cas_contention_timeout` and `write_request_timeout` into
+`cassandra.yaml` on every start, default 5000 ms instead of the image's 1000 / 2000 ms, through
+`CASSANDRA_CAS_CONTENTION_TIMEOUT` and `CASSANDRA_WRITE_REQUEST_TIMEOUT`; an invalid value stops
+Cassandra from starting and the preflight reports it. Verified on a three-DC rehearsal of the
+production compose and on one DC.
+
 ## 2026-11-06 — Internal deployment readiness verification
 
 [Dated verification](./PROD-READINESS-VERIFICATION-20261106.md) of main@a21f4203d:

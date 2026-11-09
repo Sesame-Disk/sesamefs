@@ -106,6 +106,11 @@ services:
       - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
       - MAX_HEAP_SIZE=${CASSANDRA_MAX_HEAP_SIZE}
       - HEAP_NEWSIZE=${CASSANDRA_HEAP_NEWSIZE}
+      # Cassandra's own CAS-contention and write timeouts. The image ships 1000ms and
+      # 2000ms; under multi-DC latency, concurrent uploads time out on global SERIAL
+      # Paxos with those values (ISSUE-CASSANDRA-TIMEOUTS-WAN-01). Applied on every start.
+      - CASSANDRA_CAS_CONTENTION_TIMEOUT=${CASSANDRA_CAS_CONTENTION_TIMEOUT:-5000ms}
+      - CASSANDRA_WRITE_REQUEST_TIMEOUT=${CASSANDRA_WRITE_REQUEST_TIMEOUT:-5000ms}
       # Multi-region vars (CASSANDRA_SEEDS, CASSANDRA_BROADCAST_ADDRESS,
       # CASSANDRA_RPC_ADDRESS, CASSANDRA_BROADCAST_RPC_ADDRESS) are passed
       # via env_file above. Do NOT set CASSANDRA_LISTEN_ADDRESS (auto-detect).
@@ -115,6 +120,21 @@ services:
       - |
         sed -ri 's/^authenticator:.*/authenticator: PasswordAuthenticator/' /etc/cassandra/cassandra.yaml
         sed -ri 's/^authorizer:.*/authorizer: CassandraAuthorizer/' /etc/cassandra/cassandra.yaml
+        for setting in cas_contention_timeout:CASSANDRA_CAS_CONTENTION_TIMEOUT write_request_timeout:CASSANDRA_WRITE_REQUEST_TIMEOUT; do
+          key="$${setting%%:*}"
+          var="$${setting#*:}"
+          value="$${!var}"
+          # 10ms to 9999999ms. Cassandra silently raises anything below 10ms to 10ms.
+          if [[ ! "$${value}" =~ ^[1-9][0-9]{1,6}ms$ ]]; then
+            echo "$${var} must be whole milliseconds from 10ms to 9999999ms, such as 5000ms; got '$${value}'" >&2
+            exit 1
+          fi
+          sed -ri "s/^$${key}:.*/$${key}: $${value}/" /etc/cassandra/cassandra.yaml
+          if ! grep -qx "$${key}: $${value}" /etc/cassandra/cassandra.yaml; then
+            echo "Could not set $${key} in /etc/cassandra/cassandra.yaml" >&2
+            exit 1
+          fi
+        done
         exec docker-entrypoint.sh cassandra -f
     volumes:
       - ${CASSANDRA_DATA_DIR:?set CASSANDRA_DATA_DIR in .env}:/var/lib/cassandra
@@ -272,13 +292,40 @@ services:
           sleep 2
         done
 
-        cqlsh cassandra -u cassandra -p "$${admin_pass}" <<EOF
+        apply_bootstrap_cql() {
+          cqlsh cassandra -u cassandra -p "$${admin_pass}" <<EOF
         CREATE KEYSPACE IF NOT EXISTS $${keyspace} WITH replication = $${replication_cql};
         ALTER KEYSPACE $${keyspace} WITH replication = $${replication_cql};
         ALTER KEYSPACE system_auth WITH replication = $${replication_cql};
         CREATE ROLE IF NOT EXISTS $${app_user} WITH PASSWORD = '$${app_pass_escaped}' AND LOGIN = true;
         GRANT ALL PERMISSIONS ON KEYSPACE $${keyspace} TO $${app_user};
         EOF
+        }
+
+        app_role_has_grants() {
+          # grep reads the whole listing on purpose: grep -q exits at the first match,
+          # which sends SIGPIPE to cqlsh and fails the pipeline under pipefail.
+          cqlsh cassandra -u cassandra -p "$${admin_pass}" -e "LIST ALL PERMISSIONS OF $${app_user};" 2>/dev/null | grep "<keyspace $${keyspace}>" >/dev/null
+        }
+
+        # On a fresh multi-DC cluster the first run can fail right after the system_auth
+        # replication change, before the role exists (ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01).
+        # Every statement is idempotent, so retry until the role holds its grants.
+        max_attempts="$${CASSANDRA_BOOTSTRAP_ATTEMPTS:-12}"
+        case "$${max_attempts}" in
+          ''|*[!0-9]*|0) echo "CASSANDRA_BOOTSTRAP_ATTEMPTS must be a positive integer, got '$${max_attempts}'" >&2; exit 1 ;;
+        esac
+        attempt=1
+        until apply_bootstrap_cql && app_role_has_grants; do
+          if [ "$${attempt}" -ge "$${max_attempts}" ]; then
+            echo "Cassandra bootstrap did not converge after $${attempt} attempt(s)" >&2
+            exit 1
+          fi
+          echo "Cassandra bootstrap attempt $${attempt} did not converge; retrying in 15s" >&2
+          attempt=$$((attempt + 1))
+          sleep 15
+        done
+        echo "Cassandra bootstrap converged after $${attempt} attempt(s)"
 
         sleep 5
         cqlsh cassandra -u cassandra -p "$${admin_pass}" -e "ALTER ROLE $${app_user} WITH PASSWORD = '$${app_pass_escaped}' AND LOGIN = true;"
