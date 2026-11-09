@@ -790,10 +790,10 @@ check_database() {
   for timeout_var in CASSANDRA_CAS_CONTENTION_TIMEOUT CASSANDRA_WRITE_REQUEST_TIMEOUT; do
     if ! is_set "$timeout_var"; then
       pass "$timeout_var is unset (production compose default 5000ms)"
-    elif [[ "${!timeout_var}" =~ ^[1-9][0-9]*ms$ ]]; then
+    elif [[ "${!timeout_var}" =~ ^[1-9][0-9]{1,6}ms$ ]]; then
       pass "$timeout_var=${!timeout_var}"
     else
-      fail "$timeout_var must be a positive whole number of milliseconds such as 5000ms. Cassandra will refuse to start."
+      fail "$timeout_var must be whole milliseconds from 10ms to 9999999ms, such as 5000ms. The production compose will not start Cassandra with it."
     fi
   done
 

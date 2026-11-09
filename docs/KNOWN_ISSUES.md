@@ -10,7 +10,7 @@ deferred and the two go-live blockers accepted for that pilot and fixed along th
 Issues below are new registrations of pre-existing conditions. No existing severity
 changes and nothing closes. PRE-GC/A1 OPEN, GC OFF.
 
-### ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01: First three-DC bootstrap fails before creating the application role
+### ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01: The first three-DC bootstrap attempt fails
 
 **Status:** CLOSED-FIX on merge of the bootstrap-convergence change (2026-11-07); OPEN until
 then. The bootstrap now retries its idempotent statements until the application role holds its
@@ -29,7 +29,8 @@ succeeded whenever needed, without a repair. Cause not isolated. [Evidence](./PR
 
 **Status:** CLOSED-FIX for the timeout settings on merge of the bootstrap-convergence change
 (2026-11-07); OPEN until then. The production compose writes both into `cassandra.yaml` on every
-start, default 5000 ms, through `CASSANDRA_CAS_CONTENTION_TIMEOUT` and
+start, default 5000 ms, accepted from 10 ms to 9999999 ms (Cassandra silently raises anything below
+10 ms to 10 ms), through `CASSANDRA_CAS_CONTENTION_TIMEOUT` and
 `CASSANDRA_WRITE_REQUEST_TIMEOUT`, and refuses to start on an invalid value; the preflight checks
 them. Verified on all three nodes, with a 4000 ms override and a rejected `5s`. With the compose
 defaults at about 80 ms RTT, the cross-region shape below succeeded 24 and 31 of 36. The
