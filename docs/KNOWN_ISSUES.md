@@ -5,7 +5,7 @@
 [Dated verification on main@a21f4203d](./PROD-READINESS-VERIFICATION-20261106.md):
 the application path works on the production compose with GC off; the three-DC rehearsal
 found a failing first bootstrap and, under simulated WAN latency, concurrent uploads failing
-across an organization's libraries; data integrity held. By maintainer decision the next step is a **disposable internal pilot on three DCs**, with backup
+across an organization's libraries; no acknowledged upload was missing from the listings checked. By maintainer decision the next step is a **disposable internal pilot on three DCs**, with backup
 deferred and the two go-live blockers accepted for that pilot and fixed along the way.
 Issues below are new registrations of pre-existing conditions. No existing severity
 changes and nothing closes. PRE-GC/A1 OPEN, GC OFF.
@@ -80,9 +80,10 @@ may do the same. Start one backend first.
 **Status:** OPEN (2026-11-06), reproduced. **Severity:** P2 / current runtime; pre-existing.
 **Affected:** `CleanupAllLibraryTags` in `internal/api/v2/tags.go`.
 
-One logged batch mixes counter tables (`repo_tag_counters`, `file_tag_counters`) with regular
-tables, so Cassandra rejects it: `Counter and non-counter mutations cannot exist in the same
-batch`. Callers only log it, so tag rows remain after a permanent delete. Fix with a
+One logged batch mixes the counter table `repo_tag_file_counts` (`file_count COUNTER`) with
+regular tables, so Cassandra rejects it: `Counter and non-counter mutations cannot exist in the
+same batch`. Despite their names, `repo_tag_counters` and `file_tag_counters` hold plain `INT`
+columns. The fix deletes `repo_tag_file_counts` outside the logged batch. Callers only log it, so tag rows remain after a permanent delete. Fix with a
 real-Cassandra RED/GREEN.
 
 ### ISSUE-LOG-PRINTF-LEVEL-01: Upload failures log at INFO
@@ -99,9 +100,11 @@ Messages from `log.Printf` become `level=INFO`, including `[HandleUpload] CRITIC
 disposable. **Severity:** P1; pre-existing. Prerequisite as soon as data must survive.
 **Source of record for scope:** [roadmap §10](./V1-PRODUCTION-ROADMAP.md).
 
-The repository has no backup script, restore runbook, RTO/RPO or restore drill. The
-documented layout is RF 1 per DC, so losing a single-DC Cassandra node loses all
-metadata; S3 blocks alone cannot rebuild libraries. Close with a Cassandra and bucket
+The repository has no backup script, restore runbook, RTO/RPO or restore drill. With the
+three-DC layout (RF 1 per DC) every partition has three replicas, one per DC, so losing one
+node or one DC does not lose the metadata, though it reduces availability. Replication does
+not protect against replicated deletes or corruption, operator error, or losing every
+replica; a single-DC deployment has only one copy. S3 blocks alone cannot rebuild libraries. Close with a Cassandra and bucket
 backup, plus a restore actually performed on a clean environment.
 
 ### ISSUE-CASSANDRA-REPAIR-RUNBOOK-01: No scheduled repair procedure for multi-DC
@@ -208,8 +211,11 @@ Go suite afterwards.
 **2026-11-06 re-run on main@a21f4203d:** `govulncheck` reports 10 reachable: the four
 `x/net` entries above and six for `excelize` (adding GO-2026-6680, GO-2026-6677,
 GO-2026-6676 and GO-2026-6674). `npm audit --omit=dev` reports 40: 2 critical, 16
-high, 18 moderate, 4 low. The `seafile-js` fix is open as #324; #325 covers the
-nested `form-data`.
+high, 18 moderate, 4 low. The `seafile-js` update is open as #324, with #325 for the
+nested `form-data`. **Do not merge either yet:** `seafile-js` 0.2.241 no longer exports
+`sysAdminGetSysInfo` or `sysAdminGetDepartmentInfo`, which the system-admin pages call
+(`sys-admin/info.js`, `departments/department.js`, `departments/sub-departments.js`);
+0.2.232 exports both. A passing build does not catch it.
 
 ### Frontend
 

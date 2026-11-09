@@ -16,8 +16,8 @@ migrators on three DCs. Records the maintainer's decision for a disposable inter
 pilot on three DCs, with backup deferred and the two go-live blockers accepted for it. A
 three-DC rehearsal of the production compose on one host found a failing first bootstrap,
 concurrent uploads failing under simulated WAN latency because an organization's libraries
-share one HEAD Paxos partition, a false-positive `/ping` and a failing tag cleanup; data
-integrity held in every run.
+share one HEAD Paxos partition, a false-positive `/ping` and a failing tag cleanup; no
+acknowledged upload was missing from the listings checked.
 Registers pre-existing findings. Corrects stale DEPLOY statements about a bundled nginx
 and nginx rate limiting, and live summaries that still described merged X1, Phase 5,
 Phase 6 and #321 closures as pending. Documentation only; no gate closes. PRE-GC/A1

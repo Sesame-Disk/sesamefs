@@ -15,8 +15,8 @@ no issue. The decisions below are the maintainer's.
 fixes.** The [three-DC rehearsal](#three-dc-rehearsal) found that the first bootstrap
 fails, and that with simulated WAN latency, simultaneous uploads from different regions
 mostly fail even on different libraries, because one organization shares one Paxos
-partition. One user's uploads work but take about 2.7 s at 80 ms RTT. Data integrity
-held in every run. This is not a
+partition. One user's uploads work but take about 2.7 s at 80 ms RTT. In every run,
+no acknowledged upload was missing from the listings checked. This is not a
 production certification, and it supplies no evidence for external users or for data
 that must survive. The purpose of the pilot is real testing: much has changed since X1
 and X2 closed, and none of it has run on a real deployment.
@@ -39,7 +39,7 @@ OPEN and GC stays OFF on every replica in every DC.
 |---|---|
 | **Fix or work around the first bootstrap** | [`ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01`](./KNOWN_ISSUES.md#issue-cassandra-bootstrap-3dc-role-01-first-three-dc-bootstrap-fails-before-creating-the-application-role): failed 3 of 3 fresh runs. Run it again until it exits 0 and the role exists |
 | **Raise Cassandra's write and CAS timeouts on every node** | [`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`](./KNOWN_ISSUES.md#issue-cassandra-timeouts-wan-01-shipped-cassandra-timeouts-fail-uploads-under-wan-latency): mitigates the per-organization contention until it is fixed; the production compose has no setting for them yet |
-| Build the release from an exact commit | No CI exists, so images are built and pushed by hand. Merge #324 first; see [Dependencies](#dependencies) |
+| Build the release from an exact commit | No CI exists, so images are built and pushed by hand. Do not merge #324 or #325 yet; see [Dependencies](#dependencies) |
 | Set memory limits per host | [`ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01`](./KNOWN_ISSUES.md#issue-prod-compose-no-memory-limit-01-production-compose-sets-no-container-memory-limit). `pack-fs` amplification can otherwise take Cassandra down on the same host |
 | One backend per regional hostname | Three pieces of state are per process; see [Topology](#topology) |
 | Central nginx and user provisioning per region | See [Operational notes](#operational-notes) |
@@ -119,7 +119,7 @@ Runs used a private Docker project with fresh volumes on one host: 7 CPUs, 14 GB
 | Real `seaf-cli` sync | **PASS** 11/11 | Plain and encrypted. Desktop GUI, SeaDrive and mobile not run |
 | Frontend unit | **PASS** 34 suites, 471 tests | |
 | Deploy rehearsal, one DC | **37 pass, 2 harness fails, both re-tested as pass** | [Below](#deploy-rehearsal) |
-| Three-DC rehearsal, two runs | **Failures found; integrity held** | [Below](#three-dc-rehearsal) |
+| Three-DC rehearsal, two runs | **Failures found; no acknowledged upload missing** | [Below](#three-dc-rehearsal) |
 | Simultaneous migrators on 3 DCs | **Converged in 2 of 2 completed trials** | [Below](#simultaneous-first-boot) |
 | `govulncheck` | **FAIL: 10 reachable** | [Dependencies](#dependencies) |
 | `npm audit --omit=dev` | **FAIL: 2 critical, 16 high** | [Dependencies](#dependencies) |
@@ -255,10 +255,12 @@ the first run and was not repeated.
 
 ### What held
 
-- **Integrity, in every run.** Across 20 concurrency runs, all 538 uploads acknowledged
-  with 200 were listed, none lost; none of the 362 failed uploads was listed, checked
-  seconds after each run. One acknowledged upload took over 3 s to appear in one region.
-  This checks listings, not a formal consistency proof.
+- **No acknowledged upload missing from listings.** Across 20 concurrency runs, all 538
+  uploads acknowledged with 200 were listed, and none of the 362 failed uploads was,
+  checked seconds after each run. One acknowledged upload took over 3 s to appear in one
+  region. This checks presence in listings only: file contents were verified by SHA-256 in
+  the functional matrix, not for these uploads, and there is no long-term convergence or
+  formal consistency proof.
 - **First boot, second run.** One backend alone applied `001` with no restart; the
   other two started in about 5 s.
 - **Cross-region use.** Login in each region, a session valid everywhere, read and write
@@ -329,8 +331,12 @@ a maintainer decision and its own evidence.
   with #325 for the nested dependency. Direct highs: `@seafile/sdoc-editor`, `postcss`
   and `socket.io-client`.
 
-Reachability in the browser build was not analyzed. Merge #324 before building the
-release, after a frontend build check.
+**Do not merge #324 or #325 yet.** `seafile-js` 0.2.241 no longer exports
+`sysAdminGetSysInfo` or `sysAdminGetDepartmentInfo`, which the system-admin pages call
+(`sys-admin/info.js`, `departments/department.js`, `departments/sub-departments.js`);
+0.2.232 exports both. A passing build does not catch it. Those calls must be restored or
+replaced and tested first. Reachability of the advisories in the browser build was not
+analyzed.
 
 ## New findings
 

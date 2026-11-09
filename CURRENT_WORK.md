@@ -11,7 +11,7 @@ expects GC on), OIDC suite not run with OIDC enabled.
 [Three-DC rehearsal](docs/PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal) on one
 host: first bootstrap fails 3 of 3; under simulated WAN latency, concurrent uploads fail
 across an organization's libraries because they share one HEAD Paxos partition, and one
-user's upload takes about 2.7 s; integrity held in every run, one DC down works and real
+user's upload takes about 2.7 s; no acknowledged upload was missing from listings, one DC down works and real
 `seaf-cli` syncs. Against `d016e42b7` at 80 ms RTT, one upload took 0.17 s with
 `LOCAL_SERIAL`, which lost 57 of 135 acknowledged concurrent uploads, 1.38 s with
 `SERIAL` and 2.68 s now. Next: the bootstrap and timeout fix PR, then the partition design. Open PRs: #320,
