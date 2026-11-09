@@ -161,7 +161,26 @@ one hostname; no single-backend impact.
 When the callback reaches another process, `consumeState` returns `state not found`
 and login fails. Third node-local item alongside `ISSUE-UPLOAD-CHUNK-MULTINODE-01`
 and `ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01`. One backend per regional hostname does
-not reach it.
+not reach it; one geographic hostname over several regions can
+(`ISSUE-GEO-DNS-PER-PROCESS-STATE-01`).
+
+### ISSUE-GEO-DNS-PER-PROCESS-STATE-01: One geographic hostname sends a client to another region's process
+
+**Status:** OPEN (2026-11-09), from the deployment design; not reproduced through real DNS.
+**Severity:** P2 / availability for the multi-region deployment; pre-existing.
+**Affected:** production topology: one public hostname whose DNS answers by geography, with
+one backend per region behind it.
+
+Each region runs exactly one backend, but the public name resolves to a different region
+per client location. Three pieces of state live in the backend process:
+the web login's state and PKCE verifier (`ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01`), the
+desktop SSO pending token (`ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01`) and chunked-upload
+chunks (`ISSUE-UPLOAD-CHUNK-MULTINODE-01`). If a client's DNS answer changes region in the
+middle of one of those flows (another resolver, a VPN, a network change, a DNS failover),
+the second half reaches a process that never saw the first: the login fails with
+`state not found`, or the chunked upload fails and must restart. A client that stays on
+one region is not affected. Retrying works once the answer is stable. The fix is to keep
+that state in Cassandra; the three linked issues track it.
 
 ### ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01: Production compose sets no container memory limit
 
@@ -174,6 +193,13 @@ in the rehearsal: a 2 GiB budget unrelated to the machine, which DEPLOY warns ab
 hosts below its 8 GiB baseline. An unbounded allocation such as
 `ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01` can also take Cassandra down on a shared host.
 A limit is a deployment choice; until the compose ships one, set it per host.
+
+**Update (2026-11-09):** the Swarm production stack (`docker-compose.swarm.yml`) requires
+`SESAMEFS_MEMORY_LIMIT` and `CASSANDRA_MEMORY_LIMIT`, and `prod-preflight.sh --swarm`
+checks them, including Cassandra's limit against its heap. On a three-host Swarm
+rehearsal every backend reported `budget_source="25% of the detected cgroup limit"`.
+CLOSED-FIX for the production path on merge; `docker-compose.prod.yml`, now the
+rehearsal path, still sets no limit.
 
 ### ISSUE-SHARELINK-DIR-TRAILING-SLASH-404-01: Shared-folder links emitted by the UI return JSON 404
 

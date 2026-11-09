@@ -1,0 +1,184 @@
+# =============================================================================
+# SesameFS — Production Docker Swarm stack (one region per host)
+# =============================================================================
+# The production path. Each region is one host running a single-node Swarm with this
+# stack; the three Cassandra nodes form one multi-DC cluster over the private network.
+# docs/DEPLOY.md describes the full procedure, the first-deploy order and the
+# variables. docker-compose.prod.yml stays for single-host rehearsals.
+#
+#   set -a; . /path/to/region.env; set +a      # also read here for ${...} below
+#   export SESAMEFS_IMAGE=... FRONTEND_IMAGE=...
+#   ENV_FILE=/path/to/region.env docker stack deploy --with-registry-auth \
+#     -c docker-compose.swarm.yml sesamefs
+#
+# Differences from docker-compose.prod.yml, all because of Swarm:
+#  - Cassandra uses the host network and listens only on CASSANDRA_BIND_IP. Swarm cannot
+#    publish a port on one IP, and a Docker-published port bypasses host firewalls, which
+#    would expose unauthenticated gossip on public interfaces.
+#  - The backend reaches Cassandra at CASSANDRA_BIND_IP:9042, not at a service name.
+#  - The image must carry configs/config.prod.yaml as /app/config.yaml (build argument
+#    CONFIG_FILE=configs/config.prod.yaml): a stack must not depend on files in a checkout.
+#  - Memory limits are required, and every service runs one replica: three pieces of
+#    state live in the backend process, and two Cassandra tasks must never share data.
+#  - No depends_on ordering. On the first deploy, run with SESAMEFS_BACKEND_REPLICAS=0
+#    until the one-shot bootstrap (scripts/cassandra-bootstrap.sh) has run; otherwise the
+#    backend restarts until Cassandra and the application role exist.
+# =============================================================================
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "100m"
+    max-file: "5"
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # SesameFS API backend
+  # ---------------------------------------------------------------------------
+  sesamefs:
+    image: ${SESAMEFS_IMAGE:?set SESAMEFS_IMAGE}
+    networks:
+      - internal
+    env_file:
+      - ${ENV_FILE:?set ENV_FILE to the region env file}
+    environment:
+      - STORAGE_MODE=${STORAGE_MODE:-multi}
+      - OIDC_ENABLED=${OIDC_ENABLED:-true}
+      - ONLYOFFICE_ENABLED=${ONLYOFFICE_ENABLED:-true}
+      - FRONTEND_URL=${FRONTEND_URL:-http://frontend:80}
+      - ACCOUNTS_DISABLE_ORG_USER_WRITES=${ACCOUNTS_DISABLE_ORG_USER_WRITES:-true}
+      # Destructive GC remains blocked while the PRE-GC / A1 gate remains open.
+      - GC_ENABLED=false
+      # Cassandra listens only on the node's private IP (host network, below).
+      - CASSANDRA_HOSTS=${CASSANDRA_BIND_IP:?set CASSANDRA_BIND_IP to this node's private IP}:9042
+      - CASSANDRA_KEYSPACE=${CASSANDRA_KEYSPACE:-sesamefs}
+      - CASSANDRA_LOCAL_DC=${CASSANDRA_LOCAL_DC:?set CASSANDRA_LOCAL_DC}
+      - SERVER_REGION=${SERVER_REGION:?set SERVER_REGION (na, eu or asia)}
+      # The frontend nginx is the only proxy hop in front of the backend, on the
+      # internal network below; it forwards the client IP resolved by the central nginx.
+      - SERVER_TRUSTED_PROXIES=${SESAMEFS_INTERNAL_SUBNET:?set SESAMEFS_INTERNAL_SUBNET}
+      # Forced production values, whatever the env file says.
+      - AUTH_DEV_MODE=false
+      - SESAMEFS_SYNC_W2_CRASH_AFTER_HEAD_CAS_ONCE=0
+      - METRICS_ENABLED=true
+    deploy:
+      # 1 normally; 0 only on the first deploy, until the Cassandra bootstrap has run.
+      # Never more than 1: login, SSO and chunk state are per process.
+      replicas: ${SESAMEFS_BACKEND_REPLICAS:-1}
+      update_config:
+        order: stop-first        # never two backends at once, even during an update
+      restart_policy:
+        condition: any
+        delay: 10s
+      resources:
+        limits:
+          memory: ${SESAMEFS_MEMORY_LIMIT:?set SESAMEFS_MEMORY_LIMIT, such as 4G}
+    logging: *logging
+
+  # ---------------------------------------------------------------------------
+  # Cassandra, one node of the multi-DC cluster
+  # ---------------------------------------------------------------------------
+  cassandra:
+    image: cassandra:5.0.9
+    networks:
+      - hostnet
+    entrypoint:
+      - /bin/bash
+      - -ec
+    env_file:
+      - ${ENV_FILE:?set ENV_FILE to the region env file}
+    environment:
+      - CASSANDRA_CLUSTER_NAME=${CASSANDRA_CLUSTER_NAME:?set CASSANDRA_CLUSTER_NAME}
+      - CASSANDRA_DC=${CASSANDRA_DC:?set CASSANDRA_DC}
+      - CASSANDRA_RACK=${CASSANDRA_RACK:-rack1}
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - MAX_HEAP_SIZE=${CASSANDRA_MAX_HEAP_SIZE:?set CASSANDRA_MAX_HEAP_SIZE}
+      - HEAP_NEWSIZE=${CASSANDRA_HEAP_NEWSIZE:?set CASSANDRA_HEAP_NEWSIZE}
+      # Every address is the private IP: gossip and CQL never listen on another interface.
+      - CASSANDRA_LISTEN_ADDRESS=${CASSANDRA_BIND_IP:?set CASSANDRA_BIND_IP}
+      - CASSANDRA_BROADCAST_ADDRESS=${CASSANDRA_BIND_IP:?set CASSANDRA_BIND_IP}
+      - CASSANDRA_RPC_ADDRESS=${CASSANDRA_BIND_IP:?set CASSANDRA_BIND_IP}
+      - CASSANDRA_BROADCAST_RPC_ADDRESS=${CASSANDRA_BIND_IP:?set CASSANDRA_BIND_IP}
+      - CASSANDRA_SEEDS=${CASSANDRA_SEEDS:?set CASSANDRA_SEEDS to the private IPs of the seed nodes}
+      # See docker-compose.prod.yml and ISSUE-CASSANDRA-TIMEOUTS-WAN-01.
+      - CASSANDRA_CAS_CONTENTION_TIMEOUT=${CASSANDRA_CAS_CONTENTION_TIMEOUT:-5000ms}
+      - CASSANDRA_WRITE_REQUEST_TIMEOUT=${CASSANDRA_WRITE_REQUEST_TIMEOUT:-5000ms}
+    # Same start-up script as docker-compose.prod.yml; scripts/test-swarm-stack.sh
+    # fails if the two drift apart.
+    command:
+      - |
+        sed -ri 's/^authenticator:.*/authenticator: PasswordAuthenticator/' /etc/cassandra/cassandra.yaml
+        sed -ri 's/^authorizer:.*/authorizer: CassandraAuthorizer/' /etc/cassandra/cassandra.yaml
+        for setting in cas_contention_timeout:CASSANDRA_CAS_CONTENTION_TIMEOUT write_request_timeout:CASSANDRA_WRITE_REQUEST_TIMEOUT; do
+          key="$${setting%%:*}"
+          var="$${setting#*:}"
+          value="$${!var}"
+          # 10ms to 9999999ms. Cassandra silently raises anything below 10ms to 10ms.
+          if [[ ! "$${value}" =~ ^[1-9][0-9]{1,6}ms$$ ]]; then
+            echo "$${var} must be whole milliseconds from 10ms to 9999999ms, such as 5000ms; got '$${value}'" >&2
+            exit 1
+          fi
+          sed -ri "s/^$${key}:.*/$${key}: $${value}/" /etc/cassandra/cassandra.yaml
+          if ! grep -qx "$${key}: $${value}" /etc/cassandra/cassandra.yaml; then
+            echo "Could not set $${key} in /etc/cassandra/cassandra.yaml" >&2
+            exit 1
+          fi
+        done
+        exec docker-entrypoint.sh cassandra -f
+    volumes:
+      - ${CASSANDRA_DATA_DIR:?set CASSANDRA_DATA_DIR to an absolute host path}:/var/lib/cassandra
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - cqlsh "$${CASSANDRA_RPC_ADDRESS}" -u cassandra -p "$${CASSANDRA_SUPERUSER_PASSWORD:-cassandra}" -e "describe keyspaces" || cqlsh "$${CASSANDRA_RPC_ADDRESS}" -u cassandra -p cassandra -e "describe keyspaces"
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      # Joining a multi-DC cluster can take minutes; Swarm restarts an unhealthy task.
+      start_period: 600s
+    deploy:
+      replicas: 1
+      update_config:
+        order: stop-first        # two Cassandra tasks must never open the same data directory
+      restart_policy:
+        condition: any
+        delay: 30s
+      resources:
+        limits:
+          memory: ${CASSANDRA_MEMORY_LIMIT:?set CASSANDRA_MEMORY_LIMIT, above the heap, such as 6G}
+    logging: *logging
+
+  # ---------------------------------------------------------------------------
+  # Desktop frontend (React SPA served by nginx), reached by the central nginx on sfs-net
+  # ---------------------------------------------------------------------------
+  frontend:
+    image: ${FRONTEND_IMAGE:?set FRONTEND_IMAGE}
+    networks:
+      internal: {}
+      sfs-net:
+        aliases:
+          - "sesamefs-frontend-${DEPLOY_ID:?set DEPLOY_ID}"
+    deploy:
+      replicas: 1
+      update_config:
+        order: start-first
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          memory: ${FRONTEND_MEMORY_LIMIT:-256M}
+    logging: *logging
+
+networks:
+  internal:
+    driver: overlay
+    ipam:
+      config:
+        - subnet: ${SESAMEFS_INTERNAL_SUBNET:?set SESAMEFS_INTERNAL_SUBNET}
+  sfs-net:
+    external: true        # Attachable overlay shared with the central nginx stack
+  hostnet:
+    external: true
+    name: host

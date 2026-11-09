@@ -1,7 +1,7 @@
 # Three-DC rehearsal of the production compose
 
 Runs `docker-compose.prod.yml` and `configs/config.prod.yaml` as three regions on one
-Docker host, following [DEPLOY Steps M1, M4 and M5](../../../docs/DEPLOY.md#default-production-path-multi-region),
+Docker host, following [DEPLOY Steps M1, M4 and M5](../../../docs/DEPLOY.md#multi-region-with-docker-composeprodyml-rehearsal),
 then drives real traffic through a central nginx, the frontend nginx and the backend. It
 produced the [rehearsal evidence](../../../docs/PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal)
 behind the internal pilot.

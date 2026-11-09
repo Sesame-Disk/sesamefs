@@ -1,13 +1,28 @@
 # Current Work
 
-## Active slice: three-DC bootstrap convergence and Cassandra timeouts (2026-11-07)
+## Active slice: production on Docker Swarm (2026-11-09)
+
+`docker-compose.swarm.yml`: one region per host, each a single-node Swarm; Cassandra on the
+host network, listening only on the private IP; required memory limits; one replica per
+service; the backend image carries `configs/config.prod.yaml`. The bootstrap moves to
+`scripts/cassandra-bootstrap.sh`, shared with `docker-compose.prod.yml` (byte-identical
+logic). `prod-preflight.sh --swarm` checks the stack's variables;
+`scripts/test-swarm-stack.sh` keeps both files in step. DEPLOY now leads with the Swarm path;
+the compose steps stay as the rehearsal path. A private deploy repository runs the deploy
+as pipelines. Verified on three simulated hosts (Docker-in-Docker, one Swarm each, one
+private network): first deploy with no backend, bootstrap (converged on attempt 2),
+backends one region at a time, OIDC login and cross-region upload/read 8 of 8, an image
+update, a Cassandra restart, and a broken image failing the deploy. New:
+`ISSUE-GEO-DNS-PER-PROCESS-STATE-01`. Closes the production path of
+`ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01` on merge. No gate closes; PRE-GC/A1 OPEN, GC OFF.
+
+## Previous merged slice: three-DC bootstrap convergence and Cassandra timeouts (#328, 2026-11-07)
 
 `docker-compose.prod.yml` only. The bootstrap retries its idempotent statements until the
 application role holds its grants; Cassandra's `cas_contention_timeout` and
 `write_request_timeout` default to 5 s, configurable and validated. RED on current main: exit 2 in 6 of 6 fresh three-DC runs. GREEN: 3 of 3 fresh three-DC runs exit 0, each converging on attempt 2 (the last one with the final check); reruns on a configured three-DC cluster exit 0 on attempt 1, 4 of 4 after a pipefail correction to the check (2 of 2 failed before it); one DC converges on attempt 1 and reruns cleanly.
 Closes `ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01` and the settings part of
-`ISSUE-CASSANDRA-TIMEOUTS-WAN-01` on merge. Stacked on the verification PR below. No gate
-closes; PRE-GC/A1 OPEN, ordinary GC OFF.
+`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`. No gate closes; PRE-GC/A1 OPEN, ordinary GC OFF.
 
 ## Previous slice: internal deployment readiness verification (2026-11-06)
 

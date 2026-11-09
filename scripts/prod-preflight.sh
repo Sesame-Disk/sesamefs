@@ -8,6 +8,8 @@
 #   2. (no flag)       validate the current environment and refuse to start
 #                      production if any required setting is missing or
 #                      still set to a development default
+#   3. --swarm         the same validation, plus the variables that
+#                      docker-compose.swarm.yml requires
 #
 # Intended to run either manually on the host:
 #
@@ -802,6 +804,111 @@ check_database() {
   fi
 }
 
+# Memory size as Docker accepts it for a limit: digits and an optional b/k/m/g unit.
+memory_to_bytes() {
+  local v="$1" n unit
+  [[ "$v" =~ ^([1-9][0-9]*)([bBkKmMgG]?)$ ]] || return 1
+  n="${BASH_REMATCH[1]}"; unit="${BASH_REMATCH[2],,}"
+  case "$unit" in
+    ''|b) printf '%s' "$n" ;;
+    k) printf '%s' $((n * 1024)) ;;
+    m) printf '%s' $((n * 1024 * 1024)) ;;
+    g) printf '%s' $((n * 1024 * 1024 * 1024)) ;;
+  esac
+}
+
+is_ipv4() {
+  local ip="$1" o
+  [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  for o in "${BASH_REMATCH[@]:1}"; do [ "$o" -le 255 ] || return 1; done
+}
+
+is_private_ipv4() { # RFC 1918 and the 100.64.0.0/10 shared range used by overlay VPNs
+  local a b
+  IFS=. read -r a b _ _ <<< "$1"
+  [ "$a" = 10 ] && return 0
+  [ "$a" = 172 ] && [ "$b" -ge 16 ] && [ "$b" -le 31 ] && return 0
+  [ "$a" = 192 ] && [ "$b" = 168 ] && return 0
+  [ "$a" = 100 ] && [ "$b" -ge 64 ] && [ "$b" -le 127 ] && return 0
+  return 1
+}
+
+check_swarm_stack() {
+  section "Swarm stack (docker-compose.swarm.yml)"
+  local v bytes heap_bytes subnet_addr subnet_len
+
+  for v in SERVER_REGION DEPLOY_ID CASSANDRA_DC CASSANDRA_LOCAL_DC CASSANDRA_CLUSTER_NAME; do
+    if is_set "$v"; then pass "$v=${!v}"; else fail "$v is required by the Swarm stack."; fi
+  done
+
+  if ! is_set CASSANDRA_BIND_IP; then
+    fail "CASSANDRA_BIND_IP is required: this node's private IP. Cassandra listens only there."
+  elif ! is_ipv4 "$CASSANDRA_BIND_IP"; then
+    fail "CASSANDRA_BIND_IP must be an IPv4 address, got '$CASSANDRA_BIND_IP'."
+  elif [[ "$CASSANDRA_BIND_IP" == 0.* || "$CASSANDRA_BIND_IP" == 127.* ]]; then
+    fail "CASSANDRA_BIND_IP must be the node's private IP, not $CASSANDRA_BIND_IP."
+  elif ! is_private_ipv4 "$CASSANDRA_BIND_IP"; then
+    fail "CASSANDRA_BIND_IP $CASSANDRA_BIND_IP is not a private address. Cassandra gossip is unauthenticated: keep it on the private network."
+  else
+    pass "CASSANDRA_BIND_IP=$CASSANDRA_BIND_IP (private)"
+  fi
+
+  if ! is_set CASSANDRA_SEEDS; then
+    fail "CASSANDRA_SEEDS is required: the private IPs of the seed nodes, comma-separated."
+  else
+    local seed seeds_ok=true
+    IFS=',' read -r -a seed_list <<< "$CASSANDRA_SEEDS"
+    for seed in "${seed_list[@]}"; do
+      seed="${seed//[[:space:]]/}"
+      if ! is_ipv4 "$seed"; then fail "CASSANDRA_SEEDS entry '$seed' is not an IPv4 address."; seeds_ok=false; fi
+    done
+    [ "$seeds_ok" = true ] && pass "CASSANDRA_SEEDS=$CASSANDRA_SEEDS"
+  fi
+
+  if ! is_set SESAMEFS_INTERNAL_SUBNET; then
+    fail "SESAMEFS_INTERNAL_SUBNET is required: the stack's internal overlay subnet, also the backend's trusted proxy range."
+  elif subnet_addr="${SESAMEFS_INTERNAL_SUBNET%/*}" subnet_len="${SESAMEFS_INTERNAL_SUBNET##*/}"        && [ "$subnet_addr/$subnet_len" = "$SESAMEFS_INTERNAL_SUBNET" ] && is_ipv4 "$subnet_addr"        && [[ "$subnet_len" =~ ^[0-9]{1,2}$ ]] && [ "$subnet_len" -ge 8 ] && [ "$subnet_len" -le 30 ]; then
+    pass "SESAMEFS_INTERNAL_SUBNET=$SESAMEFS_INTERNAL_SUBNET"
+  else
+    fail "SESAMEFS_INTERNAL_SUBNET must be an IPv4 CIDR such as 10.231.0.0/24, got '$SESAMEFS_INTERNAL_SUBNET'."
+  fi
+  if is_set SERVER_TRUSTED_PROXIES; then
+    warn "SERVER_TRUSTED_PROXIES is ignored by the Swarm stack, which sets it to SESAMEFS_INTERNAL_SUBNET."
+  fi
+
+  for v in SESAMEFS_MEMORY_LIMIT CASSANDRA_MEMORY_LIMIT; do
+    if ! is_set "$v"; then
+      fail "$v is required by the Swarm stack (such as 4G). Without a limit the backend sizes its download budget from a reference value."
+    elif ! memory_to_bytes "${!v}" >/dev/null; then
+      fail "$v must be a size such as 4G or 4096M, got '${!v}'."
+    else
+      pass "$v=${!v}"
+    fi
+  done
+  if is_set FRONTEND_MEMORY_LIMIT && ! memory_to_bytes "$FRONTEND_MEMORY_LIMIT" >/dev/null; then
+    fail "FRONTEND_MEMORY_LIMIT must be a size such as 256M, got '$FRONTEND_MEMORY_LIMIT'."
+  fi
+  if bytes=$(memory_to_bytes "${CASSANDRA_MEMORY_LIMIT:-}") && heap_bytes=$(memory_to_bytes "${CASSANDRA_MAX_HEAP_SIZE:-}"); then
+    if [ "$bytes" -le "$heap_bytes" ]; then
+      fail "CASSANDRA_MEMORY_LIMIT ($CASSANDRA_MEMORY_LIMIT) must exceed CASSANDRA_MAX_HEAP_SIZE ($CASSANDRA_MAX_HEAP_SIZE); Cassandra also uses off-heap memory."
+    elif [ "$bytes" -lt $((heap_bytes * 3 / 2)) ]; then
+      warn "CASSANDRA_MEMORY_LIMIT ($CASSANDRA_MEMORY_LIMIT) is less than 1.5 times the heap ($CASSANDRA_MAX_HEAP_SIZE); off-heap use can reach the limit."
+    else
+      pass "CASSANDRA_MEMORY_LIMIT leaves room above the heap"
+    fi
+  fi
+
+  case "${SESAMEFS_BACKEND_REPLICAS:-1}" in
+    0) warn "SESAMEFS_BACKEND_REPLICAS=0: the backend will not run (first deploy, before the Cassandra bootstrap)." ;;
+    1) pass "SESAMEFS_BACKEND_REPLICAS=${SESAMEFS_BACKEND_REPLICAS:-1}" ;;
+    *) fail "SESAMEFS_BACKEND_REPLICAS must be 0 or 1: login, SSO and chunked-upload state live in the backend process." ;;
+  esac
+
+  if is_set CASSANDRA_DATA_DIR && [[ "$CASSANDRA_DATA_DIR" != /* ]]; then
+    fail "CASSANDRA_DATA_DIR must be an absolute host path for the Swarm stack, got '$CASSANDRA_DATA_DIR'."
+  fi
+}
+
 check_config_file() {
   section "Config file"
   if is_skipped config; then
@@ -840,6 +947,7 @@ Usage:
   $PROG                 validate the current environment (default)
   $PROG --init-env      seed .env from .env.prod.example and fill in every
                         auto-generatable secret with fresh random bytes
+  $PROG --swarm         validate, plus the variables of docker-compose.swarm.yml
   $PROG --help
 
 Environment (validation mode):
@@ -856,9 +964,11 @@ Exit codes:
 EOF
 }
 
+SWARM=false
 case "${1:-}" in
   -h|--help)   usage; exit 0 ;;
   --init-env)  do_init_env; exit 0 ;;
+  --swarm)     SWARM=true ;;
   "")          ;;
   *)           usage; exit 2 ;;
 esac
@@ -876,6 +986,7 @@ check_onlyoffice
 check_object_storage
 check_database
 check_config_file
+if [ "$SWARM" = true ]; then check_swarm_stack; fi
 
 section "Result"
 printf "  pass:  %s%d%s\n" "$C_GREEN"  "$PASS_COUNT" "$C_RESET" >&2
