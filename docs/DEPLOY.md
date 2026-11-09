@@ -85,7 +85,7 @@ development/integration stack. Production behavior is defined by
 docker network inspect sfs-net >/dev/null 2>&1 || docker network create sfs-net
 ```
 
-- The public health check for operators and load balancers is `GET /api2/ping`. Do not use `GET /ping` through nginx: it answers 200 with the SPA even when the backend is down (`ISSUE-HEALTH-PING-FALSE-OK-01`).
+- The public health check for operators and load balancers is `GET /api2/ping`: backend liveness only, it does not check Cassandra or S3. Readiness, which does, is `GET /ready` and internal-only. Do not use `GET /health` through nginx, which answers a static `OK`, or `GET /ping` through nginx: it answers 200 with the SPA even when the backend is down (`ISSUE-HEALTH-PING-FALSE-OK-01`).
 - `GET /ready` and metrics are intentionally internal-only. Run them from the node itself, from a private network, or with `docker compose exec sesamefs ...`.
 - For upload finalize monitoring, alerting, and dashboard queries, see [Upload Concurrency Observability](./UPLOAD-CONCURRENCY-OBSERVABILITY.md).
 - Published images are the deployment artifact. Production rollouts should update `SESAMEFS_IMAGE` and `FRONTEND_IMAGE` with full image references, pull the new images, and restart the services. `--build` is not part of the normal prod path.
@@ -963,11 +963,12 @@ Roles are synced from the OIDC token on every login.
 FILES_HOST=https://na.files.yourdomain.com
 OFFICE_HOST=https://na.office.yourdomain.com
 
-# Public liveness (should return: pong)
+# Public liveness (should return: pong). It proves the request reached a backend
+# process; it does not check Cassandra or S3.
 curl "$FILES_HOST/api2/ping"
 
-# Public process liveness
-curl "$FILES_HOST/health"
+# Do not use $FILES_HOST/health or $FILES_HOST/ping: the frontend nginx answers both
+# itself (a static "OK" and the SPA), even with every backend down.
 
 # Internal readiness — run from the node or inside the container
 docker compose -f docker-compose.prod.yml exec sesamefs \
