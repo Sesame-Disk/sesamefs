@@ -24,6 +24,11 @@ heap is 1 GB.
 
 ## Requirements
 
+**Only on a dedicated test host, never on a server that runs SesameFS for real.** Nothing
+stops it from running elsewhere: it creates and deletes the Compose projects `sfs-na`,
+`sfs-eu`, `sfs-asia` and `r3-ext` with their volumes, and stops and recreates Cassandra
+containers.
+
 Docker with Compose v2, bash, about 8 GB free memory and 7 CPUs for the rates in the
 evidence. **Run it with Docker to yourself:** a first run on a shared host produced much
 worse failure rates than the clean rerun. Windows works from Git Bash. Networks named
@@ -65,11 +70,13 @@ generated per run.
   (the plain-http IdP and the data volume are expected), a Cassandra node, the bootstrap,
   a backend that never reports ready, or the smoke matrix.
 - `smoke` fails on any failed check of the matrix.
-- `contention` fails when `LOST` or `PUBLISHED DESPITE ERROR` is not 0; HTTP 500s alone do
-  not fail it.
+- `contention` fails when `LOST` (acknowledged, not listed at NA) or `PUBLISHED DESPITE
+  ERROR` (failed, listed in any region) is not 0, when a region's listing fails, or when no
+  upload was acknowledged, since then nothing was verified. HTTP 500s alone do not fail it.
 - `ops check` fails when any step returns a non-2xx code or a download does not match.
   During a DC outage that is the expected result for the stopped region.
-- `latency` and `timeouts` fail unless the change is verified on all three nodes.
+- `latency` and `timeouts` fail unless the change is verified on all three nodes. `dc down`
+  fails unless a running node reports the stopped one down; `dc up` unless all three are up.
 - `down` fails and keeps the env files when something could not be removed, so it can be
   run again.
 

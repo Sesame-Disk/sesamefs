@@ -32,14 +32,29 @@ echo "-- mkdir status by code"; sort /tmp/mk-$LABEL | uniq -c
 echo "-- latency ms 200s: $(grep '^200 ' /tmp/res-$LABEL | cut -d' ' -f2 | sort -n | awk '{a[NR]=$1} END{if(NR)printf "n=%d p50=%d p95=%d max=%d",NR,a[int(NR*0.5)+1],a[int(NR*0.95)+1],a[NR]}')"
 echo "-- non-200 samples"; grep -v '^200 ' /tmp/res-$LABEL | cut -c1-170 | sed -E 's/http:\/\/([a-z]+)\.files\.rehearsal\.test/\1/' | head -8
 sleep ${LISTWAIT:-3}
-for h in $NA $EU $AS; do curl -s -m 60 -H "$A" "$h/api2/repos/$ID/dir/?p=/" | jq -r '.[] | select(.type=="file") | .name' | sort > /tmp/l-$(basename $h | cut -d. -f1); echo "listed at $(basename $h | cut -d. -f1): $(wc -l < /tmp/l-$(basename $h | cut -d. -f1))"; done
+# A listing that fails must not read as an empty one.
+LISTFAIL=0
+for r in na eu asia; do
+  rm -f /tmp/lj-$r /tmp/lu-$r; : > /tmp/l-$r
+  if curl -sf -m 60 -H "$A" "http://$r.files.rehearsal.test/api2/repos/$ID/dir/?p=/" > /tmp/lj-$r \
+     && jq -r 'if type == "array" then .[] | select(.type == "file") | .name else error("not a listing") end' /tmp/lj-$r > /tmp/lu-$r; then
+    sort /tmp/lu-$r > /tmp/l-$r; echo "listed at $r: $(wc -l < /tmp/l-$r)"
+  else
+    echo "listing at $r FAILED"; LISTFAIL=1
+  fi
+done
 grep '^200 ' /tmp/res-$LABEL | awk '{print $4".bin"}' | sort > /tmp/acked; grep -v '^200 ' /tmp/res-$LABEL | awk '{print $4".bin"}' | sort > /tmp/nack
-echo "acked=$(wc -l < /tmp/acked) failed=$(wc -l < /tmp/nack)"
-LOST=$(comm -23 /tmp/acked /tmp/l-na | wc -l); PDE=$(comm -12 /tmp/nack /tmp/l-na | wc -l)
+ACKED=$(wc -l < /tmp/acked)
+echo "acked=$ACKED failed=$(wc -l < /tmp/nack)"
+sort -u /tmp/l-na /tmp/l-eu /tmp/l-asia > /tmp/l-any
+LOST=$(comm -23 /tmp/acked /tmp/l-na | wc -l); PDE=$(comm -12 /tmp/nack /tmp/l-any | wc -l)
 echo "LOST (acked, not listed at NA): $LOST $(comm -23 /tmp/acked /tmp/l-na | head -5 | tr '\n' ' ')"
-echo "PUBLISHED DESPITE ERROR (failed, listed at NA): $PDE"
+echo "PUBLISHED DESPITE ERROR (failed, listed in any region): $PDE $(comm -12 /tmp/nack /tmp/l-any | head -5 | tr '\n' ' ')"
 echo "Region views differ: na-eu=$(comm -3 /tmp/l-na /tmp/l-eu | wc -l) na-asia=$(comm -3 /tmp/l-na /tmp/l-asia | wc -l)"
-# HTTP 500s are expected under contention; these two must stay 0. A LOST file may also be
-# one not yet visible at NA: rerun with LISTWAIT=30 before calling it lost.
+# HTTP 500s are expected under contention; LOST and PUBLISHED DESPITE ERROR must stay 0. A
+# LOST file may also be one not yet visible at NA: rerun with LISTWAIT=30 before calling it
+# lost. With no acknowledged upload there was nothing to verify, which is not a pass.
+if [ "$LISTFAIL" -ne 0 ]; then echo "RESULT FAIL a listing failed"; exit 1; fi
+if [ "$ACKED" -eq 0 ]; then echo "RESULT FAIL inconclusive: no upload was acknowledged"; exit 1; fi
 if [ "$LOST" -ne 0 ] || [ "$PDE" -ne 0 ]; then echo "RESULT FAIL lost=$LOST published_despite_error=$PDE"; exit 1; fi
 echo "RESULT PASS"

@@ -38,8 +38,9 @@ case "$PHASE" in
       step "$r" "list dir" -H "$A" "$h/api2/repos/$ID/dir/?p=/"
       du=$(curl -s -m 40 -H "$A" "$h/api2/repos/$ID/file/?p=/seed.bin" | tr -d '"')
       case "$du" in
-        http*) curl -s -m 40 -o /tmp/d.bin "$du"
-               if [ "$(sha256sum /tmp/d.bin | cut -d' ' -f1)" = "$SHA" ]; then echo "  [$r] download OK"; else echo "  [$r] download BAD"; BAD=$((BAD+1)); fi ;;
+        # A failed download must not leave an earlier file to be hashed.
+        http*) rm -f /tmp/d.bin
+               if curl -sf -m 40 -o /tmp/d.bin "$du" && [ "$(sha256sum /tmp/d.bin | cut -d' ' -f1)" = "$SHA" ]; then echo "  [$r] download OK"; else echo "  [$r] download BAD"; BAD=$((BAD+1)); fi ;;
         *) echo "  [$r] download link FAILED: $(echo "$du" | head -c 90)"; BAD=$((BAD+1)) ;;
       esac
       head -c 64000 /dev/urandom > /tmp/x.bin

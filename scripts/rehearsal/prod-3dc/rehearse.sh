@@ -31,11 +31,18 @@ wait_ready(){
   echo "[$r] ready=$(echo "$s" | grep -o '"status":"[a-z]*"') backend restarts=$(docker inspect --format '{{.RestartCount}}' "sfs-$r-sesamefs-1" 2>/dev/null)"
   return $ok
 }
+# nodetool status from the first Cassandra node that answers, so a stopped NA does not
+# hide the cluster's state; non-zero if none answers.
+nodetool_any(){
+  local r
+  for r in $REGIONS; do docker exec "sfs-$r-cassandra-1" nodetool status 2>/dev/null && return 0; done
+  return 1
+}
 # Waits until all three Cassandra nodes are UN; non-zero if they never are.
 wait_three_up(){
   local _
   for _ in $(seq 1 60); do
-    [ "$(docker exec sfs-na-cassandra-1 nodetool status 2>/dev/null | grep -c '^UN')" = 3 ] && return 0
+    [ "$(nodetool_any | grep -c '^UN')" = 3 ] && return 0
     sleep 5
   done
   return 1
@@ -108,7 +115,7 @@ cmd_up(){
     pc "$r" up -d --wait cassandra >/dev/null 2>&1 || { echo "[$r] cassandra did not become healthy; see: docker logs sfs-$r-cassandra-1" >&2; exit 1; }
     echo "[$r] cassandra healthy"
   done
-  docker exec sfs-na-cassandra-1 nodetool status | grep -E '^(UN|DN|UJ)' | cut -c1-30
+  nodetool_any | grep -E '^(UN|DN|UJ)' | cut -c1-30
 
   say "DEPLOY Step M4.5: bootstrap once, from NA"
   pc na --profile bootstrap up --exit-code-from cassandra-bootstrap cassandra-bootstrap >/dev/null 2>&1
@@ -182,10 +189,20 @@ cmd_timeouts(){ # rolling change through the variables production uses
 }
 
 cmd_dc(){ # dc down|up <region>
-  local action=${1:?down|up} r=${2:?region}
-  if [ "$action" = down ]; then docker stop "sfs-$r-cassandra-1" >/dev/null
-  else docker start "sfs-$r-cassandra-1" >/dev/null || die "[$r] cannot start cassandra"; wait_three_up || die "cluster did not return to three UN nodes"; fi
-  docker exec sfs-na-cassandra-1 nodetool status 2>/dev/null | grep -E '^(UN|DN)' | cut -c1-30
+  local action=${1:?down|up} r=${2:?region} _
+  case " $REGIONS " in *" $r "*) ;; *) die "dc: region must be one of: $REGIONS";; esac
+  case "$action" in
+    down)
+      docker stop "sfs-$r-cassandra-1" >/dev/null || die "[$r] cannot stop cassandra"
+      # Wait until a node still running reports the stopped one as down.
+      for _ in $(seq 1 30); do nodetool_any | grep -q "^DN  ${IP[$r]} " && break; sleep 2; done
+      nodetool_any | grep -q "^DN  ${IP[$r]} " || die "[$r] stopped, but no running node reports it down" ;;
+    up)
+      docker start "sfs-$r-cassandra-1" >/dev/null || die "[$r] cannot start cassandra"
+      wait_three_up || die "cluster did not return to three UN nodes" ;;
+    *) die "dc: down or up" ;;
+  esac
+  nodetool_any | grep -E '^(UN|DN)' | cut -c1-30
 }
 
 probe_run(){ local pkg=$1; shift
@@ -199,7 +216,7 @@ cmd_contention_probe(){ say "raw same-partition CAS, no SesameFS"; probe_run con
 
 cmd_status(){
   for r in $REGIONS; do echo "[$r] $(ready "$r" | grep -o '"status":"[a-z]*"') restarts=$(docker inspect --format '{{.RestartCount}}' "sfs-$r-sesamefs-1" 2>/dev/null)"; done
-  docker exec sfs-na-cassandra-1 nodetool status 2>/dev/null | grep -E '^(UN|DN)' | cut -c1-30
+  nodetool_any | grep -E '^(UN|DN)' | cut -c1-30
 }
 
 cmd_down(){

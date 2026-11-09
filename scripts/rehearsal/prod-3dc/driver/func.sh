@@ -18,8 +18,10 @@ login(){ # host
 wait_read(){
   h=$1; id=$2; p=$3; want=$4; l=$5; t0=$(date +%s); got=""
   while [ $(( $(date +%s)-t0 )) -lt 30 ]; do
-    u=$(curl -s -m 30 -H "$A" "$h/api2/repos/$id/file/?p=$p" | tr -d '"')
-    case "$u" in http*) curl -s -m 60 -o /tmp/r.bin "$u"; got=$(sha256sum /tmp/r.bin | cut -d' ' -f1);; esac
+    # The returned link carries the file name unencoded; curl rejects a literal space.
+    u=$(curl -s -m 30 -H "$A" "$h/api2/repos/$id/file/?p=$p" | tr -d '"' | sed 's/ /%20/g'); got=""
+    # A failed download must not leave the previous region's copy to be hashed.
+    case "$u" in http*) rm -f /tmp/r.bin; curl -sf -m 60 -o /tmp/r.bin "$u" && got=$(sha256sum /tmp/r.bin | cut -d' ' -f1);; esac
     if [ "$got" = "$want" ]; then ok "$l (visible after $(( $(date +%s)-t0 ))s)"; return 0; fi
     sleep 1
   done
@@ -77,7 +79,7 @@ echo "== share link across regions"
 c=$(code -X POST -H "$A" -H 'Content-Type: application/json' -d "{\"repo_id\":\"$ID\",\"path\":\"/b.bin\"}" $NA/api/v2.1/share-links/); TK=$(jq -r '.token // empty' /tmp/body); L=$(jq -r '.link // empty' /tmp/body)
 echo "INFO  link: $L"
 expect "share page at Asia" 200 "$AS/d/$TK"
-curl -s -L -m 60 -o /tmp/s.bin "$AS/d/$TK?dl=1"; if [ "$(sha256sum /tmp/s.bin | cut -d' ' -f1)" = "$S2" ]; then ok "anonymous download at Asia of NA link"; else ko "anonymous download" "$(head -c 120 /tmp/s.bin)"; fi
+rm -f /tmp/s.bin; if curl -sf -L -m 60 -o /tmp/s.bin "$AS/d/$TK?dl=1" && [ "$(sha256sum /tmp/s.bin | cut -d' ' -f1)" = "$S2" ]; then ok "anonymous download at Asia of NA link"; else ko "anonymous download" "$(head -c 120 /tmp/s.bin)"; fi
 
 echo "== trash and restore across regions"
 expect "delete at Asia" 200 -X DELETE -H "$A" "$AS/api2/repos/$ID/file/?p=/b.bin"
