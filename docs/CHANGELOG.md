@@ -8,6 +8,18 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-11-09 — Readiness verification review corrections
+
+Review follow-up to the 2026-11-06 verification. Corrects the impact of
+`ISSUE-TAG-CLEANUP-COUNTER-BATCH-01` (the failed logged batch leaves every tag table except
+`file_tags_by_tag`, so projection and canonical rows diverge), the mechanism of
+`ISSUE-LOG-PRINTF-LEVEL-01` (`slog.SetDefault` routes `log.Printf` to INFO) and the cause of
+`ISSUE-TEST-ENV-EXAMPLE-ACCOUNTS-AUTHORITY-01` (the `docker-compose.yaml` default overrides
+`config.docker.yaml`). Clarifies `SERIAL` operation counts and DEPLOY step references in the
+report, lists `ISSUE-GC-TAG-COUNTS-DELETE-ERRORS-IGNORED-01` in its findings table, and
+updates four live statements that still described X1 closure as pending. Documentation only;
+no gate closes. PRE-GC/A1 OPEN, GC OFF.
+
 ## 2026-11-06 — Internal deployment readiness verification
 
 [Dated verification](./PROD-READINESS-VERIFICATION-20261106.md) of main@a21f4203d:

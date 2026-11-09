@@ -373,8 +373,9 @@ gc:
 The lease is not an activation signal. Keep `GC_ENABLED=false` everywhere until
 both X1 and the complete [PRE-GC/A1 gate](./X1-CRITICAL-PATH.md#6-pre-gc-list-a1-prerequisites)
 close. [X1's original criterion disposition](./KNOWN_ISSUES.md#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes)
-closes its accepted physical-life scope on maintainer merge of the E1 decision;
-before then X1 is OPEN. PRE-GC/A1 remain OPEN, so that merge cannot enable GC.
+closed its accepted physical-life scope with the maintainer's merge of the E1
+decision ([#312](https://github.com/Sesame-Disk/sesamefs/pull/312), 2026-10-17).
+PRE-GC/A1 remain OPEN, so that closure does not enable GC.
 X2 retains its stable-topology contract; a replication DC-set or RF change with
 existing reference state requires a separately certified migration. After all
 activation gates close, designated replicas in one DC may participate under the

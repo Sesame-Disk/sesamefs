@@ -80,19 +80,28 @@ may do the same. Start one backend first.
 **Status:** OPEN (2026-11-06), reproduced. **Severity:** P2 / current runtime; pre-existing.
 **Affected:** `CleanupAllLibraryTags` in `internal/api/v2/tags.go`.
 
-One logged batch mixes the counter table `repo_tag_file_counts` (`file_count COUNTER`) with
+The function first deletes every `file_tags_by_tag` partition in unlogged batches, then
+runs one logged batch over `file_tags`, `file_tags_by_id`, `repo_tags`,
+`repo_tag_file_counts`, `repo_tag_counters` and `file_tag_counters`. That batch mixes the
+counter table `repo_tag_file_counts` (`file_count COUNTER`, the only counter in it) with
 regular tables, so Cassandra rejects it: `Counter and non-counter mutations cannot exist in the
 same batch`. Despite their names, `repo_tag_counters` and `file_tag_counters` hold plain `INT`
-columns. The fix deletes `repo_tag_file_counts` outside the logged batch. Callers only log it, so tag rows remain after a permanent delete. Fix with a
-real-Cassandra RED/GREEN.
+columns. A logged batch is atomic, so none of its six deletes applies: every tag table except
+`file_tags_by_tag` keeps its rows, and the by-tag projection no longer matches the canonical
+tag rows. Callers only log the error. Fix: delete `repo_tag_file_counts` in its own statement
+outside the logged batch; a standalone partition delete on that counter table works on
+Cassandra 5.0.9 (checked). Fix with a real-Cassandra RED/GREEN.
 
 ### ISSUE-LOG-PRINTF-LEVEL-01: Upload failures log at INFO
 
 **Status:** OPEN (2026-11-06), measured. **Severity:** P2 / operations; pre-existing.
 
-Messages from `log.Printf` become `level=INFO`, including `[HandleUpload] CRITICAL` and
-`Unexpected upload failure`: 170 of 170 in one backend log. Only the access-log line carries
-`ERROR`, without the cause. Alerts on log level miss the reason; alert on 5xx and search text.
+`internal/logging` installs its handler with `slog.SetDefault`, which also routes the
+standard `log` package through slog at INFO. Messages from `log.Printf` therefore become
+`level=INFO`, including `[HandleUpload] CRITICAL` and `Unexpected upload failure`: 170 of 170
+in one backend log. Only the access-log line carries `ERROR`, without the cause. Alerts on log
+level miss the reason; until fixed, alert on 5xx and search the text. Fix: log these failures
+with `slog.Error` (or an explicit level), not `log.Printf`.
 
 ### ISSUE-GC-TAG-COUNTS-DELETE-ERRORS-IGNORED-01: GC's tag-count cleanup reports success on Cassandra errors
 
@@ -191,11 +200,15 @@ them today.
 
 **Status:** OPEN (2026-11-06), reproduced. **Severity:** P3 / test hygiene.
 
-`ACCOUNTS_DISABLE_ORG_USER_WRITES` is absent from `.env.example`.
+`configs/config.docker.yaml` sets `disable_org_user_writes: true`, but `docker-compose.yaml`
+passes `ACCOUNTS_DISABLE_ORG_USER_WRITES=${ACCOUNTS_DISABLE_ORG_USER_WRITES:-false}` to all
+three backends, and the environment variable overrides the file. `.env.example` only has the
+line commented out, with `false`. With the template unchanged, the writes are enabled and
 `TestAdminIdentityProjectionRegression_OrgAdminUpdateUserBatchBlockedByAccountsAuthority`
-then really updates the shared default user, leaving it `admin` and `deactivated`, and
-four later tests fail deterministically. No product regression. Set the variable in
-the template or make the test fail without mutating shared state.
+really updates the shared default user, leaving it `admin` and `deactivated`; four later tests
+then fail deterministically. No product regression. Setting the variable in `.env.example`
+alone is not a robust fix: change the compose default to `true`, or make the test fail
+without mutating shared state.
 
 ### ISSUE-TRACKED-BINARY-01: A compiled binary is tracked in git
 
@@ -3793,7 +3806,7 @@ change, it is still not durable object intent, and it would not close X3 on its 
 
 ### ISSUE-GC-MULTIINSTANCE-01: Multi-instance GC coordination and split-brain hardening
 
-**Status**: 🟡 Lease implemented; destructive activation blocked by OPEN PRE-GC/A1 (and X1 until maintainer acceptance)
+**Status**: 🟡 Lease implemented; destructive activation blocked by OPEN PRE-GC/A1 (X1 closed for its physical-life scope by #312, 2026-10-17)
 **Discovered**: 2026-03-17
 **Priority**: 🟡 High — required before scaling to multiple replicas
 **Affected**: `internal/gc/worker.go`, `internal/gc/scanner.go`, `internal/gc/gc.go`
@@ -11345,7 +11358,7 @@ Decide SoT (IdP wins / admin wins / last-write-wins with audit) in
 
 **2026-11-06 simulated measurement, not a production number:** a 64 KB web upload took about 2.7 s at
 80 ms RTT and 0.2 s at none, on [one idle host](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal);
-an uncontended `SERIAL` write took 312 ms, so an upload spends roughly eight or nine such round trips.
+an uncontended `SERIAL` write took 312 ms, so an upload spends roughly as long as eight or nine such `SERIAL` operations.
 Compared with `d016e42b7` on the same harness: 1.38 s with `SERIAL` and 0.17 s with `LOCAL_SERIAL`, which lost
 57 of 135 acknowledged concurrent uploads ([comparison](./PROD-READINESS-VERIFICATION-20261106.md#cost-of-global-serialization-and-of-later-changes)).
 

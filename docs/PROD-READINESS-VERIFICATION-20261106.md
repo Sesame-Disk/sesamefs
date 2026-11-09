@@ -125,7 +125,8 @@ Runs used a private Docker project with fresh volumes on one host: 7 CPUs, 14 GB
 | `npm audit --omit=dev` | **FAIL: 2 critical, 16 high** | [Dependencies](#dependencies) |
 
 An earlier integration run from an unmodified `.env.example` failed 5 tests. Cause:
-`ACCOUNTS_DISABLE_ORG_USER_WRITES` is absent there, so an authority test really
+`docker-compose.yaml` defaults `ACCOUNTS_DISABLE_ORG_USER_WRITES` to `false`, overriding
+`config.docker.yaml`, and the template leaves it unset, so an authority test really
 updated the shared default user, leaving it `admin` and `deactivated` as read from
 Cassandra, and the others then failed. Environment, not a product regression; tracked
 as `ISSUE-TEST-ENV-EXAMPLE-ACCOUNTS-AUTHORITY-01`.
@@ -161,7 +162,8 @@ passed on re-test. Examining the first failure found
 
 ### Simultaneous first boot
 
-DEPLOY Step M4 starts every region's backend together, and the migrator has no lock.
+DEPLOY Step M4, as written when this was measured, started every region's backend
+together, and the migrator has no lock.
 Three real migrators started at once against an empty keyspace on a Cassandra 5.0.9
 three-DC fixture, one coordinator per DC:
 
@@ -197,7 +199,8 @@ used.
 
 ### What failed
 
-**The first bootstrap, 3 of 3 fresh runs.** Step M4.5 exits 2. Twice, `ALTER KEYSPACE
+**The first bootstrap, 3 of 3 fresh runs.** The `cassandra-bootstrap` service
+(DEPLOY Step M4.5) exits 2. Twice, `ALTER KEYSPACE
 system_auth` raised replication and `CREATE ROLE` in the same session then answered
 `User cassandra does not have sufficient privileges`, so the application role did not
 exist and every backend crash-looped with bad credentials. The third time a statement
@@ -218,7 +221,8 @@ attempts, then the median time of successful uploads. Two repetitions per column
 
 - **One user's uploads work at 80 ms, but each takes about 2.7 s instead of 0.2 s.**
   Uncontended `SERIAL` writes measured directly took 312 ms at that latency, about four
-  round trips, so an upload spends roughly eight or nine of them. Listing stayed at
+  network round trips, so an upload takes about as long as eight or nine such `SERIAL`
+  operations. Listing stayed at
   about 25 ms and an 8 MB download at about 70 ms.
 - **Writers in different regions fail even on different libraries.** The HEAD CAS is
   `UPDATE libraries ... WHERE org_id = ? AND library_id = ? IF head_commit_id = ?`, and
@@ -357,6 +361,7 @@ All are pre-existing. No severity of an existing issue changes here.
 | `ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01` | P3 | First boot restarted 20 times under host load, then converged | Seen once, not on an idle host |
 | `ISSUE-TAG-CLEANUP-COUNTER-BATCH-01` | P2 | Permanent delete always fails its tag cleanup | Reproduced, code read |
 | `ISSUE-LOG-PRINTF-LEVEL-01` | P2 ops | Upload failures log at INFO, so level-based alerts miss them | Measured |
+| `ISSUE-GC-TAG-COUNTS-DELETE-ERRORS-IGNORED-01` | P2 PRE-GC | GC's tag-count cleanup ignores Cassandra errors and reports success | Code read, found in review |
 | `ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01` | P2 config | The admission budget falls back to the reference value | Measured in startup log |
 | `ISSUE-SHARELINK-DIR-TRAILING-SLASH-404-01` | P2 | Links the UI emits for a shared folder return JSON 404 | Reproduced through both nginx hops |
 | `ISSUE-DEPLOY-CENTRAL-NGINX-REFERENCE-01` | P2 docs | No reference central nginx config; rate limiting and optional nginx claims were stale | Repo search; stale text corrected here |
