@@ -1232,7 +1232,7 @@ Settings that **cannot** be set via env vars and must be in this file:
 | `CASSANDRA_LOCAL_DC` | `database.local_dc` | |
 | `CASSANDRA_USERNAME` | `database.username` | Required by the prod compose bootstrap. Use a dedicated non-superuser role. |
 | `CASSANDRA_PASSWORD` | `database.password` | Required by the prod compose bootstrap. |
-| `CASSANDRA_CAS_CONTENTION_TIMEOUT` | Cassandra `cas_contention_timeout` (prod compose) | Default `5000ms`. Written into `cassandra.yaml` on every start; an invalid value stops Cassandra from starting. |
+| `CASSANDRA_CAS_CONTENTION_TIMEOUT` | Cassandra `cas_contention_timeout` (prod compose) | Default `5000ms`, accepted from `10ms` to `9999999ms`. Written into `cassandra.yaml` on every start; any other value stops Cassandra from starting. |
 | `CASSANDRA_WRITE_REQUEST_TIMEOUT` | Cassandra `write_request_timeout` (prod compose) | Default `5000ms`. Same rules. |
 | `CASSANDRA_BOOTSTRAP_ATTEMPTS` | `cassandra-bootstrap` (prod compose) | Default `12`, 15 s apart. |
 | `S3_BUCKET` | `storage.backends.hot.bucket` | Single-region legacy path only. A non-empty value activates the backend and requires `S3_REGION`. |
