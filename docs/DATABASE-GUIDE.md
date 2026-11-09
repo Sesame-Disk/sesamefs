@@ -40,8 +40,11 @@ path from it exists or is supported.
 - **Existing keyspaces:** a keyspace built from the old chain fails the `001`
   checksum check. Recreate it (`docker compose down -v`; for the two-region
   cluster remove its volumes too).
-- **Freeze:** once `001` is applied in production it is never edited again;
-  every later change is a new numbered file.
+- **Freeze:** once `001` is applied to a deployment whose data must survive, it is
+  never edited again; every later change is a new numbered file. The
+  [disposable internal pilot](./PROD-READINESS-VERIFICATION-20261106.md#maintainer-decisions-2026-11-06)
+  does not trigger the freeze. Prefer new numbered files there too, because they
+  deploy without a rebuild; editing `001` means recreating the keyspace on every DC.
 
 Where each folded migration now lives (the rationale moved next to the table):
 

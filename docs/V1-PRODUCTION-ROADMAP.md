@@ -454,6 +454,9 @@ sessions now preserve scope metadata with central sync/library enforcement. The 
 **Current state:** No backup scripts, no restore runbook, no defined RTO/RPO, no documented
 disaster recovery procedure exists anywhere in the repository.
 
+*2026-11-06: deferred by the maintainer while the [internal pilot](./PROD-READINESS-VERIFICATION-20261106.md#maintainer-decisions-2026-11-06)
+data is disposable; tracked as `ISSUE-BACKUP-RESTORE-MISSING-01`.*
+
 **This is a prerequisite for production.** Without a tested backup and restore procedure,
 data loss in production (hardware failure, accidental deletion, ransomware, cloud provider
 outage) has no recovery path.

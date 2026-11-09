@@ -1,5 +1,207 @@
 # Known Issues - SesameFS
 
+## Internal deployment readiness verification (2026-11-06)
+
+[Dated verification on main@a21f4203d](./PROD-READINESS-VERIFICATION-20261106.md):
+the application path works on the production compose with GC off; the three-DC rehearsal
+found a failing first bootstrap and, under simulated WAN latency, concurrent uploads failing
+across an organization's libraries; no acknowledged upload was missing from the listings checked. By maintainer decision the next step is a **disposable internal pilot on three DCs**, with backup
+deferred and the two go-live blockers accepted for that pilot and fixed along the way.
+Issues below are new registrations of pre-existing conditions. No existing severity
+changes and nothing closes. PRE-GC/A1 OPEN, GC OFF.
+
+### ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01: First three-DC bootstrap fails before creating the application role
+
+**Status:** OPEN (2026-11-06), reproduced 3 of 3 fresh runs. **Severity:** P1 / deployment;
+pre-existing. **Affected:** `cassandra-bootstrap` in `docker-compose.prod.yml`.
+
+The service exits 2 every time. Twice, `ALTER KEYSPACE system_auth` raised replication to
+three DCs and `CREATE ROLE` in the same `cqlsh` session then failed with `User cassandra does
+not have sufficient privileges`, so `GRANT` failed too and every backend crash-looped on bad
+credentials. The third time a statement failed with `Unavailable` and the role was created.
+**Workaround:** run the bootstrap again until it exits 0 and `sesamefs_app` exists; a retry
+succeeded whenever needed, without a repair. Cause not isolated. [Evidence](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal).
+
+### ISSUE-CASSANDRA-TIMEOUTS-WAN-01: Shipped Cassandra timeouts fail uploads under WAN latency
+
+**Status:** OPEN (2026-11-06), measured with simulated latency on one idle host. **Severity:**
+P1 / availability on multi-DC; pre-existing. **Affected:** `docker-compose.prod.yml`, which
+leaves `cas_contention_timeout` at 1000 ms and `write_request_timeout` at 2000 ms with no
+setting.
+
+At about 80 ms RTT, simultaneous uploads from three regions into different libraries of one
+organization succeeded 22 of 72 times with shipped timeouts and 62 of 72 with 5 s for both.
+Sequential uploads succeeded either way. This mitigates
+`ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01`; it does not fix contention on one library,
+which stays with `ISSUE-SEAFHTTP-UPLOAD-FINALIZE-LEASE-ERROR-500-01`. `paxos_variant: v2`
+made contention worse on 5.0.9 in one run. An earlier run on a shared host reported much worse
+sequential results; it is superseded.
+[Evidence](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal).
+
+### ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01: Every library of an organization shares one HEAD Paxos partition
+
+**Status:** OPEN (2026-11-06), measured with simulated latency; mechanism from the schema.
+**Severity:** P1 / availability on multi-DC; pre-existing design. **Affected:** the HEAD CAS in
+`FSHelper` (`UPDATE libraries ... WHERE org_id = ? AND library_id = ? IF head_commit_id = ?`)
+and the other library-head LWTs; `libraries` is keyed `((org_id), library_id)`.
+
+Cassandra runs Paxos per partition, so HEAD publications for all libraries of an
+organization contend with each other under global `SERIAL`. At about 80 ms RTT, uploads from
+three regions into three different libraries of one organization succeeded 22 of 72 times
+with shipped timeouts, 34 of 72 with only one backend running, and 62 of 72 with 5 s timeouts;
+the HEAD CAS timeout dominated the logs. At no added latency the same shape succeeded 72 of 72.
+An internal pilot with one organization puts every write in the company on one partition.
+The fix is a data-model change on the HEAD authority path, which X1 evidence depends on: it
+needs a maintainer decision and its own evidence.
+[Evidence](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal).
+
+### ISSUE-HEALTH-PING-FALSE-OK-01: `/ping` answers 200 through nginx with the backend down
+
+**Status:** OPEN (2026-11-06), reproduced. **Severity:** P2 / operations; pre-existing.
+**Affected:** `frontend/nginx.conf`.
+
+The frontend nginx has no `/ping` location, so the SPA answers 200 with HTML, including while
+every backend crash-loops. A load balancer or monitor using it never sees an outage. Use
+`/api2/ping`, which answers `pong` and fails when the backend is down. DEPLOY corrected.
+
+### ISSUE-MIGRATOR-FIRST-BOOT-3DC-RESTARTS-01: First boot on three DCs restarts repeatedly before converging
+
+**Status:** OPEN (2026-11-06), seen once. **Severity:** P3 / operations; pre-existing.
+**Affected:** `Migrator.apply`.
+
+On a host shared with other load, applying `001` from one backend on three authenticated DCs
+needed 20 process restarts over about 3.5 minutes: statements time out, the process exits, and
+`restart: unless-stopped` resumes through idempotent statements. It converged with identical
+table ids. On an idle host the same step finished in 152 s with no restart. A slow real WAN
+may do the same. Start one backend first.
+
+### ISSUE-TAG-CLEANUP-COUNTER-BATCH-01: Permanent delete always fails its tag cleanup
+
+**Status:** OPEN (2026-11-06), reproduced. **Severity:** P2 / current runtime; pre-existing.
+**Affected:** `CleanupAllLibraryTags` in `internal/api/v2/tags.go`.
+
+One logged batch mixes the counter table `repo_tag_file_counts` (`file_count COUNTER`) with
+regular tables, so Cassandra rejects it: `Counter and non-counter mutations cannot exist in the
+same batch`. Despite their names, `repo_tag_counters` and `file_tag_counters` hold plain `INT`
+columns. The fix deletes `repo_tag_file_counts` outside the logged batch. Callers only log it, so tag rows remain after a permanent delete. Fix with a
+real-Cassandra RED/GREEN.
+
+### ISSUE-LOG-PRINTF-LEVEL-01: Upload failures log at INFO
+
+**Status:** OPEN (2026-11-06), measured. **Severity:** P2 / operations; pre-existing.
+
+Messages from `log.Printf` become `level=INFO`, including `[HandleUpload] CRITICAL` and
+`Unexpected upload failure`: 170 of 170 in one backend log. Only the access-log line carries
+`ERROR`, without the cause. Alerts on log level miss the reason; alert on 5xx and search text.
+
+### ISSUE-GC-TAG-COUNTS-DELETE-ERRORS-IGNORED-01: GC's tag-count cleanup reports success on Cassandra errors
+
+**Status:** OPEN (2026-11-08), code-verified. **Severity:** P2 / PRE-GC; pre-existing; found
+in review of the readiness verification. **Affected:** `CassandraStore.DeleteRepoTagFileCounts`
+in `internal/gc/store_cassandra.go`.
+
+It ignores the error from `iter.Close()` and from every `DELETE ... Exec()`, then returns
+`nil`. The GC worker joins that result into its library cleanup, so a failed delete leaves
+counter rows behind while the cleanup counts as successful. Not reachable while GC is off.
+Fix with a real-Cassandra RED/GREEN, alongside `ISSUE-TAG-CLEANUP-COUNTER-BATCH-01`.
+
+### ISSUE-BACKUP-RESTORE-MISSING-01: No backup or restore procedure exists
+
+**Status:** OPEN (2026-11-06); deferred by maintainer decision while pilot data is
+disposable. **Severity:** P1; pre-existing. Prerequisite as soon as data must survive.
+**Source of record for scope:** [roadmap §10](./V1-PRODUCTION-ROADMAP.md).
+
+The repository has no backup script, restore runbook, RTO/RPO or restore drill. With the
+three-DC layout (RF 1 per DC) every partition has three replicas, one per DC, so losing one
+node or one DC does not by itself lose all copies of the metadata, though it reduces
+availability. It does not guarantee zero data loss either: ordinary writes at `LOCAL_QUORUM`
+are acknowledged by the local replica alone, so writes not yet replicated when a DC is lost
+for good can be lost. Replication does
+not protect against replicated deletes or corruption, operator error, or losing every
+replica; a single-DC deployment has only one copy. S3 blocks alone cannot rebuild libraries. Close with a Cassandra and bucket
+backup, plus a restore actually performed on a clean environment.
+
+### ISSUE-CASSANDRA-REPAIR-RUNBOOK-01: No scheduled repair procedure for multi-DC
+
+**Status:** OPEN (2026-11-06). **Severity:** P2 / operations; applies from the first
+three-DC deployment. **Affected:** [DEPLOY](./DEPLOY.md), which covers `nodetool repair`
+only when adding a DC.
+
+With RF 1 per DC and `LOCAL_QUORUM`, a DC that misses writes beyond the hint window
+stays stale until repaired, and a delete can resurrect if repair does not complete
+within `gc_grace_seconds`. Define and schedule repair, then record how it was verified.
+
+### ISSUE-OIDC-PKCE-STATE-NODE-LOCAL-01: Web login state is held per process
+
+**Status:** OPEN (2026-11-06), reproduced between two regional backends:
+`invalid state: state not found`. **Severity:** High for any multi-instance rollout behind
+one hostname; no single-backend impact.
+**Affected:** `OIDCClient.storeState`, `consumeState` in `internal/auth/oidc.go`.
+
+`GetAuthorizationURL` stores the state, nonce and PKCE verifier in an in-memory map.
+When the callback reaches another process, `consumeState` returns `state not found`
+and login fails. Third node-local item alongside `ISSUE-UPLOAD-CHUNK-MULTINODE-01`
+and `ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01`. One backend per regional hostname does
+not reach it.
+
+### ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01: Production compose sets no container memory limit
+
+**Status:** OPEN (2026-11-06). **Severity:** P2 / config; pre-existing.
+**Affected:** `docker-compose.prod.yml`.
+
+Neither `sesamefs` nor `cassandra` has a memory limit. Download admission therefore
+starts with `budget_source="no cgroup limit detected, reference fallback"`, measured
+in the rehearsal: a 2 GiB budget unrelated to the machine, which DEPLOY warns about for
+hosts below its 8 GiB baseline. An unbounded allocation such as
+`ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01` can also take Cassandra down on a shared host.
+A limit is a deployment choice; until the compose ships one, set it per host.
+
+### ISSUE-SHARELINK-DIR-TRAILING-SLASH-404-01: Shared-folder links emitted by the UI return JSON 404
+
+**Status:** OPEN (2026-11-06), reproduced through both nginx hops. **Severity:** P2 /
+current runtime; pre-existing. **Affected:** `frontend/nginx.conf`,
+`shared-file-view.js`, `share-link-markdown-url.js`.
+
+`/d/<token>?p=/docs` serves the share page. `/d/<token>/?p=/docs` misses the location
+regex `^/d/[^/]+(?:/files/?)?$`, reaches Go and returns
+`404 {"error":"public share pages are served by the frontend shell"}`. The UI emits
+the second form in the shared-file breadcrumb and in markdown links to folders.
+Canonical links returned by the API have no trailing slash and work. Fix with a
+RED/GREEN through the supported nginx.
+
+### ISSUE-DEPLOY-CENTRAL-NGINX-REFERENCE-01: No reference configuration for the central nginx
+
+**Status:** OPEN (2026-11-06). **Severity:** P2 / documentation.
+
+The supported topology requires an external central nginx, but DEPLOY only describes
+it. An operator must derive the body-size, buffering, timeout and forwarded-header
+settings. Requirements such as the timeout ordering are spread across DEPLOY. The
+stale optional `nginx` service and nginx rate-limit-zone claims were corrected on
+2026-11-06. No nginx rate limiting ships; the application limiters remain.
+
+### ISSUE-FRONTEND-SECURITY-HEADERS-01: SPA responses carry no security headers
+
+**Status:** OPEN (2026-11-06), measured. **Severity:** P3 / hardening.
+
+`GET /` through the frontend nginx has no `X-Frame-Options` or CSP, nor HSTS or
+`nosniff`, which API responses do carry. A central nginx can add them; nothing ships
+them today.
+
+### ISSUE-TEST-ENV-EXAMPLE-ACCOUNTS-AUTHORITY-01: `.env.example` cannot pass the integration suite
+
+**Status:** OPEN (2026-11-06), reproduced. **Severity:** P3 / test hygiene.
+
+`ACCOUNTS_DISABLE_ORG_USER_WRITES` is absent from `.env.example`.
+`TestAdminIdentityProjectionRegression_OrgAdminUpdateUserBatchBlockedByAccountsAuthority`
+then really updates the shared default user, leaving it `admin` and `deactivated`, and
+four later tests fail deterministically. No product regression. Set the variable in
+the template or make the test fail without mutating shared state.
+
+### ISSUE-TRACKED-BINARY-01: A compiled binary is tracked in git
+
+**Status:** OPEN (2026-11-06). **Severity:** P3 / hygiene. `bin/sesamefs`, 49 MB, last
+changed 2026-03-05, is tracked. It is not used by the images, which build from source.
+
 ## Deferred dependency advisories (2026-10-21)
 
 **OPEN — deferred, not closed.** [PR #322](https://github.com/Sesame-Disk/sesamefs/pull/322)
@@ -19,6 +221,15 @@ No Go module or frontend lockfile is changed for them here.
 
 Keep the module updates separate from the CA toolchain change and run the full
 Go suite afterwards.
+
+**2026-11-06 re-run on main@a21f4203d:** `govulncheck` reports 10 reachable: the four
+`x/net` entries above and six for `excelize` (adding GO-2026-6680, GO-2026-6677,
+GO-2026-6676 and GO-2026-6674). `npm audit --omit=dev` reports 40: 2 critical, 16
+high, 18 moderate, 4 low. The `seafile-js` update is open as #324, with #325 for the
+nested `form-data`. **Do not merge either yet:** `seafile-js` 0.2.241 no longer exports
+`sysAdminGetSysInfo` or `sysAdminGetDepartmentInfo`, which the system-admin pages call
+(`sys-admin/info.js`, `departments/department.js`, `departments/sub-departments.js`);
+0.2.232 exports both. A passing build does not catch it.
 
 ### Frontend
 
@@ -41,7 +252,7 @@ the frontend before changing it.
 
 ### Next
 
-1. Merge #322 as the CA-only change.
+1. Done: #322 merged as the CA-only change.
 2. Open a focused Go dependency PR (`x/net`, `excelize`) with the full suite.
 3. Open a focused frontend lockfile PR (`seafile-js` first, then the remaining
    direct findings); major upgrades need their own verification.
@@ -228,7 +439,7 @@ certify. Neither closes `ISSUE-LIB-DELETED-FENCE-01`, a productive consumer, PC-
 | **API-key read scope bypasses upload-link and file-share mutations** | 🔴 Open — verified preexisting 2026-08-22 | Six authenticated mutation handlers resolve the user's underlying library authority or link ownership without applying the current credential's API-key scope. A `read` API key can create, update or delete upload links and, for an owner/admin user, create, update or delete user/group shares. Both direct API-key auth and derived sessions are affected. See ISSUE-APIKEY-READ-SCOPE-UPLOADLINK-FILESHARE-01. |
 | **Desktop SSO pending-token store** | 🔴 Open — multi-instance only | In-memory per process; poll and callback on different instances never deliver the token. See ISSUE-SSO-PENDING-TOKEN-NODE-LOCAL-01. |
 | OIDC Authentication | ✅ Complete (Phase 1) | `docs/OIDC.md` |
-| Garbage Collection | 🔴 **Destructive GC disabled; PRE-GC/A1 OPEN** | X1 (`ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01`) closes for the stated physical-life scope on maintainer merge of [the E1 decision](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16); before merge OPEN. Its [criterion disposition](#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes) separates exact identity, ownership, recovery and publication from remaining convergence. X2 is closed under its stable-topology contract. GC stays OFF fleet-wide until the complete [PRE-GC/A1 gate](./X1-CRITICAL-PATH.md#6-pre-gc-list-a1-prerequisites) also closes; this is not production readiness. |
+| Garbage Collection | 🔴 **Destructive GC disabled; PRE-GC/A1 OPEN** | X1 (`ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01`) is CLOSED for the stated physical-life scope: the maintainer merged [the E1 decision](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16) in #312 on 2026-10-17. Its [criterion disposition](#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes) separates exact identity, ownership, recovery and publication from remaining convergence. X2 is closed under its stable-topology contract. GC stays OFF fleet-wide until the complete [PRE-GC/A1 gate](./X1-CRITICAL-PATH.md#6-pre-gc-list-a1-prerequisites) also closes; this is not production readiness. |
 | Monitoring/Health Checks | ✅ Complete | `/health`, `/ready`, `/metrics` + slog logging |
 | **Sync Protocol Permissions** | ✅ Fixed (2026-08-07) | `syncAuthMiddleware` accepted public share-link download tokens as repository credentials. Reproduced live as an unauthorized cross-library block write by an anonymous visitor, plus an escalation through `/download-info` into a full repository sync token. `isRepositorySyncToken` now validates the whole scope — `Source == ""`, `Path == "/"`, `RepoID` bound to the route — before the bearer becomes an identity; all three clauses are mutation-verified. A follow-up split `TokenTypeSync` out of `TokenTypeDownload`, so a download bearer is now refused at the store rather than by shape. See ISSUE-SYNC-LINK-TOKEN-AUTH-01. |
 | Sync Race Condition | ✅ Fixed (2026-02-18) | 7 bugs fixed: CAS HEAD updates, parent-chain validation, empty root handling |
@@ -3008,8 +3219,8 @@ path or enable destructive GC as part of this issue. See B.3 in
 ### ISSUE-GC-UPLOAD-FENCE-REMATERIALIZATION-01: Physical-delete ABA can remove re-uploaded bytes
 
 **Status**: **CLOSED-FIX / CLOSED-EVIDENCE for the accepted physical-life scope,
-effective on maintainer merge of [#312](https://github.com/Sesame-Disk/sesamefs/pull/312)**.
-Before that merge: OPEN. The merge accepts the [final E1 decision](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16),
+effective with the maintainer's merge of [#312](https://github.com/Sesame-Disk/sesamefs/pull/312) on 2026-10-17**.
+The merge accepts the [final E1 decision](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16),
 including its greenfield/same-release premises and evidence limits; it closes this
 issue's X1 criteria, not PRE-GC/A1 or destructive-GC activation.
 **Discovered**: 2026-07-21
@@ -3518,8 +3729,8 @@ environment cannot report a false pass.
 **Closing X2 does not enable destructive GC.** `GC_ENABLED=false` remains mandatory on
 every replica in every DC. X1's original criteria are disposed in
 [its current issue entry](#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes):
-scoped closure is effective on maintainer merge of the E1 decision; before then
-OPEN. PRE-GC/A1 remain OPEN and independently prohibit activation. Design evidence:
+scoped closure took effect when the maintainer merged the E1 decision (#312,
+2026-10-17). PRE-GC/A1 remain OPEN and independently prohibit activation. Design evidence:
 `UPLOAD-FENCE-FINDINGS-REGISTRY.md` X2; the historical independence analysis is in
 [GC-X1-CLOSURE-OPTIONS.md](./GC-X1-CLOSURE-OPTIONS.md).
 The accepted architecture is frozen in
@@ -7190,7 +7401,7 @@ characterization PR.
 
 ### ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01: Phase 5 expired-version cascade deletes fs_objects shared with the live HEAD
 
-**Status**: **CLOSED-FIX for the unsafe commit-to-tree cascade on merge of this change** (2026-10-17).
+**Status**: **CLOSED-FIX for the unsafe commit-to-tree cascade by #314, merged** (2026-10-17).
 [Phase 5 plan and evidence](./GC-PHASE5-SHARED-FSOBJECTS.md): unguarded commit retirement
 is metadata-only. Shared trees/refs are preserved; guarded library destruction
 keeps its cascade. **PRE-GC reclamation disposition remains OPEN**: exclusive
@@ -7283,7 +7494,7 @@ shared fs_objects. This change does not certify the Trash HTTP path separately.
 
 ### ISSUE-GC-PHASE6-FSOBJECT-EXECUTION-TOCTOU-01: Phase 6 deletes fs_objects that a HEAD published after the scan depends on
 
-**Status**: **CLOSED-FIX for the destructive path on merge of P6-2** (2026-10-19). Phase 6 is suspended: the selector enqueues nothing and the worker completes every unguarded `ItemFSObject` without mutation, including rows queued before the change; the same real-stack schedules are GREEN ([P6-2](./GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19)). Before merge it remains OPEN. RED reproduced on main@bb89d7b12 with real Cassandra/S3 (2026-10-19). **Live-library reclamation is not restored**; it stays OPEN as `ISSUE-GC-LIVE-LIBRARY-METADATA-RECLAMATION-01`, and any redesign must meet this race. [Plan and evidence](./GC-PHASE6-FSOBJECT-TOCTOU.md)
+**Status**: **CLOSED-FIX for the destructive path by P6-2, #319, merged** (2026-10-19). Phase 6 is suspended: the selector enqueues nothing and the worker completes every unguarded `ItemFSObject` without mutation, including rows queued before the change; the same real-stack schedules are GREEN ([P6-2](./GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19)). Before merge it remains OPEN. RED reproduced on main@bb89d7b12 with real Cassandra/S3 (2026-10-19). **Live-library reclamation is not restored**; it stays OPEN as `ISSUE-GC-LIVE-LIBRARY-METADATA-RECLAMATION-01`, and any redesign must meet this race. [Plan and evidence](./GC-PHASE6-FSOBJECT-TOCTOU.md)
 **Severity**: High (P1) — HEAD metadata loss and permanent-reference removal; physical byte loss not observed (see below). Preserved, not downgraded
 **Scope**: PRE-GC / A1. Ordinary deployments run `GC_ENABLED=false`; no current-runtime claim
 **Affected**: `Scanner.scanAutoDeleteExpiredObjects` (Phase 6), `Worker.processFSObject`, `removeFSObjectBlockReferences` in `internal/gc`
@@ -7323,7 +7534,7 @@ are recorded in the plan.
 
 ### ISSUE-GC-PHASE6-DIRECTORY-CASCADE-SHARED-FSOBJECTS-01: Phase 6's worker cascade deletes children that HEAD still reaches
 
-**Status**: **CLOSED-FIX for the destructive path on merge of P6-2** (2026-10-19). The worker refuses every unguarded `ItemFSObject` before it enqueues children or touches references, so the cascade cannot start from Phase 6 work; the same real-stack schedules, including the lapsed-pin variant, are GREEN ([P6-2](./GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19)). Before merge it remains OPEN. Found in the P6-1 audit and reproduced on main@bb89d7b12 with real Cassandra/S3 (2026-10-19). Guarded library cascades still enqueue children by design, because the whole library is being destroyed. A future reclamation must respect sharing for every object it reaches (`ISSUE-GC-LIVE-LIBRARY-METADATA-RECLAMATION-01`). [Plan and evidence](./GC-PHASE6-FSOBJECT-TOCTOU.md#1b-directory-cascade-without-the-keep-set-found-in-this-prs-audit)
+**Status**: **CLOSED-FIX for the destructive path by P6-2, #319, merged** (2026-10-19). The worker refuses every unguarded `ItemFSObject` before it enqueues children or touches references, so the cascade cannot start from Phase 6 work; the same real-stack schedules, including the lapsed-pin variant, are GREEN ([P6-2](./GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19)). Before merge it remains OPEN. Found in the P6-1 audit and reproduced on main@bb89d7b12 with real Cassandra/S3 (2026-10-19). Guarded library cascades still enqueue children by design, because the whole library is being destroyed. A future reclamation must respect sharing for every object it reaches (`ISSUE-GC-LIVE-LIBRARY-METADATA-RECLAMATION-01`). [Plan and evidence](./GC-PHASE6-FSOBJECT-TOCTOU.md#1b-directory-cascade-without-the-keep-set-found-in-this-prs-audit)
 **Severity**: P0 latent, provisional: the same pattern and the same classification as `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`; deterministic, no race. The maintainer confirms. Preserved, not downgraded
 **Scope**: PRE-GC / A1. Ordinary deployments run `GC_ENABLED=false`; no current-runtime claim
 **Affected**: `Worker.processFSObject` (directory child enqueue), `removeFSObjectBlockReferences`, `enqueueZeroRefBlocks` in `internal/gc`; selection by `Scanner.scanAutoDeleteExpiredObjects`
@@ -10517,7 +10728,7 @@ tracked rather than left implicit:
 
 ### ISSUE-SYNC-FSID-WORK-AMPLIFICATION-01: `pack-fs`/`check-fs` bound the parse, not the work it triggers
 
-**Status**: 🟡 Open — found 2026-08-12 auditing the X9 caps
+**Status**: 🟡 Open — found 2026-08-12 auditing the X9 caps; accepted by the maintainer for the [disposable internal pilot](./PROD-READINESS-VERIFICATION-20261106.md#accepted-go-live-blockers) on 2026-11-06, not closed
 **Severity**: High for `pack-fs` (one request can materialize a multi-GiB response), Medium for `check-fs`
 **Affected**: `PackFS`, `CheckFS` in `internal/api/sync.go`
 **Source of record**: opened 2026-08-12; the fs-id equivalent of `ISSUE-CHECKBLOCKS-WORK-AMPLIFICATION-01` (X11)
@@ -11132,6 +11343,12 @@ Decide SoT (IdP wins / admin wins / last-write-wins with audit) in
 
 ### ISSUE-UPLOAD-PER-BLOCK-PAXOS-01: One `SERIAL` LWT/Paxos transaction per block on upload
 
+**2026-11-06 simulated measurement, not a production number:** a 64 KB web upload took about 2.7 s at
+80 ms RTT and 0.2 s at none, on [one idle host](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal);
+an uncontended `SERIAL` write took 312 ms, so an upload spends roughly eight or nine such round trips.
+Compared with `d016e42b7` on the same harness: 1.38 s with `SERIAL` and 0.17 s with `LOCAL_SERIAL`, which lost
+57 of 135 acknowledged concurrent uploads ([comparison](./PROD-READINESS-VERIFICATION-20261106.md#cost-of-global-serialization-and-of-later-changes)).
+
 **Status**: 🟡 Open — deferred PR-11 pending measurement
 **Severity**: High (perf), not a correctness blocker
 **Affected**: metadata-registering upload paths (`InstallBlockMetadata` and
@@ -11348,6 +11565,9 @@ section of `ISSUE-RATE-LIMIT-UPLOAD-DOWNLOAD-01`.
 ---
 
 ### ISSUE-READ-AFTER-WRITE-CROSS-DC-01: Read-after-write across DCs
+
+**2026-11-06, reproduced on [one host](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal):** a library
+created in another region answered 503/500 at first; a soft delete at NA still read as not deleted at EU after 2 s.
 
 **Status**: 🟡 Open
 **Severity**: Medium (availability)
@@ -11871,7 +12091,7 @@ this fix is not progress against any of X1's four closure criteria.
 
 ### ISSUE-APIKEY-READ-SCOPE-UPLOADLINK-FILESHARE-01: Read-scoped API keys can perform upload-link and file-share mutations
 
-**Status**: 🔴 Open — verified preexisting 2026-08-22
+**Status**: 🔴 Open — verified preexisting 2026-08-22; accepted by the maintainer for the [disposable internal pilot](./PROD-READINESS-VERIFICATION-20261106.md#accepted-go-live-blockers) on 2026-11-06, not closed
 **Severity**: High (authorization / least-privilege bypass)
 **Affected**: `UploadLinkHandler.CreateUploadLink`, `UpdateUploadLink`,
 `DeleteUploadLink`; `FileShareHandler.CreateShare`, `UpdateSharePermission`,
@@ -12063,7 +12283,7 @@ A separate fix should retain the successfully copied source identity and require
 
 ## ISSUE-FILEFROMBLOCKS-WORKER-FANOUT-01
 
-**Status:** **CLOSED-FIX on merge of the bounded fan-out (2026-10-21).** Before merge it remains OPEN. **Severity:** P2 / GENERAL follow-up, pre-existing; not introduced by #258 and not a blocker of E1-09.
+**Status:** **CLOSED-FIX by the bounded fan-out, #321, merged** (fix dated 2026-10-21). **Severity:** P2 / GENERAL follow-up, pre-existing; not introduced by #258 and not a blocker of E1-09.
 
 `verifyManifestBlocks` and `ensureCommitBlockOwnLiveness` in `internal/api/v2/file_from_blocks.go` created a goroutine per distinct block before their semaphore admission. A supported manifest can contain 131,072 blocks. Query concurrency was bounded but worker creation was not. Both now run through `runBoundedPublicationChecksWithContext`: `errgroup.SetLimit` admits a worker before it is created, so the same 20-slot bound covers goroutine creation and I/O. The caller's context is preserved — a canceled request creates no further workers and queued work does not perform its read, and a pre-canceled set returns `context.Canceled`. Classification/write errors still fail closed through `g.Wait`. Two 131,072-block regressions hold the first worker wave and assert the goroutine delta stays bounded: pre-fix main observed 16,791 and 22,484 extra goroutines; after the fix they pass at `-count=50` and under `-race`. `go test ./internal/api/v2 -short`, `go vet ./internal/api/v2` and the full `go test ./... -short` suite pass. A multi-region e2e (`internal/e2e`, build tag `e2e`) commits 32 distinct 1 MiB blocks through USA and reads the file back byte-for-byte from EU; it passed on both the pre-fix and fixed 2-DC stacks. Scope is the two commit phases named above; the separate `/blocks/check` fan-out was not changed.
 
@@ -12097,6 +12317,9 @@ Very large directories may approach request timeouts. This has **not** been meas
 Do not weaken the per-file admission or turn a missing object into an empty directory.
 
 ## ISSUE-SEAFHTTP-UPLOAD-FINALIZE-LEASE-ERROR-500-01
+
+**2026-11-06:** reproduced on the [production compose](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal);
+45 uploads into one library from three regions succeeded 30–36 times on an idle host, either timeout setting.
 
 **Status:** OPEN. **Severity:** P2 / CURRENT-RUNTIME availability follow-up, multi-DC; pre-existing. The measured lease-acquisition failures precede HEAD publication. No X1 safety closure or violation follows from these availability results.
 

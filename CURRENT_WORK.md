@@ -1,6 +1,23 @@
 # Current Work
 
-## Active slice: Phase 6 suspended, P6-2 (2026-10-19)
+## Active slice: internal deployment readiness verification (2026-11-06)
+
+[Verification on main@a21f4203d](docs/PROD-READINESS-VERIFICATION-20261106.md),
+documentation only. Maintainer decision: **disposable internal pilot on three DCs**,
+to test the real system and close issues while deploying. Backup deferred; the two
+go-live blockers accepted for the pilot and fixed along the way. The standard runner
+exits 1 under this GC-off posture: integration 555/0/89, API 19 of 20 (`test-gc.sh`
+expects GC on), OIDC suite not run with OIDC enabled.
+[Three-DC rehearsal](docs/PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal) on one
+host: first bootstrap fails 3 of 3; under simulated WAN latency, concurrent uploads fail
+across an organization's libraries because they share one HEAD Paxos partition, and one
+user's upload takes about 2.7 s; no acknowledged upload was missing from listings, one DC down works and real
+`seaf-cli` syncs. Against `d016e42b7` at 80 ms RTT, one upload took 0.17 s with
+`LOCAL_SERIAL`, which lost 57 of 135 acknowledged concurrent uploads, 1.38 s with
+`SERIAL` and 2.68 s now. Next: the bootstrap and timeout fix PR, then the partition design. Open PRs: #320,
+#324, #325. No gate closes. PRE-GC/A1 OPEN, ordinary GC OFF.
+
+## Previous merged slice: Phase 6 suspended, P6-2 (2026-10-19)
 
 [Contract and evidence](docs/GC-PHASE6-FSOBJECT-TOCTOU.md#p6-2-phase-6-suspended-2026-10-19):
 maintainer-chosen option A. The Phase 6 selector is a no-op; the worker completes
@@ -32,7 +49,9 @@ pre-production migration chain `001`–`027` is folded into
 once X1 closed. `scripts/schema-baseline-equivalence.sh` proves the fold against
 `14e8d0cfb` on real Cassandra: identical `system_schema` rows and seeds. Every
 existing keyspace must be recreated (`down -v`); after the first production
-deploy `001` is frozen and changes resume at `002`. No runtime behaviour change.
+deploy `001` is frozen and changes resume at `002` (the disposable pilot does not
+trigger this; see the [schema contract](docs/DATABASE-GUIDE.md#v1-baseline-fold-2026-10-19)).
+No runtime behaviour change.
 PRE-GC/A1 OPEN, ordinary GC OFF.
 
 ## Previous merged slice: Phase 5 shared-tree preservation (#314, 2026-10-17)
@@ -137,7 +156,7 @@ The source of record for order and closure states is
 
 - **GC:** `GC_ENABLED=false` is mandatory fleet-wide.
 - **Path:** W1/W2 and G1–G5 → E1 acceptance → X1 CLOSED → PRE-GC → A1.
-  The final decision closes scoped X1 on maintainer merge; before then OPEN.
+  The final decision closed scoped X1 with #312 (merged 2026-10-17).
   PRE-GC/A1 stay OPEN and GC stays OFF.
 - **X1 contract:** a physical invariant (E1-16, #277). After COMMITTED D(P1),
   nothing may reinstall P1, revoke or postpone D1, or publish HEAD content
@@ -146,12 +165,12 @@ The source of record for order and closure states is
 - **W2 checklist:** every row, W2-0..14, is closed for X1. W2-10 (content
   resurrection) was closed by E1-17 (CLOSED-FIX).
 - **Acceptance:** [the final decision](docs/E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16)
-  accepts H1/I1/M1, the named A-I cuts and qualified three-DC/source evidence
-  on maintainer merge. Failed/unrun deployment evidence keeps its limits;
+  accepted H1/I1/M1, the named A-I cuts and qualified three-DC/source evidence
+  with that merge. Failed/unrun deployment evidence keeps its limits;
   no full-suite PASS or activation is claimed.
 - **PRE-GC / A1 gate:** every open `PRE-GC`/`PRE-ACTIVATION` tag plus the X1 §6
   table. Highlights:
-  - Phase 5 cascade fixed in this slice; reclamation disposition and Phase 6 TOCTOU remain;
+  - Phase 5 and Phase 6 destructive paths closed (#314, #319); reclamation disposition remains;
   - the stale-claim settle race and the clock assumption;
   - the certification-window fence (to be re-scoped);
   - the HEAD-less ghost row;
