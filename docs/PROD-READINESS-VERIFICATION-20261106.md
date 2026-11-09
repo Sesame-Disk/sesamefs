@@ -283,7 +283,7 @@ the first run and was not repeated.
   one file, neither showed a conflict copy within 45 s and one reported a network error,
   with a 503 on `PUT commit/HEAD`.
 
-### Cost of global serialization and of the X1 protections
+### Cost of global serialization and of later changes
 
 The same harness ran `d016e42b7` (2026-08-01, before the HEAD pin to global `SERIAL` on
 2026-09-14 and before most X1 work) and current main, on an idle host at about 80 ms RTT,
@@ -300,9 +300,12 @@ with shipped Cassandra timeouts:
 - **`LOCAL_SERIAL` loses acknowledged uploads.** In three runs, 57 of 135 uploads that
   returned 200 were absent from every region's listing, checked again 30 s later in two
   of them. Global `SERIAL` lost none.
-- **Global serialization costs about 1.2 s per upload at 80 ms RTT; the X1 protections
-  about 1.3 s more.** Paxos state writes on one replica roughly doubled, consistent with
-  about four LWT rounds per upload before X1 and about eight now. Tracing of one upload
+- **Global serialization costs about 1.2 s per upload at 80 ms RTT** (same code, only the
+  serial consistency changed).
+- **Between August with `SERIAL` and current main, about 1.3 s more per upload.** Paxos
+  state writes on one replica roughly doubled, from about four LWT rounds per upload to
+  about eight. The protections added during X1 are a likely contributor, but 985 commits
+  separate the two versions, so this comparison does not isolate their exact cost. Tracing of one upload
   saw six LWTs at `SERIAL` (three identity claims, two upload-lease operations, one block
   install) and one `SERIAL` read, and no `EACH_QUORUM` read.
 - **Per block:** each new block installs its metadata with its own LWT, which needs a
@@ -310,8 +313,8 @@ with shipped Cassandra timeouts:
   processed concurrently, so ten blocks cost about 0.1–0.3 s more than one. The
   write-count method did not resolve multi-block uploads; the per-block LWT rests on the
   code and on the one-block trace.
-- **Concurrency failures come from global serialization, not from X1:** August with
-  `SERIAL` fails the same shapes at the same rates.
+- **Concurrency failures already occurred in August with `SERIAL`,** at rates similar to
+  current main, so they do not depend on the later changes.
 
 **Ways to recover speed, none started.** `LOCAL_SERIAL` is excluded: it is fast because it
 can lose acknowledged uploads.
