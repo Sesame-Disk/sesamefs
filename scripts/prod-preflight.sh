@@ -860,7 +860,8 @@ check_swarm_stack() {
     IFS=',' read -r -a seed_list <<< "$CASSANDRA_SEEDS"
     for seed in "${seed_list[@]}"; do
       seed="${seed//[[:space:]]/}"
-      if ! is_ipv4 "$seed"; then fail "CASSANDRA_SEEDS entry '$seed' is not an IPv4 address."; seeds_ok=false; fi
+      if ! is_ipv4 "$seed"; then fail "CASSANDRA_SEEDS entry '$seed' is not an IPv4 address."; seeds_ok=false
+      elif ! is_private_ipv4 "$seed"; then fail "CASSANDRA_SEEDS entry $seed is not a private address. Seeds are other nodes' private IPs: gossip stays on the private network."; seeds_ok=false; fi
     done
     [ "$seeds_ok" = true ] && pass "CASSANDRA_SEEDS=$CASSANDRA_SEEDS"
   fi
@@ -888,6 +889,15 @@ check_swarm_stack() {
   if is_set FRONTEND_MEMORY_LIMIT && ! memory_to_bytes "$FRONTEND_MEMORY_LIMIT" >/dev/null; then
     fail "FRONTEND_MEMORY_LIMIT must be a size such as 256M, got '$FRONTEND_MEMORY_LIMIT'."
   fi
+  for v in CASSANDRA_MAX_HEAP_SIZE CASSANDRA_HEAP_NEWSIZE; do
+    if ! is_set "$v"; then
+      fail "$v is required by the Swarm stack (such as 2G and 400M)."
+    elif ! memory_to_bytes "${!v}" >/dev/null; then
+      fail "$v must be a size such as 2G or 400M, got '${!v}'."
+    else
+      pass "$v=${!v}"
+    fi
+  done
   if bytes=$(memory_to_bytes "${CASSANDRA_MEMORY_LIMIT:-}") && heap_bytes=$(memory_to_bytes "${CASSANDRA_MAX_HEAP_SIZE:-}"); then
     if [ "$bytes" -le "$heap_bytes" ]; then
       fail "CASSANDRA_MEMORY_LIMIT ($CASSANDRA_MEMORY_LIMIT) must exceed CASSANDRA_MAX_HEAP_SIZE ($CASSANDRA_MAX_HEAP_SIZE); Cassandra also uses off-heap memory."

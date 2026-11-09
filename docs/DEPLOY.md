@@ -137,10 +137,14 @@ docker build --build-arg CONFIG_FILE=configs/config.prod.yaml \
   --label org.opencontainers.image.revision="$(git rev-parse HEAD)" -t <registry>/sesamefs:backend-<tag> .
 docker build --label org.opencontainers.image.revision="$(git rev-parse HEAD)" \
   -t <registry>/sesamefs:frontend-<tag> frontend
+docker push <registry>/sesamefs:backend-<tag>     # after logging in to the registry
+docker push <registry>/sesamefs:frontend-<tag>
 ```
 
-The revision label lets a deploy fetch the `docker-compose.swarm.yml` and scripts of the
-same commit. Deploy only exact tags, never a moving `latest`.
+Each host pulls the images from the registry, so push both and check that every host can
+log in to it: `docker stack deploy --with-registry-auth` passes the deploying host's
+credentials to Swarm. The revision label lets a deploy fetch the `docker-compose.swarm.yml`
+and scripts of the same commit. Deploy only exact tags, never a moving `latest`.
 
 ### S3 — The env file of each region
 
@@ -154,10 +158,13 @@ Per region: `SERVER_REGION`, `DEPLOY_ID` (the alias the central nginx targets),
 `CASSANDRA_SUPERUSER_PASSWORD`, `CASSANDRA_PASSWORD`, `CASSANDRA_CLUSTER_NAME`,
 `CASSANDRA_REPLICATION_DCS`, `CASSANDRA_SEEDS`, `OIDC_JWT_SIGNING_KEY`,
 `SHARE_LINK_HMAC_KEY`, `ONLYOFFICE_JWT_SECRET`, the OIDC client, the S3 credentials and
-the bucket names. Image references do not belong in this file.
+the bucket names. Image references do not belong in this file: they are chosen at deploy
+time, and an exported value overrides one left in the file. The preflight checks them too,
+so export the ones you will deploy:
 
 ```bash
 set -a; . /mnt/secrets/sesamefs/.env; set +a
+export SESAMEFS_IMAGE=<registry>/sesamefs:backend-<tag> FRONTEND_IMAGE=<registry>/sesamefs:frontend-<tag>
 ./scripts/prod-preflight.sh --swarm
 ```
 

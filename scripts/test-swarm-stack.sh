@@ -81,7 +81,8 @@ done
 
 for v in SESAMEFS_IMAGE FRONTEND_IMAGE DEPLOY_ID SERVER_REGION CASSANDRA_BIND_IP CASSANDRA_SEEDS \
          CASSANDRA_DC CASSANDRA_LOCAL_DC CASSANDRA_DATA_DIR SESAMEFS_INTERNAL_SUBNET \
-         SESAMEFS_MEMORY_LIMIT CASSANDRA_MEMORY_LIMIT ENV_FILE; do
+         SESAMEFS_MEMORY_LIMIT CASSANDRA_MEMORY_LIMIT CASSANDRA_MAX_HEAP_SIZE CASSANDRA_HEAP_NEWSIZE \
+         ENV_FILE; do
   grep -v "^$v=" "$tmp/region.env" > "$tmp/missing.env"
   if docker compose --env-file "$tmp/missing.env" -f docker-compose.swarm.yml config >/dev/null 2>&1; then
     ko "renders without $v"
