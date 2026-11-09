@@ -103,6 +103,17 @@ Messages from `log.Printf` become `level=INFO`, including `[HandleUpload] CRITIC
 `Unexpected upload failure`: 170 of 170 in one backend log. Only the access-log line carries
 `ERROR`, without the cause. Alerts on log level miss the reason; alert on 5xx and search text.
 
+### ISSUE-GC-TAG-COUNTS-DELETE-ERRORS-IGNORED-01: GC's tag-count cleanup reports success on Cassandra errors
+
+**Status:** OPEN (2026-11-08), code-verified. **Severity:** P2 / PRE-GC; pre-existing; found
+in review of the readiness verification. **Affected:** `CassandraStore.DeleteRepoTagFileCounts`
+in `internal/gc/store_cassandra.go`.
+
+It ignores the error from `iter.Close()` and from every `DELETE ... Exec()`, then returns
+`nil`. The GC worker joins that result into its library cleanup, so a failed delete leaves
+counter rows behind while the cleanup counts as successful. Not reachable while GC is off.
+Fix with a real-Cassandra RED/GREEN, alongside `ISSUE-TAG-CLEANUP-COUNTER-BATCH-01`.
+
 ### ISSUE-BACKUP-RESTORE-MISSING-01: No backup or restore procedure exists
 
 **Status:** OPEN (2026-11-06); deferred by maintainer decision while pilot data is
@@ -111,7 +122,10 @@ disposable. **Severity:** P1; pre-existing. Prerequisite as soon as data must su
 
 The repository has no backup script, restore runbook, RTO/RPO or restore drill. With the
 three-DC layout (RF 1 per DC) every partition has three replicas, one per DC, so losing one
-node or one DC does not lose the metadata, though it reduces availability. Replication does
+node or one DC does not by itself lose all copies of the metadata, though it reduces
+availability. It does not guarantee zero data loss either: ordinary writes at `LOCAL_QUORUM`
+are acknowledged by the local replica alone, so writes not yet replicated when a DC is lost
+for good can be lost. Replication does
 not protect against replicated deletes or corruption, operator error, or losing every
 replica; a single-DC deployment has only one copy. S3 blocks alone cannot rebuild libraries. Close with a Cassandra and bucket
 backup, plus a restore actually performed on a clean environment.
@@ -11342,7 +11356,7 @@ Decide SoT (IdP wins / admin wins / last-write-wins with audit) in
 80 ms RTT and 0.2 s at none, on [one idle host](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal);
 an uncontended `SERIAL` write took 312 ms, so an upload spends roughly eight or nine such round trips.
 Compared with `d016e42b7` on the same harness: 1.38 s with `SERIAL` and 0.17 s with `LOCAL_SERIAL`, which lost
-57 of 135 acknowledged concurrent uploads ([comparison](./PROD-READINESS-VERIFICATION-20261106.md#cost-of-global-serialization-and-of-the-x1-protections)).
+57 of 135 acknowledged concurrent uploads ([comparison](./PROD-READINESS-VERIFICATION-20261106.md#cost-of-global-serialization-and-of-later-changes)).
 
 **Status**: 🟡 Open — deferred PR-11 pending measurement
 **Severity**: High (perf), not a correctness blocker
