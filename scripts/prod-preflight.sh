@@ -785,6 +785,21 @@ check_database() {
       fail "CASSANDRA_REPLICATION_CLASS must be SimpleStrategy or NetworkTopologyStrategy."
       ;;
   esac
+
+  local timeout_var
+  for timeout_var in CASSANDRA_CAS_CONTENTION_TIMEOUT CASSANDRA_WRITE_REQUEST_TIMEOUT; do
+    if ! is_set "$timeout_var"; then
+      pass "$timeout_var is unset (production compose default 5000ms)"
+    elif [[ "${!timeout_var}" =~ ^[1-9][0-9]{1,6}ms$ ]]; then
+      pass "$timeout_var=${!timeout_var}"
+    else
+      fail "$timeout_var must be whole milliseconds from 10ms to 9999999ms, such as 5000ms. The production compose will not start Cassandra with it."
+    fi
+  done
+
+  if is_set CASSANDRA_BOOTSTRAP_ATTEMPTS && ! [[ "$CASSANDRA_BOOTSTRAP_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+    fail "CASSANDRA_BOOTSTRAP_ATTEMPTS must be a positive integer."
+  fi
 }
 
 check_config_file() {

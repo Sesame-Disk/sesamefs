@@ -8,6 +8,16 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-11-07 — Three-DC bootstrap convergence and Cassandra timeouts
+
+`cassandra-bootstrap` retries every 15 s until the application role holds its grants, up to
+`CASSANDRA_BOOTSTRAP_ATTEMPTS` (default 12); it used to exit 2 on every fresh three-DC run.
+The production compose writes `cas_contention_timeout` and `write_request_timeout` into
+`cassandra.yaml` on every start, default 5000 ms instead of the image's 1000 / 2000 ms, through
+`CASSANDRA_CAS_CONTENTION_TIMEOUT` and `CASSANDRA_WRITE_REQUEST_TIMEOUT`; an invalid value stops
+Cassandra from starting and the preflight reports it. Verified on a three-DC rehearsal of the
+production compose and on one DC.
+
 ## 2026-11-06 — Internal deployment readiness verification
 
 [Dated verification](./PROD-READINESS-VERIFICATION-20261106.md) of main@a21f4203d:

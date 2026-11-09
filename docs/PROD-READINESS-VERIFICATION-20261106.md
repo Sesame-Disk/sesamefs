@@ -35,9 +35,12 @@ OPEN and GC stays OFF on every replica in every DC.
 
 ### Before first traffic
 
+**Update 2026-11-07:** the first two rows are addressed by the bootstrap-convergence change; status in
+[KNOWN_ISSUES](./KNOWN_ISSUES.md#issue-cassandra-bootstrap-3dc-role-01-the-first-three-dc-bootstrap-attempt-fails).
+
 | Item | Why |
 |---|---|
-| **Fix or work around the first bootstrap** | [`ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01`](./KNOWN_ISSUES.md#issue-cassandra-bootstrap-3dc-role-01-first-three-dc-bootstrap-fails-before-creating-the-application-role): failed 3 of 3 fresh runs. Run it again until it exits 0 and the role exists |
+| **Fix or work around the first bootstrap** | [`ISSUE-CASSANDRA-BOOTSTRAP-3DC-ROLE-01`](./KNOWN_ISSUES.md#issue-cassandra-bootstrap-3dc-role-01-the-first-three-dc-bootstrap-attempt-fails): failed 3 of 3 fresh runs. Run it again until it exits 0 and the role exists |
 | **Raise Cassandra's write and CAS timeouts on every node** | [`ISSUE-CASSANDRA-TIMEOUTS-WAN-01`](./KNOWN_ISSUES.md#issue-cassandra-timeouts-wan-01-shipped-cassandra-timeouts-fail-uploads-under-wan-latency): mitigates the per-organization contention until it is fixed; the production compose has no setting for them yet |
 | Build the release from an exact commit | No CI exists, so images are built and pushed by hand. Do not merge #324 or #325 yet; see [Dependencies](#dependencies) |
 | Set memory limits per host | [`ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01`](./KNOWN_ISSUES.md#issue-prod-compose-no-memory-limit-01-production-compose-sets-no-container-memory-limit). `pack-fs` amplification can otherwise take Cassandra down on the same host |
@@ -323,6 +326,30 @@ can lose acknowledged uploads.
 
 Each touches the HEAD and publication path that the X1 evidence depends on, so each needs
 a maintainer decision and its own evidence.
+
+### Bootstrap and timeout fix verification (2026-11-07)
+
+The bootstrap-convergence change was verified on the same three-DC harness, with the
+branch's own `docker-compose.prod.yml`:
+
+| Check | Before (main) | After |
+|---|---|---|
+| Fresh three-DC bootstrap | exit 2 in 6 of 6 runs | exit 0 in 3 of 3, converging on attempt 2 |
+| Rerun on a configured three-DC cluster | — | exit 0 on attempt 1 in 4 of 4, after a correction below |
+| One DC, fresh and rerun | exit 0 | exit 0 on attempt 1, both |
+| `cas_contention_timeout` / `write_request_timeout` on every node | 1000 / 2000 ms | 5000 / 5000 ms |
+| Override `CASSANDRA_CAS_CONTENTION_TIMEOUT=4000ms` | — | applied |
+| Invalid `5s` | — | Cassandra exits 1 with the reason and keeps restarting until fixed |
+| Preflight | — | passes with defaults; fails on `2s` and on `CASSANDRA_BOOTSTRAP_ATTEMPTS=0` |
+| Three regions at once, different libraries, about 80 ms RTT | 12, 10 of 36 | 24, 31 of 36 |
+| Cross-region functional matrix | — | 34 of 35 |
+
+- The first version of the convergence check ran `cqlsh | grep -q` under `pipefail`;
+  `grep -q` stops at the first match and `cqlsh` then fails on SIGPIPE, so a rerun on a
+  configured three-DC cluster failed 2 of 2. Reading the whole listing fixed it.
+- The one functional failure is the harness asking `upload-link` to replace a file.
+  An upload link never overwrites by design (`ISSUE-UPLOAD-REPLACE-01`); replacing takes
+  `update-link`. It also appeared in earlier matrix runs.
 
 ## Dependencies
 
