@@ -20,6 +20,13 @@ report, lists `ISSUE-GC-TAG-COUNTS-DELETE-ERRORS-IGNORED-01` in its findings tab
 updates four live statements that still described X1 closure as pending. Documentation only;
 no gate closes. PRE-GC/A1 OPEN, GC OFF.
 
+## 2026-11-07 — Three-DC production-compose rehearsal harness
+
+`scripts/rehearsal/prod-3dc/rehearse.sh` reproduces the rehearsal behind the internal-pilot
+verification: three regions of `docker-compose.prod.yml` on one host, smoke and usage
+shapes, same-library contention with lost-upload checks, simulated latency, DC outages and
+raw Cassandra probes. The Go helpers carry the `rehearsal` build tag. Test tooling only.
+
 ## 2026-11-07 — Three-DC bootstrap convergence and Cassandra timeouts
 
 `cassandra-bootstrap` retries every 15 s until the application role holds its grants, up to

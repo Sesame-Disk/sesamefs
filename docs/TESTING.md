@@ -920,6 +920,15 @@ Manual test flow to verify the full GC pipeline:
 
 ---
 
+## Production-compose three-DC rehearsal
+
+[`scripts/rehearsal/prod-3dc/`](../scripts/rehearsal/prod-3dc/README.md) runs
+`docker-compose.prod.yml` as three regions on one host, following DEPLOY Step M4, with
+stand-ins only for S3, the IdP and the central nginx. It drives real traffic and can add
+latency between DCs, stop a DC, and probe Cassandra without SesameFS. It produced the
+[rehearsal evidence](./PROD-READINESS-VERIFICATION-20261106.md#three-dc-rehearsal). Run it
+with Docker to yourself; results on a shared host are not comparable.
+
 ## Cross-datacenter (3-DC) legs
 
 Two closure properties can only be observed across real datacenters, so they run
