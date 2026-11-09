@@ -767,9 +767,9 @@ non-LWT; canonical metadata creation and lifecycle state transitions are separat
 - **S3 orphan recovery**: G5 walks fixed-bucket durable roots with persisted seek checkpoints, without a by-day age horizon. Recovery reloads exact canonical/lifecycle authority; discovery is not authorization. Unknown outcomes retain authority or refuse; TERMINAL cannot authorize another delete. COMMITTED continuation does not take a new logical-reference veto or retarget to current K2. Root/canonical pending authority is non-expiring; scheduling/clock and convergence qualifications remain PRE-GC. See [G4](./GC-G4-IMPLEMENTATION-PLAN.md) and [G5 evidence](./GC-G5-3DC-VALIDATION.md).
 
 **Physical-life status:** [X1's original criteria](./KNOWN_ISSUES.md#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes)
-close within the accepted scope on maintainer merge of the final E1 decision;
-before then OPEN. PRE-GC/A1 remain OPEN and `GC_ENABLED=false` is mandatory in
-every DC. Earlier G2/G3 descriptions of a future physical executor and a logical
+closed within the accepted scope with the maintainer's merge of the final E1
+decision ([#312](https://github.com/Sesame-Disk/sesamefs/pull/312), 2026-10-17).
+PRE-GC/A1 remain OPEN and `GC_ENABLED=false` is mandatory in every DC. Earlier G2/G3 descriptions of a future physical executor and a logical
 orphan mutex are superseded by G4/G5, not additional current prerequisites.
 
 **Lifecycle (current physical protocol; logical refs abbreviated)**:
@@ -792,7 +792,7 @@ KNOWN_ISSUES.md `ISSUE-GC-MULTIINSTANCE-01`). The 1h grace period is a mitigatio
 for ordinary cross-DC lag, not a correctness bound: with RF 1 per DC,
 `LOCAL_QUORUM` reference writes and reads need not intersect. Destructive GC remains
 disabled while X1 or PRE-GC/A1 is open. [X1's criterion disposition](./KNOWN_ISSUES.md#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes)
-takes effect on maintainer merge of the scoped E1 decision; before then X1 is OPEN.
+took effect with the maintainer's merge of the scoped E1 decision (#312, 2026-10-17).
 PRE-GC/A1 remain OPEN regardless of that merge. The replication DC set and RF are an
 operationally stable X2 precondition; changing them with existing reference state
 requires a separately certified migration before GC can be reconsidered.

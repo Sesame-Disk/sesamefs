@@ -25,8 +25,8 @@ X4) is deferred pending a production latency measurement. X2 closed 2026-08-14.
 **Current X1 disposition (2026-10-17):** the [status-of-record entry](./KNOWN_ISSUES.md#issue-gc-upload-fence-rematerialization-01-physical-delete-aba-can-remove-re-uploaded-bytes)
 disposes physical identity, per-attempt ownership, exact continuation and W2
 publication criteria. Closure is effective on maintainer merge of [the scoped
-E1 decision](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16);
-before then OPEN. PRE-GC/A1 remain OPEN and GC stays disabled fleet-wide.
+E1 decision](./E1-FINAL-DISPOSITION.md#final-acceptance-decision-2026-10-16),
+merged in #312 on 2026-10-17. PRE-GC/A1 remain OPEN and GC stays disabled fleet-wide.
 The X1 row below is discovery-time reasoning, including the former shared claim
 ID, not a statement that today's worker still derives its claim from a candidate.
 The D0 OPEN label above describes the frozen 2026-09-02 architecture snapshot.
