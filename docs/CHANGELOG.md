@@ -8,6 +8,17 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-11-10 — Swarm preflight and Cassandra data directory ownership
+
+Found in the first three-region Swarm deploy: `prod-preflight.sh --swarm` required the
+deploy user to write `CASSANDRA_DATA_DIR`, which the cassandra entrypoint chowns to uid 999
+on every start. With `--swarm` it now requires only that the directory exists;
+`scripts/test-prod-preflight.sh` covers it (RED on main, GREEN after). DEPLOY's Swarm
+firewall notes now say that the host firewall applies to Cassandra on the host network,
+that a node without inbound gossip starts a cluster of its own, and that the
+`docker_gwbridge` subnet must be read per host. Closes
+`ISSUE-PREFLIGHT-SWARM-DATA-DIR-OWNER-01` on merge. PRE-GC/A1 OPEN, GC OFF.
+
 ## 2026-11-10 — Swarm Cassandra reads only its own variables
 
 Found in the first three-region Swarm deploy: the `cassandra` service read the whole

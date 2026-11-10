@@ -182,6 +182,20 @@ the second half reaches a process that never saw the first: the login fails with
 one region is not affected. Retrying works once the answer is stable. The fix is to keep
 that state in Cassandra; the three linked issues track it.
 
+### ISSUE-PREFLIGHT-SWARM-DATA-DIR-OWNER-01: The Swarm preflight rejects the Cassandra data directory after Cassandra starts
+
+**Status:** CLOSED-FIX on merge (2026-11-10), found in the first three-region Swarm deploy.
+**Severity:** P3 / ops. **Affected:** `scripts/prod-preflight.sh --swarm`.
+
+The preflight required `CASSANDRA_DATA_DIR` to be writable by the user running it. The
+cassandra image's entrypoint chowns that directory to its own user (uid 999) on every
+start, so after the first start the check failed on any host where the deploy user is
+not uid 999, and fixing the ownership by hand lasted only until the next Cassandra
+restart. With `--swarm` the preflight now requires only that the directory exists; the
+compose path keeps the writability check. `scripts/test-prod-preflight.sh` reproduces it
+with a directory owned by uid 999, mode 755, checked as another user (RED on main, GREEN
+after).
+
 ### ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01: Production compose sets no container memory limit
 
 **Status:** OPEN (2026-11-06). **Severity:** P2 / config; pre-existing.

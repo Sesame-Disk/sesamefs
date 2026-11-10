@@ -139,6 +139,23 @@ is_valid_cassandra_dc_name() {
   [[ "$val" =~ ^[A-Za-z0-9._-]+$ ]]
 }
 
+check_required_dir() {
+  local var_name="$1"
+  local purpose="$2"
+  local dir_path="${!var_name:-}"
+
+  if [ -z "$dir_path" ]; then
+    fail "$var_name is unset. $purpose"
+    return 1
+  fi
+  if [ ! -d "$dir_path" ]; then
+    fail "$var_name points to $dir_path, but the directory does not exist. Create it before the deploy."
+    return 1
+  fi
+  pass "$var_name exists (Cassandra sets its ownership when it starts)"
+  return 0
+}
+
 check_required_writable_dir() {
   local var_name="$1"
   local purpose="$2"
@@ -667,7 +684,13 @@ check_database() {
     pass "CASSANDRA_HOSTS is set"
   fi
 
-  check_required_writable_dir CASSANDRA_DATA_DIR "Production compose uses a bind mount for Cassandra data."
+  if [ "$SWARM" = true ]; then
+    # The cassandra image's entrypoint chowns its data directory to the image's own user
+    # on every start, so the user running this check need not be able to write it.
+    check_required_dir CASSANDRA_DATA_DIR "The Swarm stack bind-mounts it for Cassandra data."
+  else
+    check_required_writable_dir CASSANDRA_DATA_DIR "Production compose uses a bind mount for Cassandra data."
+  fi
 
   if ! is_set CASSANDRA_SUPERUSER_PASSWORD; then
     fail "CASSANDRA_SUPERUSER_PASSWORD is unset. Required to rotate the default Cassandra superuser password during bootstrap."
