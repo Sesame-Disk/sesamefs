@@ -83,7 +83,9 @@ Paxos rounds; a desktop push of M new one-block files runs 2M + 4. Besides the N
 installs, they are an identity claim per new fs object and per commit (PC-D1B), the
 commit's `SERIAL` read, the per-library finalize lease on web uploads, and the HEAD CAS.
 All but the lease are pinned to global `SERIAL`, and the lease inherits it from the shipped
-config, so on three DCs every round waits on another DC. The identity claims feed a
+config, so on three DCs every round waits on another DC. Those counts are for an uncontended
+upload: a finalization waiting on another process's lease retries its acquire LWT every 25 ms,
+and the holder renews every 10 s (from the code, not measured). The identity claims feed a
 certifier with no production caller. Characterization, what each round protects and the
 options: [hot-path Paxos record](./HOTPATH-PAXOS-CHARACTERIZATION.md). The fix changes code
 X1 evidence depends on and needs a maintainer decision.

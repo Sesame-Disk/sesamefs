@@ -17,7 +17,11 @@ than the block install off the hot path.
 
 The test runs the production handlers in-process on a session with a query observer, against
 real Cassandra 5.0.9 and MinIO. The count does not depend on topology, so one node is enough.
-Two consecutive runs gave the same numbers; driver retries were 0.
+Repeated runs gave the same numbers; driver retries were 0. The counts are for one upload at
+a time whose finalization ends within 10 s; see the finalize lease below. The test pins how
+many rounds run on each table, not their Paxos domain: the "Paxos domain" column below comes
+from the code, and switching one of those statements to `LOCAL_SERIAL` would not fail the
+test.
 
 | Route | Paxos rounds per request |
 |---|---|
@@ -31,7 +35,7 @@ In general, with N new blocks and a file d directories below the root:
 | Operation | Web upload | Desktop push | Table and partition | Paxos domain |
 |---|---|---|---|---|
 | Block install (`InstallBlockMetadata`) | N | one per `put-block` | `blocks ((org_id, block_id))` | `SERIAL`, pinned |
-| Finalize lease, acquire and release | 2 | 0 | `gc_leases`, row `upload-finalize:<repo>` | session default (`SERIAL` in prod) |
+| Finalize lease, acquire and release | 2, plus renewals and waiting; see below | 0 | `gc_leases`, row `upload-finalize:<repo>` | session default (`SERIAL` in prod) |
 | Identity claim, per new fs object | d + 2 (file, each directory, root) | one per object in `recv-fs` | `identity_authority_claims ((library_id, kind, id))` | `SERIAL`, pinned |
 | Identity claim and `SERIAL` read of the commit | 2 | 2 (`put-commit`) | same | `SERIAL`, pinned |
 | HEAD CAS | 1 | 1 | `libraries ((org_id), library_id)` | `SERIAL`, pinned |
@@ -39,8 +43,22 @@ In general, with N new blocks and a file d directories below the root:
 The HEAD CAS of every library of an organization runs in one Paxos state, the organization's
 partition. The second test shows it: publications in two libraries of one organization
 advance the same `system.paxos` row, keyed by `org_id`, and no library has a row of its own.
-The other Paxos tables have one partition per block, object or library, so their rounds do
-not contend with each other; they cost latency, not contention.
+The block, identity-claim and lease tables have one partition per block, object or library.
+Block and claim rounds do not contend with each other; they cost latency. The finalize lease
+does contend, within one library, by design: it serializes finalizations there. From the code
+(`acquireSeafHTTPDistributedUploadFinalizeLeaseWithIntervals` and the renewer in
+`internal/api/seafhttp.go`), not measured:
+
+- A finalization that waits for a lease held by another process retries the acquire LWT every
+  25 ms on the same partition until it wins: about 40 rounds a second, all contending with the
+  holder's renewal and release. Waiters in the holder's own process queue on a local permit
+  and issue no rounds; the polling comes from other processes, in any region.
+- The holder renews with one LWT every 10 s, so a finalization that lasts longer adds one
+  round per 10 s. On three DCs the N sequential block installs make long finalizations likely
+  for large files.
+
+The measured 2 is therefore a floor. The test counts renewals apart and leaves them out of the
+pinned shape, so a slow run does not change it.
 
 ## What each round protects
 
@@ -91,5 +109,6 @@ identity goes through the same DC, which is what has to be designed and proved.
 | **C. A home DC per library** | HEAD and the lease run with `LOCAL_SERIAL` in the library's home DC; other regions forward the publication | Same count, but those rounds stay in one DC; a remote upload pays one forward round trip | A library cannot be written while its home DC is down, until a fenced handover. Contradicts the current decision that HEAD writers use global `SERIAL`. Blocks are per organization, not per library: extending this to the block install is X4's placement-domain question. X1 evidence must be re-run | One added column, possible after `001` freezes |
 
 A and B together leave, per web upload, N block installs (X4), the lease and one HEAD CAS
-without contention between libraries. C is a separate design. Only B depends on when `001`
+without contention between libraries. Concurrent uploads to one library still contend on the
+lease, and on its HEAD row. C is a separate design. Only B depends on when `001`
 freezes.

@@ -61,8 +61,14 @@ func requireHotPathPaxosCassandra(t *testing.T) {
 // paxosOp names one kind of Paxos operation on one table.
 type paxosOp struct {
 	table string
-	kind  string // "lwt" or "serial-read"
+	kind  string // "lwt", "serial-read" or "lease-renew"
 }
+
+// hotPathLeaseRenewKind marks the finalize lease's renewal LWT. It runs every
+// 10 s while a finalization holds the lease, so how many there are depends on
+// how long the finalization takes, not on the request. The pinned shapes leave
+// it out and the log reports it.
+const hotPathLeaseRenewKind = "lease-renew"
 
 func (op paxosOp) String() string { return op.table + " " + op.kind }
 
@@ -90,7 +96,7 @@ func (c paxosCounts) String() string {
 
 var (
 	// A condition clause: IF NOT EXISTS, IF EXISTS or IF <column> <op>.
-	hotPathLWTPattern   = regexp.MustCompile(`\bif\s+(not\s+exists|exists|[a-z_]+\s*(=|!=|<|>|\bin\b))`)
+	hotPathLWTPattern   = regexp.MustCompile(`\bif\s+(not\s+exists|exists|[a-z_][a-z0-9_]*\s*(=|!=|<|>|\bin\b))`)
 	hotPathTablePattern = regexp.MustCompile(`^(?:insert\s+into|update|delete\b.*?\bfrom|select\b.*?\bfrom)\s+([a-z0-9_."]+)`)
 )
 
@@ -118,6 +124,9 @@ func classifyHotPathStatement(statement string, consistency gocql.Consistency) (
 		return paxosOp{}, false
 	}
 	if hotPathLWTPattern.MatchString(normalized) {
+		if table == "gc_leases" && strings.HasPrefix(normalized, "update") {
+			return paxosOp{table: table, kind: hotPathLeaseRenewKind}, true
+		}
 		return paxosOp{table: table, kind: "lwt"}, true
 	}
 	return paxosOp{}, false
@@ -177,6 +186,10 @@ func TestHotPathPaxosClassifier(t *testing.T) {
 		{"INSERT INTO blocks (org_id, block_id) VALUES (?, ?) IF NOT EXISTS", gocql.LocalQuorum, "blocks lwt"},
 		{"\n\t\tDELETE FROM libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null", gocql.LocalQuorum, "libraries lwt"},
 		{"UPDATE locked_files SET locked_at = ? WHERE repo_id = ? AND path = ? IF locked_by IN (?)", gocql.LocalQuorum, "locked_files lwt"},
+		{"UPDATE blocks SET sha1 = ? WHERE org_id = ? AND block_id = ? IF sha1 = ? AND representation_id = ?", gocql.LocalQuorum, "blocks lwt"},
+		{"INSERT INTO gc_leases (role, instance_id, heartbeat) VALUES (?, ?, ?) IF NOT EXISTS USING TTL ?", gocql.LocalQuorum, "gc_leases lwt"},
+		{"UPDATE gc_leases USING TTL ? SET instance_id = ?, heartbeat = ? WHERE role = ? IF instance_id = ?", gocql.LocalQuorum, "gc_leases lease-renew"},
+		{"DELETE FROM gc_leases WHERE role = ? IF instance_id = ?", gocql.LocalQuorum, "gc_leases lwt"},
 		{"SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?", gocql.Serial, "libraries serial-read"},
 		{"SELECT digest FROM sesamefs.identity_authority_claims WHERE library_id = ?", gocql.LocalSerial, "identity_authority_claims serial-read"},
 		{"SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?", gocql.LocalQuorum, ""},
@@ -481,7 +494,13 @@ func TestHotPathPaxosUploadCharacterization(t *testing.T) {
 		if len(errs) != 0 {
 			t.Logf("PAXOS %-40s errors=%v", route, errs)
 		}
-		if diff := diffHotPathCounts(got, want); len(diff) != 0 {
+		pinned := paxosCounts{}
+		for op, n := range got {
+			if op.kind != hotPathLeaseRenewKind {
+				pinned[op] = n
+			}
+		}
+		if diff := diffHotPathCounts(pinned, want); len(diff) != 0 {
 			t.Errorf("%s: Paxos shape changed by %s (got %s, want %s); if intended, update this test and docs/HOTPATH-PAXOS-CHARACTERIZATION.md", route, diff, got, want)
 		}
 	}
@@ -504,8 +523,10 @@ func TestHotPathPaxosUploadCharacterization(t *testing.T) {
 }
 
 // hotPathPaxosStateSession opens a session that may read system.paxos. The
-// application role may not hold that permission; the superuser role is used
-// when the environment provides it.
+// application role does not hold that permission, so the superuser is tried
+// next. .env.example sets only CASSANDRA_SUPERUSER_PASSWORD: the stack keeps
+// the built-in superuser name, cassandra (scripts/prod-preflight.sh requires
+// it), so that name is the default.
 func hotPathPaxosStateSession(t *testing.T) *gocql.Session {
 	t.Helper()
 	open := func(user, pass string) (*gocql.Session, error) {
@@ -526,7 +547,7 @@ func hotPathPaxosStateSession(t *testing.T) *gocql.Session {
 	var failures []string
 	for _, creds := range [][2]string{
 		{os.Getenv("CASSANDRA_USERNAME"), os.Getenv("CASSANDRA_PASSWORD")},
-		{os.Getenv("CASSANDRA_SUPERUSER_USERNAME"), os.Getenv("CASSANDRA_SUPERUSER_PASSWORD")},
+		{envOrDefault("CASSANDRA_SUPERUSER_USERNAME", "cassandra"), os.Getenv("CASSANDRA_SUPERUSER_PASSWORD")},
 	} {
 		session, err := open(creds[0], creds[1])
 		if err == nil {

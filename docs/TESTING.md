@@ -926,7 +926,8 @@ Manual test flow to verify the full GC pipeline:
 handlers in-process on a session with a query observer and pins how many Paxos rounds (LWTs
 and `SERIAL` reads, per table) each upload route issues, plus that HEAD publications in two
 libraries of one organization share one `system.paxos` row. It needs the integration stack;
-reading `system.paxos` falls back to the Cassandra superuser from `.env`. Set
+reading `system.paxos` falls back to the Cassandra superuser (`CASSANDRA_SUPERUSER_PASSWORD`
+from `.env`; the user name defaults to `cassandra`). Set
 `SESAMEFS_REQUIRE_HOTPATH_PAXOS_CHARACTERIZATION=1` so an unreachable stack fails instead of
 skipping. A change to the hot path changes the pinned shapes on purpose: update the test and
 [the record](./HOTPATH-PAXOS-CHARACTERIZATION.md) together.
