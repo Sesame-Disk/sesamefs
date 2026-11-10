@@ -920,6 +920,27 @@ Manual test flow to verify the full GC pipeline:
 
 ---
 
+## Hot-path Paxos characterization
+
+`internal/integration/hotpath_paxos_characterization_test.go` runs the production upload
+handlers in-process on a session with a query observer and pins how many Paxos rounds (LWTs
+and `SERIAL` reads, per table) each upload route issues, plus that HEAD publications in two
+libraries of one organization share one `system.paxos` row. It needs the integration stack;
+reading `system.paxos` falls back to the Cassandra superuser (`CASSANDRA_SUPERUSER_PASSWORD`
+from `.env`; the user name defaults to `cassandra`). Set
+`SESAMEFS_REQUIRE_HOTPATH_PAXOS_CHARACTERIZATION=1` so an unreachable stack fails instead of
+skipping. A change to the hot path changes the pinned shapes on purpose: update the test and
+[the record](./HOTPATH-PAXOS-CHARACTERIZATION.md) together.
+
+```bash
+docker compose --profile test run --rm --build \
+  -e SESAMEFS_REQUIRE_HOTPATH_PAXOS_CHARACTERIZATION=1 go-integration-test \
+  go test -tags integration -count=1 -v -run 'TestHotPathPaxos' ./internal/integration/
+```
+
+That service also sets other evidence gates; a `-run` filter leaves them unobserved and the
+package reports FAIL. Pass `-e <gate>=0` for each, or run the full suite.
+
 ## Swarm stack checks
 
 `bash scripts/test-swarm-stack.sh` renders `docker-compose.swarm.yml` with `docker compose`

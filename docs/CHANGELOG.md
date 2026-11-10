@@ -8,6 +8,15 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-11-09 — Hot-path Paxos characterization
+
+A real-Cassandra integration test pins the Paxos rounds of the upload routes: a web upload of
+a new file runs N + d + 7 (N new blocks, d directory levels), a desktop push of M one-block
+files 2M + 4. It also shows that HEAD publications in two libraries of one organization share
+one `system.paxos` row. Registers `ISSUE-HOTPATH-GLOBAL-PAXOS-01`;
+[the record](./HOTPATH-PAXOS-CHARACTERIZATION.md) lists the options for a maintainer decision.
+No runtime change. PRE-GC/A1 OPEN, GC OFF.
+
 ## 2026-11-09 — Production on Docker Swarm
 
 `docker-compose.swarm.yml` is the production stack: one region per host, each a
