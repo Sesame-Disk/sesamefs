@@ -1,6 +1,17 @@
 # Current Work
 
-## Active slice: production on Docker Swarm (2026-11-09)
+## Active slice: hot-path Paxos characterization (2026-11-09)
+
+Characterization only, no runtime change. A real-Cassandra test counts the Paxos rounds of
+each upload route: a web upload runs N + d + 7 (N new blocks, d directory levels), a desktop
+push of M one-block files 2M + 4, almost all on global `SERIAL`. A second test shows that HEAD
+publications in two libraries of one organization share one `system.paxos` row. New:
+`ISSUE-HOTPATH-GLOBAL-PAXOS-01`. [The record](docs/HOTPATH-PAXOS-CHARACTERIZATION.md)
+lists what each round protects and three options (identity claims off the hot path,
+per-library `libraries` key before `001` freezes, a home DC per library); none is decided.
+No gate closes; PRE-GC/A1 OPEN, GC OFF.
+
+## Previous merged slice: production on Docker Swarm (#331, 2026-11-09)
 
 `docker-compose.swarm.yml`: one region per host, each a single-node Swarm; Cassandra on the
 host network, listening only on the private IP; required memory limits; one replica per
@@ -14,9 +25,9 @@ private network): first deploy with no backend, bootstrap (converged on attempt 
 backends one region at a time, OIDC login and cross-region upload/read 8 of 8, an image
 update, a Cassandra restart, and a broken image failing the deploy. New:
 `ISSUE-GEO-DNS-PER-PROCESS-STATE-01`. Closes the production path of
-`ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01` on merge. No gate closes; PRE-GC/A1 OPEN, GC OFF.
+`ISSUE-PROD-COMPOSE-NO-MEMORY-LIMIT-01`. No gate closes; PRE-GC/A1 OPEN, GC OFF.
 
-## Previous merged slice: three-DC bootstrap convergence and Cassandra timeouts (#328, 2026-11-07)
+## Earlier merged slice: three-DC bootstrap convergence and Cassandra timeouts (#328, 2026-11-07)
 
 `docker-compose.prod.yml` only. The bootstrap retries its idempotent statements until the
 application role holds its grants; Cassandra's `cas_contention_timeout` and
