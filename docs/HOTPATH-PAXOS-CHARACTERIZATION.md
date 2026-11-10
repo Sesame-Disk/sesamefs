@@ -94,6 +94,33 @@ of three replicas, so every phase of a round waits for the nearest other DC. A P
 has four phases (prepare, read, propose, commit). Measured contention at 80 ms simulated RTT:
 see `ISSUE-LIBRARY-HEAD-ORG-PARTITION-CONTENTION-01`.
 
+### Observed on a three-region deployment (2026-11-10)
+
+First deployment on three hosts, one Cassandra node per DC (North America, Europe, Asia),
+from a smoke test through the public API: one upload at a time, one-request web upload
+(`/seafhttp/upload-api`, 8 rounds), new file in the root of a new library. Times are
+**client-side wall clock** from one client in North America, including the upload-link
+request, TLS and the client's own network; nothing was measured server-side.
+
+| Region written | File | Upload | Download of the same file, same region |
+|---|---|---|---|
+| North America | 1 KiB | 3.3 s | 0.7 s |
+| North America | 3 MiB | 8.4 s | 1.1 s |
+| North America | 24 MiB | 9.1 s | 1.9 s |
+| Europe | 2 MiB | 7.2 s | 2.2 s |
+| Asia | 2 MiB | 11.9 s | 4.2 s |
+
+Inter-DC round trip by `ping` between hosts: Asia–North America about 230 ms, Asia–Europe
+about 150 ms; North America–Europe not measured.
+
+A 1 KiB upload costs about 2.6 s more than downloading it, and the cost barely grows with
+size up to 24 MiB, so most of it is fixed per upload. That is consistent with 8 global rounds
+of four phases each waiting on the nearest other DC (8 × 4 × 80–90 ms ≈ 2.6–2.9 s for the
+North American node), but it is an inference: the North America–Europe round trip, the Paxos
+variant in use and the per-round latency were not measured. Confirming it needs a
+server-side measurement from inside a region, such as the backend's request latency for the
+upload and a `TRACING ON` `SERIAL` write from a node's `cqlsh`.
+
 ## Options
 
 None is decided. Each changes code that X1 evidence or a maintainer decision depends on. The
