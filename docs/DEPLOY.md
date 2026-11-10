@@ -112,7 +112,9 @@ What the stack does differently from `docker-compose.prod.yml`, and why, is in t
 of `docker-compose.swarm.yml`. In short: Cassandra uses the host network and listens only
 on the private IP (Swarm cannot publish a port on one IP, and a Docker-published port
 bypasses the host firewall); the backend reaches Cassandra at that IP; the image carries
-the production config; memory limits are required; every service runs one replica.
+the production config; memory limits are required; every service runs one replica;
+Cassandra gets only its own variables, not the region env file, so a change to an
+application setting restarts only the backend and no application secret reaches Cassandra.
 
 ### S1 — Prepare each host
 
