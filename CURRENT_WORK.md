@@ -1,6 +1,14 @@
 # Current Work
 
-## Active slice: production on Docker Swarm (2026-11-09)
+## Active slice: Swarm Cassandra reads only its own variables (2026-11-10)
+
+From the first three-region Swarm deploy: an application setting change restarted
+Cassandra and paused the backend update, and Cassandra's environment held every
+application secret. `docker-compose.swarm.yml` drops its `env_file`; the stack test checks
+it (RED on main, GREEN after). Closes `ISSUE-SWARM-CASSANDRA-ENV-FILE-01` on merge.
+No gate closes; PRE-GC/A1 OPEN, GC OFF.
+
+## Previous merged slice: production on Docker Swarm (2026-11-09)
 
 `docker-compose.swarm.yml`: one region per host, each a single-node Swarm; Cassandra on the
 host network, listening only on the private IP; required memory limits; one replica per

@@ -201,6 +201,24 @@ rehearsal every backend reported `budget_source="25% of the detected cgroup limi
 CLOSED-FIX for the production path on merge; `docker-compose.prod.yml`, now the
 rehearsal path, still sets no limit.
 
+### ISSUE-SWARM-CASSANDRA-ENV-FILE-01: An application setting change restarts Cassandra on deploy
+
+**Status:** CLOSED-FIX on merge (2026-11-10), found in the first three-region Swarm deploy.
+**Severity:** P2 / ops and secret exposure. **Affected:** `docker-compose.swarm.yml`.
+
+The `cassandra` service read the whole region env file through `env_file`. Changing
+any application variable (here `OIDC_REDIRECT_URIS`) changed Cassandra's service spec,
+so `docker stack deploy` restarted it; the new backend started against a node still
+starting, exited with `dial tcp <private IP>:9042: connect: connection refused`, and Swarm
+paused the update even though the restarted task then served. Every application secret
+(OIDC, S3, share-link HMAC, OnlyOffice) was also in Cassandra's environment. Cassandra now
+gets only its own variables plus `CASSANDRA_SUPERUSER_PASSWORD` for the healthcheck.
+`scripts/test-swarm-stack.sh` fails on the previous stack (spec changes with an
+application variable, application secret present, renders without the superuser
+password) and passes after. The first deploy with the change restarts Cassandra once,
+because its spec changes. `docker-compose.prod.yml`, the rehearsal path, keeps `env_file`:
+its Cassandra still takes multi-region addresses from the env file.
+
 ### ISSUE-SHARELINK-DIR-TRAILING-SLASH-404-01: Shared-folder links emitted by the UI return JSON 404
 
 **Status:** OPEN (2026-11-06), reproduced through both nginx hops. **Severity:** P2 /

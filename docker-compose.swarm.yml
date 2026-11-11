@@ -23,6 +23,9 @@
 #  - No depends_on ordering. On the first deploy, run with SESAMEFS_BACKEND_REPLICAS=0
 #    until the one-shot bootstrap (scripts/cassandra-bootstrap.sh) has run; otherwise the
 #    backend restarts until Cassandra and the application role exist.
+#  - Cassandra does not read the region env file, only its own variables: a deploy
+#    restarts every service whose spec changed, so an application setting must not
+#    restart Cassandra, and its environment must not hold application secrets.
 # =============================================================================
 
 x-logging: &logging
@@ -86,9 +89,12 @@ services:
     entrypoint:
       - /bin/bash
       - -ec
-    env_file:
-      - ${ENV_FILE:?set ENV_FILE to the region env file}
+    # No env_file: Cassandra gets only the variables below. With the whole region env
+    # file, any application change (OIDC_REDIRECT_URIS, say) changed this spec, so the
+    # deploy restarted Cassandra and the new backend failed against a node still starting;
+    # it also put every application secret in Cassandra's environment.
     environment:
+      - CASSANDRA_SUPERUSER_PASSWORD=${CASSANDRA_SUPERUSER_PASSWORD:?set CASSANDRA_SUPERUSER_PASSWORD (the healthcheck logs in with it)}
       - CASSANDRA_CLUSTER_NAME=${CASSANDRA_CLUSTER_NAME:?set CASSANDRA_CLUSTER_NAME}
       - CASSANDRA_DC=${CASSANDRA_DC:?set CASSANDRA_DC}
       - CASSANDRA_RACK=${CASSANDRA_RACK:-rack1}

@@ -5,6 +5,9 @@
 #  2. Cassandra's start-up script (auth and timeouts) is identical in both files.
 #  3. The values both files force for production are identical.
 #  4. The Swarm stack refuses to render without each variable it requires.
+#  5. The Swarm Cassandra service does not read the region env file: changing an
+#     application variable leaves its spec unchanged (no restart on deploy), and
+#     application secrets stay out of its environment.
 set -uo pipefail
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
@@ -33,6 +36,10 @@ CASSANDRA_SEEDS=10.0.1.10,10.0.2.20
 SESAMEFS_INTERNAL_SUBNET=10.231.0.0/24
 SESAMEFS_MEMORY_LIMIT=4G
 CASSANDRA_MEMORY_LIMIT=6G
+CASSANDRA_SUPERUSER_PASSWORD=test-superuser-password
+# Application-only values: Cassandra must neither see them nor restart when they change.
+OIDC_CLIENT_SECRET=canary-app-secret
+OIDC_REDIRECT_URIS=https://files.example/sso/
 # Hostile values: the files must force these back.
 GC_ENABLED=true
 AUTH_DEV_MODE=true
@@ -68,6 +75,10 @@ elif what == "forced":
     env = svc["sesamefs"]["environment"]
     for k in ("GC_ENABLED", "AUTH_DEV_MODE", "SESAMEFS_SYNC_W2_CRASH_AFTER_HEAD_CAS_ONCE", "METRICS_ENABLED"):
         print("%s=%s" % (k, env.get(k)))
+elif what == "cassandra-spec":
+    print(json.dumps(svc["cassandra"], sort_keys=True))
+elif what == "cassandra-env":
+    print("\n".join(sorted(svc["cassandra"].get("environment", {}))))
 EOF
 for what in cassandra-command forced; do
   py "$tmp/q.py" "$what" "$tmp/swarm.json" > "$tmp/s.$what"
@@ -79,10 +90,26 @@ for kv in GC_ENABLED=false AUTH_DEV_MODE=false SESAMEFS_SYNC_W2_CRASH_AFTER_HEAD
   grep -qx "$kv" "$tmp/s.forced" && ok "$kv forced despite the env file" || ko "$kv not forced"
 done
 
+# Cassandra reads only its own variables. With the whole env file, every application
+# change (OIDC_REDIRECT_URIS, say) changed its spec: Swarm restarted it on deploy and the
+# new backend failed against a node still starting.
+sed -e 's|^OIDC_REDIRECT_URIS=.*|OIDC_REDIRECT_URIS=https://files.example/sso/,https://other.example/sso/|' \
+    -e "s|^ENV_FILE=.*|ENV_FILE=$tmp/region2.env|" "$tmp/region.env" > "$tmp/region2.env"
+docker compose --env-file "$tmp/region2.env" -f docker-compose.swarm.yml config --format json > "$tmp/swarm2.json" 2>/dev/null
+py "$tmp/q.py" cassandra-spec "$tmp/swarm.json" > "$tmp/c1"
+py "$tmp/q.py" cassandra-spec "$tmp/swarm2.json" > "$tmp/c2"
+if [ -s "$tmp/c1" ] && cmp -s "$tmp/c1" "$tmp/c2"; then ok "cassandra spec unchanged by an application variable"
+else ko "cassandra spec changes with OIDC_REDIRECT_URIS (Swarm would restart Cassandra)"; fi
+py "$tmp/q.py" cassandra-env "$tmp/swarm.json" > "$tmp/cenv"
+grep -qx OIDC_CLIENT_SECRET "$tmp/cenv" && ko "cassandra environment carries application secrets" \
+  || ok "cassandra environment carries no application secrets"
+grep -qx CASSANDRA_SUPERUSER_PASSWORD "$tmp/cenv" && ok "cassandra gets CASSANDRA_SUPERUSER_PASSWORD (healthcheck)" \
+  || ko "cassandra lacks CASSANDRA_SUPERUSER_PASSWORD"
+
 for v in SESAMEFS_IMAGE FRONTEND_IMAGE DEPLOY_ID SERVER_REGION CASSANDRA_BIND_IP CASSANDRA_SEEDS \
          CASSANDRA_DC CASSANDRA_LOCAL_DC CASSANDRA_DATA_DIR SESAMEFS_INTERNAL_SUBNET \
          SESAMEFS_MEMORY_LIMIT CASSANDRA_MEMORY_LIMIT CASSANDRA_MAX_HEAP_SIZE CASSANDRA_HEAP_NEWSIZE \
-         ENV_FILE; do
+         CASSANDRA_SUPERUSER_PASSWORD ENV_FILE; do
   grep -v "^$v=" "$tmp/region.env" > "$tmp/missing.env"
   if docker compose --env-file "$tmp/missing.env" -f docker-compose.swarm.yml config >/dev/null 2>&1; then
     ko "renders without $v"
