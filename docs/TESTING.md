@@ -929,6 +929,11 @@ Cassandra's start-up script and the forced production values (`GC_ENABLED=false`
 env file says otherwise, and that the stack refuses to render without each variable it
 requires. It starts nothing. Run it after changing either stack.
 
+`bash scripts/test-prod-preflight.sh` runs `prod-preflight.sh` in a throwaway Linux
+container, as a user other than the owner of a Cassandra data directory owned by uid 999,
+and checks the data-directory result with and without `--swarm`. Run it after changing the
+preflight's database checks.
+
 ## Production-compose three-DC rehearsal
 
 [`scripts/rehearsal/prod-3dc/`](../scripts/rehearsal/prod-3dc/README.md) runs

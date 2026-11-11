@@ -125,10 +125,21 @@ docker network inspect sfs-net >/dev/null 2>&1 || docker network create -d overl
 mkdir -p /srv/sesamefs/cassandra          # CASSANDRA_DATA_DIR, an absolute host path
 ```
 
+Cassandra's entrypoint gives the data directory to the image's `cassandra` user (uid 999)
+every time it starts; the deploy user does not need write access to it.
+
 Firewall: allow 7000, 7001 and 9042 only between the private IPs of the three hosts.
-Cassandra listens only on the private IP. If the host firewall filters inbound traffic,
-also allow 9042 from the `docker_gwbridge` network (by default `172.18.0.0/16`) to the
-private IP: the backend reaches Cassandra that way.
+Cassandra listens only on the private IP. Because it uses the host network, the host
+firewall applies to it (a Docker-published port would bypass it). If the firewall filters
+inbound traffic:
+
+- Each host must accept 7000, 7001 and 9042 from the other hosts' private IPs. Without
+  7000 a node cannot complete gossip with the seeds and, being a seed itself, starts a
+  cluster of its own; stop it and empty its data directory before reconnecting it.
+- Each host must also accept 9042 from its own `docker_gwbridge` network to the private
+  IP: the backend reaches Cassandra that way. Docker's default is `172.18.0.0/16`, but the
+  subnet can differ per host; read it with
+  `docker network inspect docker_gwbridge --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'`.
 
 ### S2 — Build the images
 

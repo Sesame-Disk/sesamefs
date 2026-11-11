@@ -1,11 +1,20 @@
 # Current Work
 
-## Active slice: Swarm Cassandra reads only its own variables (2026-11-10)
+## Active slice: Swarm preflight data directory and firewall notes (2026-11-10)
+
+From the first three-region Swarm deploy: `prod-preflight.sh --swarm` no longer requires
+the deploy user to write Cassandra's data directory, which Cassandra chowns on every start
+(`scripts/test-prod-preflight.sh`, RED on main, GREEN after). DEPLOY's firewall notes cover
+the host firewall on Cassandra's host network and the per-host `docker_gwbridge` subnet.
+Closes `ISSUE-PREFLIGHT-SWARM-DATA-DIR-OWNER-01` on merge. No gate closes; PRE-GC/A1 OPEN,
+GC OFF.
+
+## Previous merged slice: Swarm Cassandra reads only its own variables (2026-11-10, PR #333)
 
 From the first three-region Swarm deploy: an application setting change restarted
 Cassandra and paused the backend update, and Cassandra's environment held every
 application secret. `docker-compose.swarm.yml` drops its `env_file`; the stack test checks
-it (RED on main, GREEN after). Closes `ISSUE-SWARM-CASSANDRA-ENV-FILE-01` on merge.
+it (RED on main, GREEN after). Closed `ISSUE-SWARM-CASSANDRA-ENV-FILE-01`.
 No gate closes; PRE-GC/A1 OPEN, GC OFF.
 
 ## Previous merged slice: production on Docker Swarm (2026-11-09)
