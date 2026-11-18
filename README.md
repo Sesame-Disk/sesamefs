@@ -30,11 +30,13 @@ SesameFS aims to be a world-class replacement for enterprise file sync and share
 | **Container Base** | Debian Trixie | 13 slim |
 
 Source builds require at least Go 1.26.11. Go 1.26.10 / 1.27.3 fixed the two
-CA/TLS advisories (GO-2026-6809, GO-2026-6607); Go 1.26.11 / 1.27.4 also fix the
-toolchain linker advisory GO-2026-6851 (CVE-2026-97040, `.syso` cgo directive
-injection). Go 1.27.0 through 1.27.3 are therefore not supported. Developers and
-CI on older toolchains must upgrade or allow automatic toolchain selection to
-download Go 1.26.11. Verify later Go release lines against the advisories before
+CA/TLS advisories (GO-2026-6809, GO-2026-6607). Go 1.26.11 / 1.27.4 add the
+10 November 2026 security release: eleven build-time toolchain fixes, including
+GO-2026-6851 / CVE-2026-97040, and CVE-2026-97054 in `net/http`. Go 1.27.0
+through 1.27.3 are not supported. Developers and CI on older toolchains must
+upgrade or allow automatic toolchain selection to download Go 1.26.11. A binary
+built with an older toolchain keeps the previous `net/http` until it is rebuilt
+and redeployed. Verify later Go release lines against the advisories before
 using them for security-sensitive builds.
 
 ---
