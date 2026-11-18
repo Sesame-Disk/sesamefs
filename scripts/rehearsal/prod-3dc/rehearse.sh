@@ -209,7 +209,7 @@ probe_run(){ local pkg=$1; shift
   local pw; pw=$(grep '^CASSANDRA_PASSWORD=' "$WORK/.env.base" | cut -d= -f2)
   docker run --rm --network r3-vrack -v "$(hostpath "$REPO"):/src" -v r3-gomod:/go/pkg/mod -w /src \
     -e APP_USER=sesamefs_app -e APP_PW="$pw" -e HOSTS="dc-na=${IP[na]},dc-eu=${IP[eu]},dc-asia=${IP[asia]}" \
-    -e GOFLAGS=-buildvcs=false "$@" golang:1.26.10-trixie go run -tags rehearsal "./scripts/rehearsal/prod-3dc/probe/$pkg"
+    -e GOFLAGS=-buildvcs=false "$@" golang:1.26.11-trixie go run -tags rehearsal "./scripts/rehearsal/prod-3dc/probe/$pkg"
 }
 cmd_probe(){ say "raw Cassandra latency, no SesameFS"; probe_run lwt -e N="${N:-40}"; }
 cmd_contention_probe(){ say "raw same-partition CAS, no SesameFS"; probe_run contention -e SECS="${SECS:-20}"; }

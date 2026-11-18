@@ -8,6 +8,15 @@ Session-by-session development history for SesameFS.
 
 Current W2-0 disposition is [CLOSED-EVIDENCE for the covered greenfield v1 mechanism](./X1-CRITICAL-PATH.md). Dated entries below preserve their original snapshots, including superseded W2-0 OPEN claims.
 
+## 2026-11-18 — Go 1.26.11 for the toolchain linker advisory
+
+Pin `go.mod`, both build images and the Go images used by the test, rehearsal and
+schema-equivalence scripts to Go 1.26.11. This fixes GO-2026-6851 / CVE-2026-97040
+in `cmd/go` and `cmd/link`: a `.syso` disguised as a Go object could inject cgo
+linker flags at build time. It affects the build machine, not the running binary;
+no dependency in `go.mod` ships a `.syso` (checked with `go mod download all`).
+No application API, schema or configuration change.
+
 ## 2026-11-10 — Swarm preflight and Cassandra data directory ownership
 
 Found in the first three-region Swarm deploy: `prod-preflight.sh --swarm` required the

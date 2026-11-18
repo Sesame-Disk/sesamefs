@@ -20,7 +20,7 @@ SesameFS aims to be a world-class replacement for enterprise file sync and share
 
 | Component | Technology | Version |
 |-----------|------------|---------|
-| **Language** | Go | 1.26.10 |
+| **Language** | Go | 1.26.11 |
 | **Database** | Apache Cassandra | 5.0.9 |
 | **Object Storage** | S3-compatible | - |
 | **Archive Storage** | AWS Glacier | - |
@@ -29,12 +29,13 @@ SesameFS aims to be a world-class replacement for enterprise file sync and share
 | **Chunking** | FastCDC | - |
 | **Container Base** | Debian Trixie | 13 slim |
 
-Source builds require at least Go 1.26.10. For the two CA/TLS advisories fixed
-by this release, the verified fixed baselines are Go 1.26.10 and Go 1.27.3;
-Go 1.27.0 through 1.27.2 do not contain both fixes. Developers and CI still on
-Go 1.25 must upgrade or allow automatic toolchain selection to download Go
-1.26.10. Verify later Go release lines against the advisories before using them
-for security-sensitive builds.
+Source builds require at least Go 1.26.11. Go 1.26.10 / 1.27.3 fixed the two
+CA/TLS advisories (GO-2026-6809, GO-2026-6607); Go 1.26.11 / 1.27.4 also fix the
+toolchain linker advisory GO-2026-6851 (CVE-2026-97040, `.syso` cgo directive
+injection). Go 1.27.0 through 1.27.3 are therefore not supported. Developers and
+CI on older toolchains must upgrade or allow automatic toolchain selection to
+download Go 1.26.11. Verify later Go release lines against the advisories before
+using them for security-sensitive builds.
 
 ---
 
@@ -80,8 +81,8 @@ The original phase checklist is archived in
 ### Prerequisites
 
 - **Docker & Docker Compose v2** - [Install Docker](https://docs.docker.com/get-docker/)
-- **Go 1.26.10 or Go 1.27.3** - [Install Go](https://go.dev/doc/install)
-  (only needed outside Docker; verify later release lines against the CA/TLS advisories)
+- **Go 1.26.11 or Go 1.27.4** - [Install Go](https://go.dev/doc/install)
+  (only needed outside Docker; verify later release lines against the advisories above)
 
 ### Quick Start (Development)
 

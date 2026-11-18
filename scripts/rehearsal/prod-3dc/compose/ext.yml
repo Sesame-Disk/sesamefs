@@ -21,7 +21,7 @@ services:
         mc alias set r http://minio:9000 rehearsalkey rehearsalsecret123 &&
         mc mb --ignore-existing r/rehearsal-na r/rehearsal-eu r/rehearsal-asia && echo buckets-ready
   idp:
-    image: golang:1.26.10-alpine
+    image: golang:1.26.11-alpine
     command: ["go", "run", "-tags", "rehearsal", "/idp/idp.go"]
     environment: {ISSUER: "http://idp.rehearsal.test:8000", CLIENT_ID: rehearsal-client, CGO_ENABLED: "0"}
     volumes: ["../idp/idp.go:/idp/idp.go:ro"]
