@@ -1,6 +1,6 @@
 module github.com/Sesame-Disk/sesamefs
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/apache/cassandra-gocql-driver/v2 v2.0.0
