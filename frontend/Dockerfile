@@ -25,7 +25,7 @@ RUN export $(cat .env | grep -v '^#' | xargs) && \
     NODE_OPTIONS=--max_old_space_size=$NODE_MAX_MEMORY npm run build
 
 # Runtime stage
-FROM nginx:stable-alpine
+FROM nginx:1.30.7-alpine3.24
 
 COPY --from=builder /app/build /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
